@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Voxelium")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+2cd6bcd3988f935ee37d4271aaf53809726805fb")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+8bfd1effed7ca890516fcfa063755da132bb0897")]
 [assembly: System.Reflection.AssemblyProductAttribute("Voxelium")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Voxelium")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

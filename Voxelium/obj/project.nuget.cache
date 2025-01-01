@@ -1,8 +1,22 @@
 {
   "version": 2,
-  "dgSpecHash": "K8Z/lXEy72Y=",
+  "dgSpecHash": "d29CSk42r5A=",
   "success": true,
   "projectFilePath": "C:\\Users\\Ryaan\\OneDrive\\Documents\\GitHub\\Voxelium\\Voxelium\\Voxelium\\Voxelium.csproj",
-  "expectedPackageFiles": [],
+  "expectedPackageFiles": [
+    "C:\\Users\\Ryaan\\.nuget\\packages\\opentk\\5.0.0-pre.13\\opentk.5.0.0-pre.13.nupkg.sha512",
+    "C:\\Users\\Ryaan\\.nuget\\packages\\opentk.audio.openal\\5.0.0-pre.13\\opentk.audio.openal.5.0.0-pre.13.nupkg.sha512",
+    "C:\\Users\\Ryaan\\.nuget\\packages\\opentk.compute\\5.0.0-pre.13\\opentk.compute.5.0.0-pre.13.nupkg.sha512",
+    "C:\\Users\\Ryaan\\.nuget\\packages\\opentk.core\\5.0.0-pre.13\\opentk.core.5.0.0-pre.13.nupkg.sha512",
+    "C:\\Users\\Ryaan\\.nuget\\packages\\opentk.graphics\\5.0.0-pre.13\\opentk.graphics.5.0.0-pre.13.nupkg.sha512",
+    "C:\\Users\\Ryaan\\.nuget\\packages\\opentk.input\\5.0.0-pre.13\\opentk.input.5.0.0-pre.13.nupkg.sha512",
+    "C:\\Users\\Ryaan\\.nuget\\packages\\opentk.mathematics\\5.0.0-pre.13\\opentk.mathematics.5.0.0-pre.13.nupkg.sha512",
+    "C:\\Users\\Ryaan\\.nuget\\packages\\opentk.platform\\5.0.0-pre.13\\opentk.platform.5.0.0-pre.13.nupkg.sha512",
+    "C:\\Users\\Ryaan\\.nuget\\packages\\opentk.redist.glfw\\3.3.8.39\\opentk.redist.glfw.3.3.8.39.nupkg.sha512",
+    "C:\\Users\\Ryaan\\.nuget\\packages\\opentk.windowing.common\\5.0.0-pre.13\\opentk.windowing.common.5.0.0-pre.13.nupkg.sha512",
+    "C:\\Users\\Ryaan\\.nuget\\packages\\opentk.windowing.desktop\\5.0.0-pre.13\\opentk.windowing.desktop.5.0.0-pre.13.nupkg.sha512",
+    "C:\\Users\\Ryaan\\.nuget\\packages\\opentk.windowing.graphicslibraryframework\\5.0.0-pre.13\\opentk.windowing.graphicslibraryframework.5.0.0-pre.13.nupkg.sha512",
+    "C:\\Users\\Ryaan\\.nuget\\packages\\system.runtime.compilerservices.unsafe\\5.0.0\\system.runtime.compilerservices.unsafe.5.0.0.nupkg.sha512"
+  ],
   "logs": []
 }
