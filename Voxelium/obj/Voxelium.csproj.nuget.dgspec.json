@@ -52,7 +52,11 @@
           "dependencies": {
             "OpenTK": {
               "target": "Package",
-              "version": "[5.0.0-pre.13, )"
+              "version": "[4.7.7, )"
+            },
+            "StbImageSharp": {
+              "target": "Package",
+              "version": "[2.30.15, )"
             }
           },
           "imports": [

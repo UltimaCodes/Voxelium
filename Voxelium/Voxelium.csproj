@@ -8,10 +8,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="OpenTK" Version="5.0.0-pre.13" />
+    <PackageReference Include="OpenTK" Version="4.7.7" />
+    <PackageReference Include="StbImageSharp" Version="2.30.15" />
   </ItemGroup>
 
   <ItemGroup>
+    <Folder Include="Textures\" />
     <Folder Include="Shaders\" />
   </ItemGroup>
 
