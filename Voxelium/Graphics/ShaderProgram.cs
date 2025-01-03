@@ -7,7 +7,7 @@ using OpenTK.Graphics.OpenGL4;
 
 namespace Voxelium.Graphics
 {
-    internal class ShaderProgram
+    public class ShaderProgram
     {
         public int ID;
         public ShaderProgram(string vertexShaderFilepath, string fragmentShaderFilepath)

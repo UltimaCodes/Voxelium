@@ -9,7 +9,7 @@ using System.Threading.Tasks;
 
 namespace Voxelium
 {
-    internal class Camera
+    public class Camera
     {
         // CONSTANTS
         private float SPEED = 8f;

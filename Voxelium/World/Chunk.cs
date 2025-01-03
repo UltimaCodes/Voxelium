@@ -7,6 +7,7 @@ using System.Text;
 using System.Threading.Tasks;
 using Voxelium.Graphics;
 using Voxelium.World;
+using System.Security.Cryptography;
 
 namespace Voxelium.World
 {
@@ -16,8 +17,8 @@ namespace Voxelium.World
         public List<Vector2> chunkUVs;
         public List<uint> chunkIndices;
 
-        const sbyte SIZE = 16;
-        const short HEIGHT = 384;
+        public const sbyte SIZE = 16;
+        public const short HEIGHT = 384;
         public Vector3 position;
 
         public uint indexCount;
@@ -47,7 +48,7 @@ namespace Voxelium.World
         {
             float[,] heightmap = new float[SIZE, SIZE];
             
-            SimplexNoise.Noise.Seed = 123456;
+            SimplexNoise.Noise.Seed = RandomNumberGenerator.GetInt32(100000, 1000000);
             for (int x = 0; x < SIZE; x++)
             {
                 for (int z = 0; z < SIZE; z++)
