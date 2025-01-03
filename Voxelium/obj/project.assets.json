@@ -189,6 +189,15 @@
           }
         }
       },
+      "SimplexNoise/2.0.0": {
+        "type": "package",
+        "compile": {
+          "lib/netcoreapp2.2/SimplexNoise.dll": {}
+        },
+        "runtime": {
+          "lib/netcoreapp2.2/SimplexNoise.dll": {}
+        }
+      },
       "StbImageSharp/2.30.15": {
         "type": "package",
         "compile": {
@@ -379,6 +388,25 @@
         "opentk.windowing.graphicslibraryframework.nuspec"
       ]
     },
+    "SimplexNoise/2.0.0": {
+      "sha512": "v9q0D/5PSUx3T8ZIixjDEGlLYIDhkTbeQOgz/SddoKw16aoz4LFlg7FTu9DD0304p2m9VsHfTmygCgZ2FzIDVw==",
+      "type": "package",
+      "path": "simplexnoise/2.0.0",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "LICENSE.txt",
+        "README.md",
+        "lib/net40/SimplexNoise.dll",
+        "lib/net45/SimplexNoise.dll",
+        "lib/net472/SimplexNoise.dll",
+        "lib/netcoreapp2.2/SimplexNoise.dll",
+        "lib/netstandard1.0/SimplexNoise.dll",
+        "lib/netstandard2.0/SimplexNoise.dll",
+        "simplexnoise.2.0.0.nupkg.sha512",
+        "simplexnoise.nuspec"
+      ]
+    },
     "StbImageSharp/2.30.15": {
       "sha512": "7QqbupVhz2kcFUPTgMw4iHR9rYDHGundzzee19Mwmd1typ2Lnv8EVJcLJxlkeBM2+4ex0NwsMtdbGSJctp1XCQ==",
       "type": "package",
@@ -428,6 +456,7 @@
   "projectFileDependencyGroups": {
     "net8.0": [
       "OpenTK >= 4.7.7",
+      "SimplexNoise >= 2.0.0",
       "StbImageSharp >= 2.30.15"
     ]
   },
@@ -484,6 +513,10 @@
           "OpenTK": {
             "target": "Package",
             "version": "[4.7.7, )"
+          },
+          "SimplexNoise": {
+            "target": "Package",
+            "version": "[2.0.0, )"
           },
           "StbImageSharp": {
             "target": "Package",

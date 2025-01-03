@@ -30,3 +30,4 @@ C:\Users\Ryaan\OneDrive\Documents\GitHub\Voxelium\Voxelium\Voxelium\obj\Debug\ne
 C:\Users\Ryaan\OneDrive\Documents\GitHub\Voxelium\Voxelium\Voxelium\obj\Debug\net8.0\ref\Voxelium.dll
 C:\Users\Ryaan\OneDrive\Documents\GitHub\Voxelium\Voxelium\Voxelium\bin\Debug\net8.0\OpenTK.OpenAL.dll
 C:\Users\Ryaan\OneDrive\Documents\GitHub\Voxelium\Voxelium\Voxelium\bin\Debug\net8.0\StbImageSharp.dll
+C:\Users\Ryaan\OneDrive\Documents\GitHub\Voxelium\Voxelium\Voxelium\bin\Debug\net8.0\SimplexNoise.dll

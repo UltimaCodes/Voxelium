@@ -9,6 +9,7 @@
       "Voxelium/1.0.0": {
         "dependencies": {
           "OpenTK": "4.7.7",
+          "SimplexNoise": "2.0.0",
           "StbImageSharp": "2.30.15"
         },
         "runtime": {
@@ -154,6 +155,14 @@
           }
         }
       },
+      "SimplexNoise/2.0.0": {
+        "runtime": {
+          "lib/netcoreapp2.2/SimplexNoise.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
       "StbImageSharp/2.30.15": {
         "runtime": {
           "lib/netstandard2.0/StbImageSharp.dll": {
@@ -247,6 +256,13 @@
       "sha512": "sha512-TZXZOcnfyPU7zosW+ZPtfemqp4oSBYmQlRQRR7qtEezOBrzotO5ZmlWl0hNti3qjFmJThSxhBn+o/bF7aoBLrA==",
       "path": "opentk.windowing.graphicslibraryframework/4.7.7",
       "hashPath": "opentk.windowing.graphicslibraryframework.4.7.7.nupkg.sha512"
+    },
+    "SimplexNoise/2.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-v9q0D/5PSUx3T8ZIixjDEGlLYIDhkTbeQOgz/SddoKw16aoz4LFlg7FTu9DD0304p2m9VsHfTmygCgZ2FzIDVw==",
+      "path": "simplexnoise/2.0.0",
+      "hashPath": "simplexnoise.2.0.0.nupkg.sha512"
     },
     "StbImageSharp/2.30.15": {
       "type": "package",

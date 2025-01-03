@@ -1,12 +1,14 @@
-﻿
-namespace Voxelium
+﻿namespace Voxelium
 {
-    class Program
+    public class Program
     {
+        // Entry point of the program
         static void Main(string[] args)
         {
-            using (Game game = new Game(500, 500))
+            // Creates game object and disposes of it after leaving the scope
+            using (Game game = new Game(1280, 720))
             {
+                // running the game
                 game.Run();
             }
         }
