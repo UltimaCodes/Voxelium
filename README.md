@@ -1,6 +1,7 @@
 # Voxel Engine
 
 A simple voxel engine inspired by Minecraft, written in C# from scratch with OpenTK/OpenGL. Currently, the engine allows you to generate a basic chunk, fly around, and explore the environment. This project serves as a foundation for future features like block interactions, terrain generation, and more.
+Keep in mind that I speedran this and it took roughly 4 hours (wakatime kinda goofy)
 
 ## Features
 
