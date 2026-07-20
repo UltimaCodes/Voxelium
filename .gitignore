@@ -1,0 +1,7 @@
+build/
+out/
+.vs/
+.cache/
+.idea/
+cmake-build-*/
+*.bmp
