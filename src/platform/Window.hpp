@@ -31,13 +31,28 @@ public:
     void pollEvents();
     void swapBuffers();
     bool keyDown(int glfwKey) const;
+    bool mouseDown(int glfwButton) const;
+    void cursorPos(double& x, double& y) const;
     void framebufferSize(int& width, int& height) const;
     void setTitle(const char* title);
+
+    // Captured = cursor hidden + locked, raw motion if the platform has it (fly mode).
+    void setCursorCaptured(bool captured);
+
+    // Call after ImGui installs its GLFW callbacks: wraps the scroll callback so both
+    // ImGui and the engine see scroll events. Engine side accumulates into a delta that
+    // consumeScrollY() drains once per frame.
+    void hookScroll();
+    double consumeScrollY();
+
     GLFWwindow* handle() const { return m_window; }
 
 private:
     explicit Window(GLFWwindow* window) : m_window(window) {}
+    static void scrollCallback(GLFWwindow* window, double dx, double dy);
+
     GLFWwindow* m_window = nullptr;
+    double m_scrollY = 0.0;
 };
 
 } // namespace vx

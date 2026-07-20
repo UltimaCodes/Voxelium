@@ -29,5 +29,8 @@ preset (or the IDE's bundled toolchain), hit run.
 run `voxelium` from anywhere — it finds `assets/` by walking up from the exe, so build
 trees and IDE working dirs just work.
 
+F3 toggles the debug HUD. hold RMB to fly (wasd + space/ctrl, shift = fast, scroll =
+speed). ESC quits.
+
 `voxelium --smoke [out.bmp]` renders offscreen, checks that pixels actually got drawn,
 writes a screenshot and exits 0/1. headless self-check, useful for CI later.

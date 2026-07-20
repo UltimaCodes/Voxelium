@@ -6,7 +6,7 @@
 
 include(FetchContent)
 
-# --- GLFW 3.4 (milestone 1: windowing + input) ---------------------------------------
+# --- GLFW 3.4 (M1: windowing + input) -------------------------------------------------
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
@@ -19,4 +19,32 @@ FetchContent_Declare(glfw
     SYSTEM
 )
 
-FetchContent_MakeAvailable(glfw)
+# --- GLM 1.0.1 (M2: camera math) ------------------------------------------------------
+FetchContent_Declare(glm
+    GIT_REPOSITORY https://github.com/g-truc/glm.git
+    GIT_TAG        1.0.1
+    GIT_SHALLOW    ON
+    SYSTEM
+)
+
+# --- Dear ImGui 1.92.8 (M2: debug HUD only, never gameplay UI) ------------------------
+FetchContent_Declare(imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG        v1.92.8
+    GIT_SHALLOW    ON
+    SYSTEM
+)
+
+FetchContent_MakeAvailable(glfw glm imgui)
+
+# imgui ships no CMakeLists — build the core + the two backends we use as a static lib.
+add_library(imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+)
+target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+target_link_libraries(imgui PRIVATE glfw)

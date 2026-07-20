@@ -1,20 +1,30 @@
 #pragma once
 
-#include <cstdio>
+// Logging with two sinks: stderr (immediate) and a fixed in-memory ring the debug HUD
+// reads. Ring entries are fixed-size char arrays, so logging never allocates.
+// Format string must be a literal.
 
-// Minimal logging for the early milestones: fprintf needs nothing, works from any
-// thread, and can't allocate. The M2 debug HUD adds an in-app log sink on top; these
-// macros stay the front end so call sites never change.
-//
-// The format string must be a literal (it is concatenated with the prefix).
-#define VX_INFO(...)                                  \
-    do {                                              \
-        std::fprintf(stderr, "[info ] " __VA_ARGS__); \
-        std::fputc('\n', stderr);                     \
-    } while (0)
+namespace vx::log {
 
-#define VX_ERROR(...)                                 \
-    do {                                              \
-        std::fprintf(stderr, "[error] " __VA_ARGS__); \
-        std::fputc('\n', stderr);                     \
-    } while (0)
+enum class Level : unsigned char { Info, Error };
+
+struct Line {
+    Level level;
+    char text[236];
+};
+
+#if defined(__GNUC__)
+#define VX_FMT_CHECK __attribute__((format(printf, 2, 3)))
+#else
+#define VX_FMT_CHECK
+#endif
+
+void write(Level level, const char* fmt, ...) VX_FMT_CHECK;
+
+// Calls fn for each retained line, oldest first. Locks internally; keep fn cheap.
+void forEach(void (*fn)(const Line& line, void* user), void* user);
+
+} // namespace vx::log
+
+#define VX_INFO(...)  vx::log::write(vx::log::Level::Info, __VA_ARGS__)
+#define VX_ERROR(...) vx::log::write(vx::log::Level::Error, __VA_ARGS__)

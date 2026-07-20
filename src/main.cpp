@@ -1,13 +1,20 @@
+#include "core/AllocTracker.hpp"
 #include "core/Bmp.hpp"
 #include "core/Log.hpp"
 #include "core/Paths.hpp"
 #include "gfx/GlDebug.hpp"
+#include "gfx/GpuTimer.hpp"
 #include "gfx/Shader.hpp"
 #include "platform/Window.hpp"
+#include "render/Camera.hpp"
+#include "ui/DebugHud.hpp"
 
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
+#include <glm/gtc/type_ptr.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -23,9 +30,9 @@ struct TriangleMesh {
     GLuint vbo = 0;
 };
 
-// One interleaved vertex: xy position, rgb color. This whole path is throwaway — the
-// real engine binds no vertex attributes at all (quads are pulled from an SSBO by
-// gl_VertexID, milestone 4) — but it exercises every DSA pattern we keep using.
+// One interleaved vertex: xy position, rgb color. Throwaway path — from M4 on there are
+// no vertex attributes at all (quads get pulled from an SSBO by gl_VertexID) — but it
+// exercises the DSA setup we keep using.
 TriangleMesh createTriangle() {
     const float verts[] = {
         // x       y       r      g      b
@@ -36,9 +43,9 @@ TriangleMesh createTriangle() {
 
     TriangleMesh mesh;
     glCreateBuffers(1, &mesh.vbo);
-    // Immutable storage (glNamedBufferStorage, not glNamedBufferData): size is fixed for
-    // the buffer's lifetime, so the driver never guesses about reallocation — and it is
-    // the only storage kind that later supports persistent mapping (milestone 7).
+    // Immutable storage: fixed size for the buffer's lifetime, so the driver never has
+    // to guess about reallocation. Also the only storage kind that allows persistent
+    // mapping, which the M7 quad arena needs.
     glNamedBufferStorage(mesh.vbo, sizeof(verts), verts, 0);
 
     glCreateVertexArrays(1, &mesh.vao);
@@ -53,39 +60,54 @@ TriangleMesh createTriangle() {
     return mesh;
 }
 
-void drawFrame(GLuint program, GLuint vao, float time, int fbWidth, int fbHeight) {
+void drawScene(GLuint program, GLuint vao, float time, const glm::mat4& viewProj, int fbWidth,
+               int fbHeight) {
     glViewport(0, 0, fbWidth, fbHeight);
     glClearColor(kClearColor[0], kClearColor[1], kClearColor[2], 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glUseProgram(program);
-    glProgramUniform1f(program, 0, time);                                   // uTime
-    glProgramUniform1f(program, 1, float(fbWidth) / float(fbHeight));       // uAspect
+    glProgramUniform1f(program, 0, time);
+    glProgramUniformMatrix4fv(program, 1, 1, GL_FALSE, glm::value_ptr(viewProj));
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
 }
 
-// Renders into an offscreen FBO, verifies the triangle actually produced pixels, writes
-// a BMP screenshot, exits 0/1. Offscreen because reading back a hidden window's default
-// framebuffer is undefined (the pixel-ownership test); an FBO always owns its pixels.
-int runSmokeTest(GLuint program, GLuint vao, const std::filesystem::path& outPath) {
-    const int w = 800;
-    const int h = 600;
+// Renders a few frames (scene + HUD) into an offscreen FBO, verifies pixels were
+// produced, writes a BMP, exits 0/1. Offscreen because reading back a hidden window's
+// default framebuffer is undefined (pixel-ownership test); an FBO always owns its pixels.
+int runSmokeTest(GLuint program, GLuint vao, const vx::FlyCamera& camera, vx::DebugHud& hud,
+                 vx::Window& window, const std::filesystem::path& outPath) {
+    int w = 0;
+    int h = 0;
+    window.framebufferSize(w, h); // match the window so ImGui's layout maps 1:1
 
     GLuint color = 0;
+    GLuint depth = 0;
     glCreateRenderbuffers(1, &color);
     glNamedRenderbufferStorage(color, GL_RGB8, w, h);
+    glCreateRenderbuffers(1, &depth);
+    glNamedRenderbufferStorage(depth, GL_DEPTH_COMPONENT32F, w, h);
     GLuint fbo = 0;
     glCreateFramebuffers(1, &fbo);
     glNamedFramebufferRenderbuffer(fbo, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, color);
+    glNamedFramebufferRenderbuffer(fbo, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
     if (glCheckNamedFramebufferStatus(fbo, GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
         VX_ERROR("smoke: framebuffer incomplete");
         return 1;
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    for (int i = 0; i < 5; ++i)
-        drawFrame(program, vao, 0.6f, w, h); // fixed time → deterministic image
+    const glm::mat4 vp = camera.projReversedZ(float(w) / float(h)) * camera.view();
+    for (int i = 0; i < 5; ++i) {
+        window.pollEvents();
+        hud.beginFrame();
+        drawScene(program, vao, 0.6f, vp, w, h); // fixed time → deterministic image
+        const vx::FrameStats stats{
+            .frameMs = 1.0f, .gpuMs = 0.5f, .heapAllocs = 0, .drawCalls = 1, .triangles = 1};
+        hud.buildUi(stats, camera);
+        hud.render();
+    }
 
     std::vector<std::uint8_t> pixels(std::size_t(w) * std::size_t(h) * 3u);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
@@ -112,7 +134,7 @@ int runSmokeTest(GLuint program, GLuint vao, const std::filesystem::path& outPat
             static_cast<unsigned long long>(drawn), w * h,
             100.0 * double(drawn) / (double(w) * double(h)), outPath.string().c_str());
     if (drawn < 1000) {
-        VX_ERROR("smoke: triangle did not render");
+        VX_ERROR("smoke: nothing rendered");
         return 1;
     }
     return 0;
@@ -153,6 +175,14 @@ int main(int argc, char** argv) {
             reinterpret_cast<const char*>(glGetString(GL_RENDERER)),
             reinterpret_cast<const char*>(glGetString(GL_VENDOR)));
 
+    // Reversed-Z depth, set up once: 0..1 clip range (instead of GL's default -1..1,
+    // which throws away half the depth precision), clear to 0, pass what's greater.
+    // Rationale in render/Camera.hpp next to projReversedZ().
+    glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_GREATER);
+    glClearDepth(0.0);
+
     const std::filesystem::path assets = vx::findAssetsDir(argv[0]);
     if (assets.empty()) {
         VX_ERROR("could not locate assets/ directory");
@@ -164,36 +194,69 @@ int main(int argc, char** argv) {
         return 1;
 
     const TriangleMesh mesh = createTriangle();
+    vx::FlyCamera camera;
 
-    if (smoke)
-        return runSmokeTest(program, mesh.vao, smokeOut);
+    vx::DebugHud hud;
+    if (!hud.init(window->handle()))
+        return 1;
+    window->hookScroll(); // wrap ImGui's scroll callback so both UI and camera see it
 
-    double lastTitleUpdate = glfwGetTime();
-    int framesSinceTitle = 0;
+    if (smoke) {
+        const int rc = runSmokeTest(program, mesh.vao, camera, hud, *window, smokeOut);
+        hud.shutdown();
+        return rc;
+    }
+
+    vx::GpuTimer gpuTimer;
+    gpuTimer.init();
+
+    double prevTime = glfwGetTime();
+    float frameMs = 0.0f;
+    bool f3Held = false;
+    std::uint64_t allocsPrevFrame = vx::heapAllocCount();
+
     while (!window->shouldClose()) {
         window->pollEvents();
         if (window->keyDown(GLFW_KEY_ESCAPE))
             window->requestClose();
+        const bool f3 = window->keyDown(GLFW_KEY_F3);
+        if (f3 && !f3Held)
+            hud.toggle();
+        f3Held = f3;
+
+        const double now = glfwGetTime();
+        frameMs = float((now - prevTime) * 1000.0);
+        const float dt = std::min(float(now - prevTime), 0.1f); // clamp debugger pauses
+        prevTime = now;
+
+        hud.beginFrame();
+        camera.update(*window, dt, hud.wantsMouse(), hud.wantsKeyboard());
 
         int fbW = 0;
         int fbH = 0;
         window->framebufferSize(fbW, fbH);
-        if (fbW > 0 && fbH > 0) // minimized window has a 0x0 framebuffer
-            drawFrame(program, mesh.vao, float(glfwGetTime()), fbW, fbH);
-        window->swapBuffers();
-
-        // Coarse frame stats in the title until the M2 HUD exists.
-        ++framesSinceTitle;
-        const double now = glfwGetTime();
-        if (now - lastTitleUpdate >= 0.5) {
-            char title[128];
-            std::snprintf(title, sizeof(title), "Voxelium | %.2f ms/frame (%d fps, vsync on)",
-                          1000.0 * (now - lastTitleUpdate) / framesSinceTitle,
-                          int(framesSinceTitle / (now - lastTitleUpdate) + 0.5));
-            window->setTitle(title);
-            lastTitleUpdate = now;
-            framesSinceTitle = 0;
+        gpuTimer.begin();
+        if (fbW > 0 && fbH > 0) { // minimized window has a 0x0 framebuffer
+            const glm::mat4 vp = camera.projReversedZ(float(fbW) / float(fbH)) * camera.view();
+            drawScene(program, mesh.vao, float(now), vp, fbW, fbH);
         }
+
+        const std::uint64_t allocsNow = vx::heapAllocCount();
+        const vx::FrameStats stats{
+            .frameMs = frameMs,
+            .gpuMs = gpuTimer.milliseconds(),
+            .heapAllocs = allocsNow - allocsPrevFrame,
+            .drawCalls = 1,
+            .triangles = 1,
+        };
+        allocsPrevFrame = allocsNow;
+        hud.buildUi(stats, camera);
+        hud.render();
+        gpuTimer.end();
+
+        window->swapBuffers();
     }
+
+    hud.shutdown();
     return 0;
 }

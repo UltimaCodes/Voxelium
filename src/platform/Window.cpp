@@ -11,6 +11,9 @@ static void glfwErrorCb(int code, const char* description) {
     VX_ERROR("GLFW error %d: %s", code, description);
 }
 
+// Previous scroll callback in the chain (ImGui's, once the HUD is up).
+static GLFWscrollfun s_prevScrollCb = nullptr;
+
 std::unique_ptr<Window> Window::create(const WindowDesc& desc) {
     glfwSetErrorCallback(glfwErrorCb);
     if (!glfwInit()) {
@@ -32,7 +35,7 @@ std::unique_ptr<Window> Window::create(const WindowDesc& desc) {
     }
 
     glfwMakeContextCurrent(window);
-    glfwSwapInterval(1); // vsync on by default; frame pacing gets revisited with the M2 HUD
+    glfwSwapInterval(1); // vsync on by default
 
     if (gladLoadGL(glfwGetProcAddress) == 0) {
         VX_ERROR("gladLoadGL failed");
@@ -41,7 +44,9 @@ std::unique_ptr<Window> Window::create(const WindowDesc& desc) {
         return nullptr;
     }
 
-    return std::unique_ptr<Window>(new Window(window));
+    auto self = std::unique_ptr<Window>(new Window(window));
+    glfwSetWindowUserPointer(window, self.get());
+    return self;
 }
 
 Window::~Window() {
@@ -56,10 +61,39 @@ void Window::pollEvents() { glfwPollEvents(); }
 void Window::swapBuffers() { glfwSwapBuffers(m_window); }
 bool Window::keyDown(int glfwKey) const { return glfwGetKey(m_window, glfwKey) == GLFW_PRESS; }
 
+bool Window::mouseDown(int glfwButton) const {
+    return glfwGetMouseButton(m_window, glfwButton) == GLFW_PRESS;
+}
+
+void Window::cursorPos(double& x, double& y) const { glfwGetCursorPos(m_window, &x, &y); }
+
 void Window::framebufferSize(int& width, int& height) const {
     glfwGetFramebufferSize(m_window, &width, &height);
 }
 
 void Window::setTitle(const char* title) { glfwSetWindowTitle(m_window, title); }
+
+void Window::setCursorCaptured(bool captured) {
+    glfwSetInputMode(m_window, GLFW_CURSOR, captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+    if (captured && glfwRawMouseMotionSupported())
+        glfwSetInputMode(m_window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+}
+
+void Window::hookScroll() {
+    s_prevScrollCb = glfwSetScrollCallback(m_window, &Window::scrollCallback);
+}
+
+double Window::consumeScrollY() {
+    const double v = m_scrollY;
+    m_scrollY = 0.0;
+    return v;
+}
+
+void Window::scrollCallback(GLFWwindow* window, double dx, double dy) {
+    if (s_prevScrollCb)
+        s_prevScrollCb(window, dx, dy);
+    if (auto* self = static_cast<Window*>(glfwGetWindowUserPointer(window)))
+        self->m_scrollY += dy;
+}
 
 } // namespace vx

@@ -12,18 +12,24 @@ add_subdirectory(external/glad)
 
 add_executable(voxelium
     src/main.cpp
+    src/core/AllocTracker.cpp
     src/core/Bmp.cpp
+    src/core/Log.cpp
     src/core/Paths.cpp
     src/gfx/GlDebug.cpp
+    src/gfx/GpuTimer.cpp
     src/gfx/Shader.cpp
     src/platform/Window.cpp
+    src/render/Camera.cpp
+    src/ui/DebugHud.cpp
 )
 
 target_include_directories(voxelium PRIVATE src)
-target_link_libraries(voxelium PRIVATE glad glfw)
+target_link_libraries(voxelium PRIVATE glad glfw glm::glm imgui)
 
 # GLFW must not drag in the system GL headers; glad owns all GL declarations.
-target_compile_definitions(voxelium PRIVATE GLFW_INCLUDE_NONE)
+# GLM depth range 0..1 to match glClipControl(GL_ZERO_TO_ONE) — we run reversed-Z.
+target_compile_definitions(voxelium PRIVATE GLFW_INCLUDE_NONE GLM_FORCE_DEPTH_ZERO_TO_ONE)
 
 # Our code builds warning-clean as errors on both compilers. Dependencies are SYSTEM
 # includes (see Dependencies.cmake / external/glad) so their headers stay out of the gate.
