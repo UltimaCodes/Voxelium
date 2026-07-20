@@ -24,7 +24,7 @@ public:
     void shutdown();
 
     void beginFrame();
-    void buildUi(const FrameStats& stats, const FlyCamera& camera);
+    void buildUi(const FrameStats& stats, const FlyCamera& camera, bool& vsync);
     void render();
 
     void toggle() { m_visible = !m_visible; }

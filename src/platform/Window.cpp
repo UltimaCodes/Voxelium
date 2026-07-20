@@ -35,7 +35,9 @@ std::unique_ptr<Window> Window::create(const WindowDesc& desc) {
     }
 
     glfwMakeContextCurrent(window);
-    glfwSwapInterval(1); // vsync on by default
+    // vsync off by default: everything time-dependent runs off dt / absolute time, so
+    // uncapped fps never changes game speed. The HUD has a vsync toggle.
+    glfwSwapInterval(0);
 
     if (gladLoadGL(glfwGetProcAddress) == 0) {
         VX_ERROR("gladLoadGL failed");
@@ -72,6 +74,8 @@ void Window::framebufferSize(int& width, int& height) const {
 }
 
 void Window::setTitle(const char* title) { glfwSetWindowTitle(m_window, title); }
+
+void Window::setVsync(bool on) { glfwSwapInterval(on ? 1 : 0); }
 
 void Window::setCursorCaptured(bool captured) {
     glfwSetInputMode(m_window, GLFW_CURSOR, captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);

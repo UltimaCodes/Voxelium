@@ -47,7 +47,7 @@ void DebugHud::beginFrame() {
 bool DebugHud::wantsMouse() const { return ImGui::GetIO().WantCaptureMouse; }
 bool DebugHud::wantsKeyboard() const { return ImGui::GetIO().WantCaptureKeyboard; }
 
-void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera) {
+void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera, bool& vsync) {
     m_frameMs[m_cursor] = stats.frameMs;
     m_cursor = (m_cursor + 1) % kSamples;
 
@@ -71,6 +71,7 @@ void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera) {
         ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.3f, 1.0f), "heap allocs/frame: %llu",
                            static_cast<unsigned long long>(stats.heapAllocs));
     ImGui::Text("draw calls %d   tris %d", stats.drawCalls, stats.triangles);
+    ImGui::Checkbox("vsync", &vsync);
 
     ImGui::Separator();
     ImGui::Text("cam (%.1f, %.1f, %.1f)  yaw %.0f  pitch %.0f  speed %.1f%s",

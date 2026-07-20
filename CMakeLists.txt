@@ -19,9 +19,11 @@ add_executable(voxelium
     src/gfx/GlDebug.cpp
     src/gfx/GpuTimer.cpp
     src/gfx/Shader.cpp
+    src/mesh/NaiveMesher.cpp
     src/platform/Window.cpp
     src/render/Camera.cpp
     src/ui/DebugHud.cpp
+    src/world/Chunk.cpp
 )
 
 target_include_directories(voxelium PRIVATE src)

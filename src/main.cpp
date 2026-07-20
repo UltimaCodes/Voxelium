@@ -5,9 +5,11 @@
 #include "gfx/GlDebug.hpp"
 #include "gfx/GpuTimer.hpp"
 #include "gfx/Shader.hpp"
+#include "mesh/NaiveMesher.hpp"
 #include "platform/Window.hpp"
 #include "render/Camera.hpp"
 #include "ui/DebugHud.hpp"
+#include "world/Chunk.hpp"
 
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
@@ -15,69 +17,63 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <memory>
+#include <span>
 #include <vector>
 
 namespace {
 
-constexpr float kClearColor[3] = {0.09f, 0.10f, 0.12f};
+constexpr float kClearColor[3] = {0.35f, 0.58f, 0.85f}; // sky-ish, terrain reads better
 
-struct TriangleMesh {
+struct GpuMesh {
     GLuint vao = 0;
     GLuint vbo = 0;
+    int vertexCount = 0;
 };
 
-// One interleaved vertex: xy position, rgb color. Throwaway path — from M4 on there are
-// no vertex attributes at all (quads get pulled from an SSBO by gl_VertexID) — but it
-// exercises the DSA setup we keep using.
-TriangleMesh createTriangle() {
-    const float verts[] = {
-        // x       y       r      g      b
-         0.00f,  0.62f,  0.98f, 0.29f, 0.24f,
-        -0.55f, -0.44f,  0.24f, 0.83f, 0.43f,
-         0.55f, -0.44f,  0.28f, 0.53f, 0.96f,
-    };
+GpuMesh uploadMesh(std::span<const vx::ChunkVertex> verts) {
+    GpuMesh mesh;
+    mesh.vertexCount = int(verts.size());
 
-    TriangleMesh mesh;
     glCreateBuffers(1, &mesh.vbo);
-    // Immutable storage: fixed size for the buffer's lifetime, so the driver never has
-    // to guess about reallocation. Also the only storage kind that allows persistent
-    // mapping, which the M7 quad arena needs.
-    glNamedBufferStorage(mesh.vbo, sizeof(verts), verts, 0);
+    // Immutable storage: fixed size for the buffer's lifetime; also the only storage
+    // kind that allows persistent mapping (M7 quad arena).
+    glNamedBufferStorage(mesh.vbo, GLsizeiptr(verts.size_bytes()), verts.data(), 0);
 
     glCreateVertexArrays(1, &mesh.vao);
     const GLuint binding = 0;
-    glVertexArrayVertexBuffer(mesh.vao, binding, mesh.vbo, 0, 5 * sizeof(float));
+    glVertexArrayVertexBuffer(mesh.vao, binding, mesh.vbo, 0, sizeof(vx::ChunkVertex));
     glEnableVertexArrayAttrib(mesh.vao, 0);
-    glVertexArrayAttribFormat(mesh.vao, 0, 2, GL_FLOAT, GL_FALSE, 0);
+    glVertexArrayAttribFormat(mesh.vao, 0, 3, GL_FLOAT, GL_FALSE, 0);
     glVertexArrayAttribBinding(mesh.vao, 0, binding);
     glEnableVertexArrayAttrib(mesh.vao, 1);
-    glVertexArrayAttribFormat(mesh.vao, 1, 3, GL_FLOAT, GL_FALSE, 2 * sizeof(float));
+    glVertexArrayAttribFormat(mesh.vao, 1, 4, GL_UNSIGNED_BYTE, GL_TRUE, 12);
     glVertexArrayAttribBinding(mesh.vao, 1, binding);
     return mesh;
 }
 
-void drawScene(GLuint program, GLuint vao, float time, const glm::mat4& viewProj, int fbWidth,
+void drawScene(GLuint program, const GpuMesh& mesh, const glm::mat4& viewProj, int fbWidth,
                int fbHeight) {
     glViewport(0, 0, fbWidth, fbHeight);
     glClearColor(kClearColor[0], kClearColor[1], kClearColor[2], 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glUseProgram(program);
-    glProgramUniform1f(program, 0, time);
-    glProgramUniformMatrix4fv(program, 1, 1, GL_FALSE, glm::value_ptr(viewProj));
-    glBindVertexArray(vao);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glProgramUniformMatrix4fv(program, 0, 1, GL_FALSE, glm::value_ptr(viewProj));
+    glBindVertexArray(mesh.vao);
+    glDrawArrays(GL_TRIANGLES, 0, mesh.vertexCount);
 }
 
 // Renders a few frames (scene + HUD) into an offscreen FBO, verifies pixels were
 // produced, writes a BMP, exits 0/1. Offscreen because reading back a hidden window's
 // default framebuffer is undefined (pixel-ownership test); an FBO always owns its pixels.
-int runSmokeTest(GLuint program, GLuint vao, const vx::FlyCamera& camera, vx::DebugHud& hud,
-                 vx::Window& window, const std::filesystem::path& outPath) {
+int runSmokeTest(GLuint program, const GpuMesh& mesh, const vx::FlyCamera& camera,
+                 vx::DebugHud& hud, vx::Window& window, const std::filesystem::path& outPath) {
     int w = 0;
     int h = 0;
     window.framebufferSize(w, h); // match the window so ImGui's layout maps 1:1
@@ -99,13 +95,17 @@ int runSmokeTest(GLuint program, GLuint vao, const vx::FlyCamera& camera, vx::De
 
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     const glm::mat4 vp = camera.projReversedZ(float(w) / float(h)) * camera.view();
+    bool vsyncDummy = false;
     for (int i = 0; i < 5; ++i) {
         window.pollEvents();
         hud.beginFrame();
-        drawScene(program, vao, 0.6f, vp, w, h); // fixed time → deterministic image
-        const vx::FrameStats stats{
-            .frameMs = 1.0f, .gpuMs = 0.5f, .heapAllocs = 0, .drawCalls = 1, .triangles = 1};
-        hud.buildUi(stats, camera);
+        drawScene(program, mesh, vp, w, h);
+        const vx::FrameStats stats{.frameMs = 1.0f,
+                                   .gpuMs = 0.5f,
+                                   .heapAllocs = 0,
+                                   .drawCalls = 1,
+                                   .triangles = mesh.vertexCount / 3};
+        hud.buildUi(stats, camera, vsyncDummy);
         hud.render();
     }
 
@@ -182,19 +182,49 @@ int main(int argc, char** argv) {
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_GREATER);
     glClearDepth(0.0);
+    glEnable(GL_CULL_FACE); // mesher winds CCW from outside; backfaces never rasterize
 
     const std::filesystem::path assets = vx::findAssetsDir(argv[0]);
     if (assets.empty()) {
         VX_ERROR("could not locate assets/ directory");
         return 1;
     }
-    const GLuint program = vx::loadProgram(assets / "shaders/triangle.vert",
-                                           assets / "shaders/triangle.frag");
+    const GLuint program =
+        vx::loadProgram(assets / "shaders/chunk.vert", assets / "shaders/chunk.frag");
     if (!program)
         return 1;
 
-    const TriangleMesh mesh = createTriangle();
+    // --- the one chunk ---------------------------------------------------------------
+    auto chunk = std::make_unique<vx::Chunk>();
+    vx::fillTestTerrain(*chunk);
+
+    // Mesh it repeatedly for a stable baseline number. This is the figure M4's greedy
+    // mesher has to beat, so it goes in the log (and docs/M3.md).
+    std::vector<vx::ChunkVertex> vertices;
+    vx::MeshStats meshStats;
+    double bestMs = 1e9;
+    double totalMs = 0.0;
+    constexpr int kRuns = 50;
+    for (int i = 0; i < kRuns; ++i) {
+        const auto t0 = std::chrono::steady_clock::now();
+        meshStats = vx::meshNaive(*chunk, vertices);
+        const auto t1 = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        bestMs = std::min(bestMs, ms);
+        totalMs += ms;
+    }
+    VX_INFO("naive mesh: %d faces, %d tris, %d verts, %.0f KB vbo", meshStats.faces,
+            meshStats.triangles, meshStats.vertices,
+            double(meshStats.vertices * sizeof(vx::ChunkVertex)) / 1024.0);
+    VX_INFO("naive mesh time: best %.3f ms, avg %.3f ms (%d runs)", bestMs, totalMs / kRuns,
+            kRuns);
+
+    const GpuMesh mesh = uploadMesh(vertices);
+
     vx::FlyCamera camera;
+    camera.position = {48.0f, 44.0f, 48.0f};
+    camera.yawDeg = -45.0f;  // look back at the chunk center
+    camera.pitchDeg = -32.0f;
 
     vx::DebugHud hud;
     if (!hud.init(window->handle()))
@@ -202,7 +232,7 @@ int main(int argc, char** argv) {
     window->hookScroll(); // wrap ImGui's scroll callback so both UI and camera see it
 
     if (smoke) {
-        const int rc = runSmokeTest(program, mesh.vao, camera, hud, *window, smokeOut);
+        const int rc = runSmokeTest(program, mesh, camera, hud, *window, smokeOut);
         hud.shutdown();
         return rc;
     }
@@ -211,8 +241,8 @@ int main(int argc, char** argv) {
     gpuTimer.init();
 
     double prevTime = glfwGetTime();
-    float frameMs = 0.0f;
     bool f3Held = false;
+    bool vsync = false;
     std::uint64_t allocsPrevFrame = vx::heapAllocCount();
 
     while (!window->shouldClose()) {
@@ -225,7 +255,7 @@ int main(int argc, char** argv) {
         f3Held = f3;
 
         const double now = glfwGetTime();
-        frameMs = float((now - prevTime) * 1000.0);
+        const float frameMs = float((now - prevTime) * 1000.0);
         const float dt = std::min(float(now - prevTime), 0.1f); // clamp debugger pauses
         prevTime = now;
 
@@ -238,7 +268,7 @@ int main(int argc, char** argv) {
         gpuTimer.begin();
         if (fbW > 0 && fbH > 0) { // minimized window has a 0x0 framebuffer
             const glm::mat4 vp = camera.projReversedZ(float(fbW) / float(fbH)) * camera.view();
-            drawScene(program, mesh.vao, float(now), vp, fbW, fbH);
+            drawScene(program, mesh, vp, fbW, fbH);
         }
 
         const std::uint64_t allocsNow = vx::heapAllocCount();
@@ -247,10 +277,13 @@ int main(int argc, char** argv) {
             .gpuMs = gpuTimer.milliseconds(),
             .heapAllocs = allocsNow - allocsPrevFrame,
             .drawCalls = 1,
-            .triangles = 1,
+            .triangles = mesh.vertexCount / 3,
         };
         allocsPrevFrame = allocsNow;
-        hud.buildUi(stats, camera);
+        const bool vsyncBefore = vsync;
+        hud.buildUi(stats, camera, vsync);
+        if (vsync != vsyncBefore)
+            window->setVsync(vsync);
         hud.render();
         gpuTimer.end();
 

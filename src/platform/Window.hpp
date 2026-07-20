@@ -35,6 +35,7 @@ public:
     void cursorPos(double& x, double& y) const;
     void framebufferSize(int& width, int& height) const;
     void setTitle(const char* title);
+    void setVsync(bool on);
 
     // Captured = cursor hidden + locked, raw motion if the platform has it (fly mode).
     void setCursorCaptured(bool captured);
