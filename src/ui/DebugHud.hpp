@@ -37,7 +37,8 @@ public:
     void shutdown();
 
     void beginFrame();
-    void buildUi(const FrameStats& stats, const FlyCamera& camera, bool& vsync, int& radius);
+    void buildUi(const FrameStats& stats, const FlyCamera& camera, bool& vsync,
+                 bool& caveCull, int& radius);
     void render();
 
     void toggle() { m_visible = !m_visible; }

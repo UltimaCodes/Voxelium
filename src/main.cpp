@@ -161,18 +161,20 @@ int runSmokeTest(vx::Renderer& renderer, vx::ChunkManager& world, vx::JobSystem&
     std::vector<vx::ChunkDrawInfo> drawInfo;
     world.collectDrawInfo(drawInfo);
     renderer.updateChunkMeta(drawInfo);
+    world.updateVisibilityIfNeeded(renderer, camera.position, true);
     const CameraFrame cam = buildCameraFrame(camera, w, h);
 
     const vx::ChunkManager::Stats ws = world.stats();
     const vx::Renderer::ArenaStats as = renderer.arenaStats();
     bool vsyncDummy = false;
+    bool caveCullDummy = true;
     int radiusDummy = world.radius;
     for (int i = 0; i < 5; ++i) {
         window.pollEvents();
         renderer.beginFrame();
         hud.beginFrame();
         beginFrameGl(w, h);
-        renderer.drawWorld(cam.viewProj, cam.frustum, cam.cameraChunk, cam.cameraFrac);
+        renderer.drawWorld(cam.viewProj, cam.frustum, cam.cameraChunk, cam.cameraFrac, true);
         const vx::FrameStats stats{.frameMs = 1.0f,
                                    .gpuMs = 0.5f,
                                    .heapAllocs = 0,
@@ -191,12 +193,12 @@ int runSmokeTest(vx::Renderer& renderer, vx::ChunkManager& world, vx::JobSystem&
                                    .arenaUsedQuads = as.usedQuads,
                                    .arenaCapQuads = as.capacityQuads,
                                    .arenaFreeBlocks = as.freeBlocks};
-        hud.buildUi(stats, camera, vsyncDummy, radiusDummy);
+        hud.buildUi(stats, camera, vsyncDummy, caveCullDummy, radiusDummy);
         hud.render();
         renderer.endFrame();
     }
-    VX_INFO("smoke: gpu culled %d of %d chunks (1 draw call)", renderer.debugReadDrawCount(),
-            int(drawInfo.size()));
+    VX_INFO("smoke: gpu culled %d of %d chunks (1 draw call, cave culling on)",
+            renderer.debugReadDrawCount(), int(drawInfo.size()));
 
     std::vector<std::uint8_t> pixels(std::size_t(w) * std::size_t(h) * 3u);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
@@ -226,6 +228,26 @@ int runSmokeTest(vx::Renderer& renderer, vx::ChunkManager& world, vx::JobSystem&
         VX_ERROR("smoke: nothing rendered");
         return 1;
     }
+
+    // the M8 measurement: bury the camera in solid stone and count chunks drawn with
+    // and without cave culling. underground is where the algorithm earns its keep.
+    camera.position = {16.0, 16.0, 16.0};
+    const CameraFrame buried = buildCameraFrame(camera, w, h);
+    world.updateVisibilityIfNeeded(renderer, camera.position, true);
+    renderer.beginFrame();
+    beginFrameGl(w, h);
+    renderer.drawWorld(buried.viewProj, buried.frustum, buried.cameraChunk, buried.cameraFrac,
+                       true);
+    renderer.endFrame();
+    const int buriedOn = renderer.debugReadDrawCount();
+    renderer.beginFrame();
+    beginFrameGl(w, h);
+    renderer.drawWorld(buried.viewProj, buried.frustum, buried.cameraChunk, buried.cameraFrac,
+                       false);
+    renderer.endFrame();
+    const int buriedOff = renderer.debugReadDrawCount();
+    VX_INFO("smoke: buried in stone — %d chunks drawn with cave culling, %d without",
+            buriedOn, buriedOff);
     return 0;
 }
 
@@ -320,6 +342,7 @@ int main(int argc, char** argv) {
     double prevTime = glfwGetTime();
     bool f3Held = false;
     bool vsync = false;
+    bool caveCull = true;
     bool loadLogged = false;
     std::uint64_t allocsPrevFrame = vx::heapAllocCount();
 
@@ -348,6 +371,7 @@ int main(int argc, char** argv) {
             world->collectDrawInfo(drawInfo);
             renderer.updateChunkMeta(drawInfo);
         }
+        world->updateVisibilityIfNeeded(renderer, camera.position, caveCull);
         if (!loadLogged && !world->busy()) {
             world->logSummary();
             loadLogged = true;
@@ -360,7 +384,8 @@ int main(int argc, char** argv) {
         if (fbW > 0 && fbH > 0) {
             const CameraFrame cam = buildCameraFrame(camera, fbW, fbH);
             beginFrameGl(fbW, fbH);
-            renderer.drawWorld(cam.viewProj, cam.frustum, cam.cameraChunk, cam.cameraFrac);
+            renderer.drawWorld(cam.viewProj, cam.frustum, cam.cameraChunk, cam.cameraFrac,
+                               caveCull);
         }
 
         const vx::ChunkManager::Stats ws = world->stats();
@@ -388,7 +413,7 @@ int main(int argc, char** argv) {
         };
         allocsPrevFrame = allocsNow;
         const bool vsyncBefore = vsync;
-        hud.buildUi(stats, camera, vsync, world->radius);
+        hud.buildUi(stats, camera, vsync, caveCull, world->radius);
         if (vsync != vsyncBefore)
             window->setVsync(vsync);
         hud.render();

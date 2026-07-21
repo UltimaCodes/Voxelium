@@ -56,7 +56,14 @@ bool Renderer::init(unsigned int drawProgram, unsigned int cullProgram) {
     m_readbackMap = static_cast<const std::uint32_t*>(
         glMapNamedBufferRange(m_readbackBuf, 0, kFrameRing * sizeof(GLuint), kReadMapFlags));
 
-    if (!m_arenaMap || !m_metaMap || !m_readbackMap) {
+    glCreateBuffers(1, &m_visBuf);
+    glNamedBufferStorage(m_visBuf, kMaxChunks / 8, nullptr, kWriteMapFlags);
+    m_visMap = static_cast<std::uint32_t*>(
+        glMapNamedBufferRange(m_visBuf, 0, kMaxChunks / 8, kWriteMapFlags));
+    if (m_visMap)
+        std::memset(m_visMap, 0xFF, kMaxChunks / 8); // everything visible until a flood runs
+
+    if (!m_arenaMap || !m_metaMap || !m_readbackMap || !m_visMap) {
         VX_ERROR("renderer: persistent mapping failed");
         return false;
     }
@@ -71,9 +78,9 @@ void Renderer::shutdown() {
             glDeleteSync(static_cast<GLsync>(m_fence[i]));
             m_fence[i] = nullptr;
         }
-    const GLuint buffers[] = {m_arenaBuf, m_metaBuf, m_cmdBuf,
-                              m_countBuf, m_offsetsBuf, m_readbackBuf};
-    glDeleteBuffers(6, buffers);
+    const GLuint buffers[] = {m_arenaBuf,   m_metaBuf,     m_cmdBuf, m_countBuf,
+                              m_offsetsBuf, m_readbackBuf, m_visBuf};
+    glDeleteBuffers(7, buffers);
     glDeleteVertexArrays(1, &m_vao);
 }
 
@@ -160,8 +167,14 @@ void Renderer::updateChunkMeta(std::span<const ChunkDrawInfo> chunks) {
     }
 }
 
+void Renderer::updateVisibility(std::span<const std::uint32_t> bits) {
+    const std::size_t words = std::min(bits.size(), std::size_t(kMaxChunks / 32));
+    std::memcpy(m_visMap, bits.data(), words * sizeof(std::uint32_t));
+}
+
 void Renderer::drawWorld(const glm::mat4& viewProj, const Frustum& frustum,
-                         const glm::ivec3& cameraChunk, const glm::vec3& cameraFrac) {
+                         const glm::ivec3& cameraChunk, const glm::vec3& cameraFrac,
+                         bool caveCull) {
     if (m_chunkCount == 0)
         return;
 
@@ -174,10 +187,12 @@ void Renderer::drawWorld(const glm::mat4& viewProj, const Frustum& frustum,
     glProgramUniform3iv(m_cullProgram, 5, 1, &cameraChunk.x);
     glProgramUniform3fv(m_cullProgram, 6, 1, &cameraFrac.x);
     glProgramUniform1ui(m_cullProgram, 7, m_chunkCount);
+    glProgramUniform1ui(m_cullProgram, 8, caveCull ? 1u : 0u);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_metaBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_cmdBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, m_countBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, m_offsetsBuf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, m_visBuf);
     glDispatchCompute((m_chunkCount + 63) / 64, 1, 1);
 
     glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);

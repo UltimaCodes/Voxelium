@@ -52,8 +52,10 @@ public:
 
     void beginFrame(); // recycle fence-cleared frees, poll the visible-count readback
     void updateChunkMeta(std::span<const ChunkDrawInfo> chunks);
+    void updateVisibility(std::span<const std::uint32_t> bits); // indexed by meta order
     void drawWorld(const glm::mat4& viewProj, const Frustum& frustum,
-                   const glm::ivec3& cameraChunk, const glm::vec3& cameraFrac);
+                   const glm::ivec3& cameraChunk, const glm::vec3& cameraFrac,
+                   bool caveCull);
     void endFrame(); // fence this frame's GPU work
 
     int gpuVisibleChunks() const { return m_visibleChunks; } // ~3 frames of latency
@@ -76,10 +78,12 @@ private:
     unsigned int m_countBuf = 0;
     unsigned int m_offsetsBuf = 0;
     unsigned int m_readbackBuf = 0;
+    unsigned int m_visBuf = 0;
 
     std::uint64_t* m_arenaMap = nullptr;
     void* m_metaMap = nullptr;
     const std::uint32_t* m_readbackMap = nullptr;
+    std::uint32_t* m_visMap = nullptr;
 
     std::vector<Range> m_freeList; // sorted by first; adjacent blocks merged
     std::vector<Range> m_pendingFree[kFrameRing];

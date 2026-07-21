@@ -3,6 +3,7 @@
 #include "core/Log.hpp"
 #include "gen/TestTerrain.hpp"
 #include "jobs/JobSystem.hpp"
+#include "mesh/Connectivity.hpp"
 
 #include <algorithm>
 #include <array>
@@ -204,10 +205,12 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, const glm::dvec3&
             thread_local std::vector<std::uint64_t> quadScratch;
             const auto t0 = Clock::now();
             const GreedyStats stats = mesher.mesh(*voxels, nb.data(), quadScratch);
+            const std::uint16_t connectivity = computeConnectivity(*voxels);
             m_meshNanos.fetch_add(nsSince(t0), std::memory_order_relaxed);
             m_meshCount.fetch_add(1, std::memory_order_relaxed);
 
-            MeshResult result{pos, {quadScratch.begin(), quadScratch.end()}, stats};
+            MeshResult result{pos, {quadScratch.begin(), quadScratch.end()}, stats,
+                              connectivity};
             voxels->releaseJob();
             for (const Chunk* n : nb)
                 if (n)
@@ -241,8 +244,10 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, const glm::dvec3&
                 }
                 e.quadsCpu = std::move(r.quads);
             }
+            e.connectivity = r.connectivity;
             e.state = ChunkState::Meshed;
             m_dirty = true;
+            m_visDirty = true;
         }
         --m_jobsInFlight;
         ++uploaded;
@@ -251,15 +256,89 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, const glm::dvec3&
     m_uploadMsLast = msSince(uploadStart);
 }
 
-void ChunkManager::collectDrawInfo(std::vector<ChunkDrawInfo>& out) const {
+void ChunkManager::collectDrawInfo(std::vector<ChunkDrawInfo>& out) {
     out.clear();
-    for (const auto& item : m_chunks) {
-        const Entry& e = item.second;
-        if (e.state != ChunkState::Meshed || e.quads == 0 || e.range.count == 0)
+    for (auto& item : m_chunks) {
+        Entry& e = item.second;
+        if (e.state != ChunkState::Meshed || e.quads == 0 || e.range.count == 0) {
+            e.metaIndex = -1;
             continue;
+        }
+        e.metaIndex = std::int32_t(out.size());
         out.push_back({{item.first.x, item.first.y, item.first.z}, e.range.first,
                        e.range.count});
     }
+    m_metaCount = int(out.size());
+    m_visDirty = true;
+}
+
+void ChunkManager::rebuildVisibility(ChunkPos cameraChunk) {
+    ++m_floodStamp;
+    m_visBits.assign(std::size_t(std::max(1, (m_metaCount + 31) / 32)), 0u);
+    const auto markVisible = [&](Entry& e) {
+        e.floodStamp = m_floodStamp;
+        if (e.metaIndex >= 0)
+            m_visBits[std::size_t(e.metaIndex) >> 5] |= 1u << (e.metaIndex & 31);
+    };
+
+    const auto camIt = m_chunks.find(cameraChunk);
+    if (camIt == m_chunks.end()) {
+        // camera outside the loaded world — draw everything rather than nothing
+        std::fill(m_visBits.begin(), m_visBits.end(), 0xFFFFFFFFu);
+        return;
+    }
+
+    m_floodQueue.clear();
+    markVisible(camIt->second);
+    m_floodQueue.push_back({cameraChunk, -1, 0, camIt->second.connectivity});
+
+    static constexpr int kStep[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                        {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+    for (std::size_t head = 0; head < m_floodQueue.size(); ++head) {
+        const FloodNode node = m_floodQueue[head]; // copy: pushes may reallocate
+        for (int d = 0; d < 6; ++d) {
+            // never step back toward the camera: each axis flows one way per path.
+            // (this is what keeps the flood bounded; it can over-cull wrap-around
+            // paths, which is the algorithm's documented trade)
+            if (node.dirMask & (1u << (d ^ 1)))
+                continue;
+            // continue only through a face pair this chunk's air actually connects
+            if (node.entryFace >= 0 && !facesConnected(node.connectivity, node.entryFace, d))
+                continue;
+            const ChunkPos next{node.pos.x + kStep[d][0], node.pos.y + kStep[d][1],
+                                node.pos.z + kStep[d][2]};
+            if (next.y < 0 || next.y >= kWorldChunksY)
+                continue;
+            if (std::abs(next.x - m_center.x) > radius || std::abs(next.z - m_center.z) > radius)
+                continue;
+            const auto it = m_chunks.find(next);
+            if (it == m_chunks.end() || it->second.floodStamp == m_floodStamp)
+                continue;
+            markVisible(it->second);
+            m_floodQueue.push_back({next, std::int8_t(d ^ 1),
+                                    std::uint8_t(node.dirMask | (1u << d)),
+                                    it->second.connectivity});
+        }
+    }
+}
+
+void ChunkManager::updateVisibilityIfNeeded(Renderer& renderer, const glm::dvec3& cameraPos,
+                                            bool enabled) {
+    if (!enabled) {
+        m_lastCaveCull = false;
+        return; // shader bypasses the bitset; stale bits are fine
+    }
+    const ChunkPos cameraChunk{
+        int(std::floor(cameraPos.x / kChunkSize)),
+        std::clamp(int(std::floor(cameraPos.y / kChunkSize)), 0, kWorldChunksY - 1),
+        int(std::floor(cameraPos.z / kChunkSize))};
+    if (!m_visDirty && cameraChunk == m_lastFloodCenter && m_lastCaveCull)
+        return;
+    m_lastFloodCenter = cameraChunk;
+    m_lastCaveCull = true;
+    m_visDirty = false;
+    rebuildVisibility(cameraChunk);
+    renderer.updateVisibility(m_visBits);
 }
 
 ChunkManager::Stats ChunkManager::stats() const {

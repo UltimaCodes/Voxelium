@@ -58,12 +58,20 @@ public:
     void update(JobSystem& jobs, Renderer& renderer, const glm::dvec3& cameraPos);
 
     // For the cull compute pass; call when consumeDirty() says the chunk set changed.
-    void collectDrawInfo(std::vector<ChunkDrawInfo>& out) const;
+    // Assigns each drawable chunk its meta index (the visibility bitset uses the same
+    // indexing), so the two must always be rebuilt together.
+    void collectDrawInfo(std::vector<ChunkDrawInfo>& out);
     bool consumeDirty() {
         const bool was = m_dirty;
         m_dirty = false;
         return was;
     }
+
+    // Recomputes the camera-outward visibility flood (cave culling) only when needed:
+    // the chunk set changed, the camera crossed a chunk boundary, or the toggle
+    // flipped. Steady-state cost is zero.
+    void updateVisibilityIfNeeded(Renderer& renderer, const glm::dvec3& cameraPos,
+                                  bool enabled);
 
     bool busy() const {
         return !m_genQueue.empty() || m_jobsInFlight > 0 || !m_uploads.empty() ||
@@ -80,6 +88,10 @@ private:
         Renderer::Range range; // quads in the arena
         int quads = 0;
         ChunkState state = ChunkState::Generating;
+        // all faces connected until meshed: never cave-cull what isn't known yet
+        std::uint16_t connectivity = 0x7FFF;
+        std::int32_t metaIndex = -1;   // slot in the cull meta buffer, -1 = not drawn
+        std::uint32_t floodStamp = 0;  // visited marker for the visibility flood
         std::vector<std::uint64_t> quadsCpu; // kept for arena rebuilds
     };
 
@@ -87,11 +99,20 @@ private:
         ChunkPos pos;
         std::vector<std::uint64_t> quads;
         GreedyStats stats;
+        std::uint16_t connectivity = 0;
+    };
+
+    struct FloodNode {
+        ChunkPos pos;
+        std::int8_t entryFace; // face we came in through; -1 for the camera chunk
+        std::uint8_t dirMask;  // directions traveled so far; no backtracking
+        std::uint16_t connectivity;
     };
 
     void rescan(ChunkPos center);
     void processEvictions(Renderer& renderer);
     void rebuildArena(Renderer& renderer);
+    void rebuildVisibility(ChunkPos cameraChunk);
     const Chunk* voxelsAt(ChunkPos pos) const;
 
     static constexpr double kUploadBudgetMs = 2.0;
@@ -115,6 +136,15 @@ private:
     ChunkPos m_center{INT32_MIN, 0, INT32_MIN};
     int m_lastRadius = -1;
     bool m_dirty = false;
+
+    // visibility flood state
+    std::vector<std::uint32_t> m_visBits;
+    std::vector<FloodNode> m_floodQueue;
+    ChunkPos m_lastFloodCenter{INT32_MIN, 0, INT32_MIN};
+    std::uint32_t m_floodStamp = 0;
+    int m_metaCount = 0;
+    bool m_visDirty = true;
+    bool m_lastCaveCull = false;
     int m_jobsInFlight = 0; // main-thread view: submit increments, result-drain decrements
     int m_pendingMesh = 0;
     double m_uploadMsLast = 0.0;

@@ -21,6 +21,7 @@ add_executable(voxelium
     src/gen/TestTerrain.cpp
     src/gfx/Shader.cpp
     src/jobs/JobSystem.cpp
+    src/mesh/Connectivity.cpp
     src/mesh/GreedyMesher.cpp
     src/mesh/NaiveMesher.cpp
     src/platform/Window.cpp

@@ -48,7 +48,7 @@ bool DebugHud::wantsMouse() const { return ImGui::GetIO().WantCaptureMouse; }
 bool DebugHud::wantsKeyboard() const { return ImGui::GetIO().WantCaptureKeyboard; }
 
 void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera, bool& vsync,
-                       int& radius) {
+                       bool& caveCull, int& radius) {
     m_frameMs[m_cursor] = stats.frameMs;
     m_cursor = (m_cursor + 1) % kSamples;
 
@@ -87,7 +87,9 @@ void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera, bool& v
                 stats.arenaFreeBlocks);
     ImGui::Checkbox("vsync", &vsync);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(160.0f);
+    ImGui::Checkbox("cave cull", &caveCull);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120.0f);
     ImGui::SliderInt("radius", &radius, 4, 16);
 
     ImGui::Separator();

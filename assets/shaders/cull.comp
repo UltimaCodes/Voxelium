@@ -23,16 +23,20 @@ layout(std430, binding = 0) readonly buffer Meta { ChunkMeta meta[]; };
 layout(std430, binding = 1) writeonly buffer Cmds { DrawCmd cmds[]; };
 layout(std430, binding = 2) buffer DrawCount { uint drawCount; };
 layout(std430, binding = 3) writeonly buffer Offsets { vec4 offsets[]; };
+layout(std430, binding = 4) readonly buffer Vis { uint visBits[]; }; // cave-culling flood result
 
 layout(location = 0) uniform vec4 uPlanes[5]; // no far plane with infinite reversed-z
 layout(location = 5) uniform ivec3 uCameraChunk;
 layout(location = 6) uniform vec3 uCameraFrac;
 layout(location = 7) uniform uint uChunkCount;
+layout(location = 8) uniform uint uCaveCull;
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
     if (i >= uChunkCount)
         return;
+    if (uCaveCull != 0u && (visBits[i >> 5] & (1u << (i & 31u))) == 0u)
+        return; // not reachable from the camera through open space
 
     ChunkMeta m = meta[i];
     vec3 offset = vec3((m.posFirst.xyz - uCameraChunk) * 32) - uCameraFrac;
