@@ -18,6 +18,7 @@ struct MeshStats {
     int faces = 0;
     int triangles = 0;
     int vertices = 0;
+    int facesPerDir[6] = {}; // +X,-X,+Y,-Y,+Z,-Z — the greedy mesher's oracle numbers
 };
 
 // The M3 baseline mesher: visits every voxel, emits 6 verts per face that borders air.

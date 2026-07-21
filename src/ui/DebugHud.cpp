@@ -70,7 +70,8 @@ void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera, bool& v
     else
         ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.3f, 1.0f), "heap allocs/frame: %llu",
                            static_cast<unsigned long long>(stats.heapAllocs));
-    ImGui::Text("draw calls %d   tris %d", stats.drawCalls, stats.triangles);
+    ImGui::Text("draw calls %d   quads %d   tris %d", stats.drawCalls, stats.quads,
+                stats.triangles);
     ImGui::Checkbox("vsync", &vsync);
 
     ImGui::Separator();

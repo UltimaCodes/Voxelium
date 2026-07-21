@@ -5,6 +5,7 @@
 #include "gfx/GlDebug.hpp"
 #include "gfx/GpuTimer.hpp"
 #include "gfx/Shader.hpp"
+#include "mesh/GreedyMesher.hpp"
 #include "mesh/NaiveMesher.hpp"
 #include "platform/Window.hpp"
 #include "render/Camera.hpp"
@@ -30,34 +31,24 @@ namespace {
 
 constexpr float kClearColor[3] = {0.35f, 0.58f, 0.85f}; // sky-ish, terrain reads better
 
-struct GpuMesh {
+// A chunk's renderable mesh: packed quads in an SSBO, an empty VAO (core profile wants
+// one bound even with zero attributes), and nothing else. No vertex buffer exists.
+struct QuadMesh {
     GLuint vao = 0;
-    GLuint vbo = 0;
-    int vertexCount = 0;
+    GLuint ssbo = 0;
+    int quadCount = 0;
 };
 
-GpuMesh uploadMesh(std::span<const vx::ChunkVertex> verts) {
-    GpuMesh mesh;
-    mesh.vertexCount = int(verts.size());
-
-    glCreateBuffers(1, &mesh.vbo);
-    // Immutable storage: fixed size for the buffer's lifetime; also the only storage
-    // kind that allows persistent mapping (M7 quad arena).
-    glNamedBufferStorage(mesh.vbo, GLsizeiptr(verts.size_bytes()), verts.data(), 0);
-
+QuadMesh uploadQuads(std::span<const std::uint64_t> quads) {
+    QuadMesh mesh;
+    mesh.quadCount = int(quads.size());
+    glCreateBuffers(1, &mesh.ssbo);
+    glNamedBufferStorage(mesh.ssbo, GLsizeiptr(quads.size_bytes()), quads.data(), 0);
     glCreateVertexArrays(1, &mesh.vao);
-    const GLuint binding = 0;
-    glVertexArrayVertexBuffer(mesh.vao, binding, mesh.vbo, 0, sizeof(vx::ChunkVertex));
-    glEnableVertexArrayAttrib(mesh.vao, 0);
-    glVertexArrayAttribFormat(mesh.vao, 0, 3, GL_FLOAT, GL_FALSE, 0);
-    glVertexArrayAttribBinding(mesh.vao, 0, binding);
-    glEnableVertexArrayAttrib(mesh.vao, 1);
-    glVertexArrayAttribFormat(mesh.vao, 1, 4, GL_UNSIGNED_BYTE, GL_TRUE, 12);
-    glVertexArrayAttribBinding(mesh.vao, 1, binding);
     return mesh;
 }
 
-void drawScene(GLuint program, const GpuMesh& mesh, const glm::mat4& viewProj, int fbWidth,
+void drawScene(GLuint program, const QuadMesh& mesh, const glm::mat4& viewProj, int fbWidth,
                int fbHeight) {
     glViewport(0, 0, fbWidth, fbHeight);
     glClearColor(kClearColor[0], kClearColor[1], kClearColor[2], 1.0f);
@@ -65,14 +56,15 @@ void drawScene(GLuint program, const GpuMesh& mesh, const glm::mat4& viewProj, i
 
     glUseProgram(program);
     glProgramUniformMatrix4fv(program, 0, 1, GL_FALSE, glm::value_ptr(viewProj));
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, mesh.ssbo);
     glBindVertexArray(mesh.vao);
-    glDrawArrays(GL_TRIANGLES, 0, mesh.vertexCount);
+    glDrawArrays(GL_TRIANGLES, 0, mesh.quadCount * 6);
 }
 
 // Renders a few frames (scene + HUD) into an offscreen FBO, verifies pixels were
 // produced, writes a BMP, exits 0/1. Offscreen because reading back a hidden window's
 // default framebuffer is undefined (pixel-ownership test); an FBO always owns its pixels.
-int runSmokeTest(GLuint program, const GpuMesh& mesh, const vx::FlyCamera& camera,
+int runSmokeTest(GLuint program, const QuadMesh& mesh, const vx::FlyCamera& camera,
                  vx::DebugHud& hud, vx::Window& window, const std::filesystem::path& outPath) {
     int w = 0;
     int h = 0;
@@ -104,7 +96,8 @@ int runSmokeTest(GLuint program, const GpuMesh& mesh, const vx::FlyCamera& camer
                                    .gpuMs = 0.5f,
                                    .heapAllocs = 0,
                                    .drawCalls = 1,
-                                   .triangles = mesh.vertexCount / 3};
+                                   .quads = mesh.quadCount,
+                                   .triangles = mesh.quadCount * 2};
         hud.buildUi(stats, camera, vsyncDummy);
         hud.render();
     }
@@ -138,6 +131,18 @@ int runSmokeTest(GLuint program, const GpuMesh& mesh, const vx::FlyCamera& camer
         return 1;
     }
     return 0;
+}
+
+template <typename F>
+double benchBestMs(int runs, F&& fn) {
+    double best = 1e9;
+    for (int i = 0; i < runs; ++i) {
+        const auto t0 = std::chrono::steady_clock::now();
+        fn();
+        const auto t1 = std::chrono::steady_clock::now();
+        best = std::min(best, std::chrono::duration<double, std::milli>(t1 - t0).count());
+    }
+    return best;
 }
 
 } // namespace
@@ -182,7 +187,7 @@ int main(int argc, char** argv) {
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_GREATER);
     glClearDepth(0.0);
-    glEnable(GL_CULL_FACE); // mesher winds CCW from outside; backfaces never rasterize
+    glEnable(GL_CULL_FACE); // quad corners wind CCW from outside; backfaces never rasterize
 
     const std::filesystem::path assets = vx::findAssetsDir(argv[0]);
     if (assets.empty()) {
@@ -194,36 +199,49 @@ int main(int argc, char** argv) {
     if (!program)
         return 1;
 
-    // --- the one chunk ---------------------------------------------------------------
+    // --- the one chunk, meshed both ways ----------------------------------------------
     auto chunk = std::make_unique<vx::Chunk>();
     vx::fillTestTerrain(*chunk);
 
-    // Mesh it repeatedly for a stable baseline number. This is the figure M4's greedy
-    // mesher has to beat, so it goes in the log (and docs/M3.md).
-    std::vector<vx::ChunkVertex> vertices;
-    vx::MeshStats meshStats;
-    double bestMs = 1e9;
-    double totalMs = 0.0;
-    constexpr int kRuns = 50;
-    for (int i = 0; i < kRuns; ++i) {
-        const auto t0 = std::chrono::steady_clock::now();
-        meshStats = vx::meshNaive(*chunk, vertices);
-        const auto t1 = std::chrono::steady_clock::now();
-        const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        bestMs = std::min(bestMs, ms);
-        totalMs += ms;
-    }
-    VX_INFO("naive mesh: %d faces, %d tris, %d verts, %.0f KB vbo", meshStats.faces,
-            meshStats.triangles, meshStats.vertices,
-            double(meshStats.vertices * sizeof(vx::ChunkVertex)) / 1024.0);
-    VX_INFO("naive mesh time: best %.3f ms, avg %.3f ms (%d runs)", bestMs, totalMs / kRuns,
-            kRuns);
+    // Naive stays as the oracle: every merged quad covers exactly the unit faces the
+    // naive mesher emits, so summed quad area per direction must match its face counts.
+    std::vector<vx::ChunkVertex> naiveVerts;
+    vx::MeshStats naive;
+    const double naiveBest =
+        benchBestMs(50, [&] { naive = vx::meshNaive(*chunk, naiveVerts); });
 
-    const GpuMesh mesh = uploadMesh(vertices);
+    auto mesher = std::make_unique<vx::GreedyMesher>();
+    std::vector<std::uint64_t> quads;
+    vx::GreedyStats greedy;
+    const double greedyBest =
+        benchBestMs(50, [&] { greedy = mesher->mesh(*chunk, quads); });
+
+    bool oracleOk = true;
+    for (int d = 0; d < 6; ++d)
+        oracleOk = oracleOk && greedy.areaPerDir[d] == std::int64_t(naive.facesPerDir[d]);
+    if (oracleOk) {
+        VX_INFO("oracle: merged quad area == naive face count in all 6 directions");
+    } else {
+        for (int d = 0; d < 6; ++d)
+            VX_ERROR("oracle dir %d: greedy area %lld vs naive faces %d", d,
+                     static_cast<long long>(greedy.areaPerDir[d]), naive.facesPerDir[d]);
+        return 1;
+    }
+
+    VX_INFO("naive : %d tris, %.0f KB vbo, best %.3f ms", naive.triangles,
+            double(naive.vertices * sizeof(vx::ChunkVertex)) / 1024.0, naiveBest);
+    VX_INFO("greedy: %d quads -> %d tris, %.1f KB ssbo, best %.3f ms", greedy.quads,
+            greedy.triangles, double(quads.size() * sizeof(std::uint64_t)) / 1024.0,
+            greedyBest);
+    VX_INFO("       %.1fx fewer tris, %.0fx less geometry memory", double(naive.triangles) / double(greedy.triangles),
+            double(naive.vertices * sizeof(vx::ChunkVertex)) /
+                double(quads.size() * sizeof(std::uint64_t)));
+
+    const QuadMesh mesh = uploadQuads(quads);
 
     vx::FlyCamera camera;
     camera.position = {48.0f, 44.0f, 48.0f};
-    camera.yawDeg = -45.0f;  // look back at the chunk center
+    camera.yawDeg = -45.0f; // look back at the chunk center
     camera.pitchDeg = -32.0f;
 
     vx::DebugHud hud;
@@ -277,7 +295,8 @@ int main(int argc, char** argv) {
             .gpuMs = gpuTimer.milliseconds(),
             .heapAllocs = allocsNow - allocsPrevFrame,
             .drawCalls = 1,
-            .triangles = mesh.vertexCount / 3,
+            .quads = mesh.quadCount,
+            .triangles = mesh.quadCount * 2,
         };
         allocsPrevFrame = allocsNow;
         const bool vsyncBefore = vsync;

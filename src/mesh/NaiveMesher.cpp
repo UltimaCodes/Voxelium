@@ -49,7 +49,8 @@ MeshStats meshNaive(const Chunk& chunk, std::vector<ChunkVertex>& out) {
                 if (id == blocks::Air)
                     continue;
 
-                for (const FaceDef& face : kFaces) {
+                for (int f = 0; f < 6; ++f) {
+                    const FaceDef& face = kFaces[f];
                     if (solidAt(chunk, x + face.nx, y + face.ny, z + face.nz))
                         continue;
 
@@ -71,6 +72,7 @@ MeshStats meshNaive(const Chunk& chunk, std::vector<ChunkVertex>& out) {
                     out.push_back(corner(2));
                     out.push_back(corner(3));
                     ++stats.faces;
+                    ++stats.facesPerDir[f];
                 }
             }
         }

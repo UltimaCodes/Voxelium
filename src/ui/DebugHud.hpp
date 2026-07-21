@@ -13,6 +13,7 @@ struct FrameStats {
     float gpuMs = 0.0f;
     std::uint64_t heapAllocs = 0; // this frame, engine code only (operator new)
     int drawCalls = 0;
+    int quads = 0;
     int triangles = 0;
 };
 
