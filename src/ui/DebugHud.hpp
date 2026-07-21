@@ -27,6 +27,8 @@ struct FrameStats {
     std::uint32_t arenaUsedQuads = 0;
     std::uint32_t arenaCapQuads = 0;
     int arenaFreeBlocks = 0;
+    bool walkMode = false;
+    int placeBlock = 1;
 };
 
 // ImGui debug overlay: frame graph, timings, alloc counter, camera state, log view.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Pool.hpp"
+#include "gen/TerrainGenerator.hpp"
 #include "mesh/GreedyMesher.hpp"
 #include "render/Renderer.hpp"
 #include "world/Chunk.hpp"
@@ -18,10 +19,6 @@ namespace vx {
 struct Frustum;
 class JobSystem;
 class LightEngine;
-
-// Fixed world height for now: 4 chunks (128 blocks). Sky light (M9) needs a defined
-// top of the world anyway; this grows when terrain does.
-inline constexpr int kWorldChunksY = 4;
 
 // Per-chunk pipeline state. Only the main thread reads or writes it — workers are pure
 // functions that hand results back through queues, so no state needs to be atomic. The
@@ -64,6 +61,15 @@ public:
         const auto it = m_chunks.find(pos);
         return it != m_chunks.end() ? it->second.voxels : nullptr;
     }
+
+    BlockId blockAtWorld(const glm::ivec3& wp) const;
+
+    // The block-edit fast path: sets the voxel, settles light, and synchronously
+    // remeshes the affected chunk (plus border neighbors and anything light touched)
+    // on the main thread — edit to visible in the same frame, per the spec target.
+    bool setBlock(Renderer& renderer, LightEngine& light, const glm::ivec3& wp, BlockId id);
+
+    const TerrainGenerator& generator() const { return m_gen; }
 
     // For the cull compute pass; call when consumeDirty() says the chunk set changed.
     // Assigns each drawable chunk its meta index (the visibility bitset uses the same
@@ -122,6 +128,7 @@ private:
     void processEvictions(Renderer& renderer);
     void rebuildArena(Renderer& renderer);
     void rebuildVisibility(ChunkPos cameraChunk);
+    void remeshNow(Renderer& renderer, ChunkPos pos);
     const Chunk* voxelsAt(ChunkPos pos) const;
 
     static constexpr double kUploadBudgetMs = 2.0;
@@ -130,9 +137,13 @@ private:
     ankerl::unordered_dense::set<ChunkPos, ChunkPosHash> m_seededColumns; // y always 0
     std::vector<ChunkPos> m_seedQueue; // columns with full data, waiting for light seed
     Pool<Chunk> m_pool;
+    TerrainGenerator m_gen{20260721};
+    GreedyMesher m_mesher; // main-thread instance for the synchronous edit remesh path
+    std::vector<std::uint64_t> m_quadScratch;
 
     std::vector<ChunkPos> m_genQueue; // farthest-first, pop_back serves nearest
     std::vector<ChunkPos> m_meshScratch;
+    std::vector<ChunkPos> m_remeshScratch;
     std::vector<ChunkPos> m_evictList; // outside the ring; may wait on in-flight jobs
 
     // worker -> main queues

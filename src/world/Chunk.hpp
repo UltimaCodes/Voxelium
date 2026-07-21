@@ -12,6 +12,10 @@ using BlockId = std::uint16_t;
 inline constexpr int kChunkSize = 32;
 inline constexpr int kChunkSize3 = kChunkSize * kChunkSize * kChunkSize;
 
+// Fixed world height for now; sky light needs a defined top. Grows when terrain does.
+inline constexpr int kWorldChunksY = 4;
+inline constexpr int kWorldHeight = kWorldChunksY * kChunkSize;
+
 namespace blocks {
 inline constexpr BlockId Air = 0;
 inline constexpr BlockId Stone = 1;

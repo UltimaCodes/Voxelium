@@ -1,7 +1,6 @@
 #include "world/ChunkManager.hpp"
 
 #include "core/Log.hpp"
-#include "gen/TestTerrain.hpp"
 #include "jobs/JobSystem.hpp"
 #include "light/LightEngine.hpp"
 #include "mesh/Connectivity.hpp"
@@ -177,7 +176,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         ++m_jobsInFlight;
         jobs.submit([this, voxels, pos] {
             const auto t0 = Clock::now();
-            generateTerrain(*voxels, pos);
+            m_gen.generate(*voxels, pos);
             m_genNanos.fetch_add(nsSince(t0), std::memory_order_relaxed);
             m_genCount.fetch_add(1, std::memory_order_relaxed);
             voxels->releaseJob();
@@ -381,6 +380,98 @@ void ChunkManager::updateVisibilityIfNeeded(Renderer& renderer, const glm::dvec3
     m_visDirty = false;
     rebuildVisibility(cameraChunk);
     renderer.updateVisibility(m_visBits);
+}
+
+BlockId ChunkManager::blockAtWorld(const glm::ivec3& wp) const {
+    if (wp.y < 0)
+        return blocks::Stone;
+    if (wp.y >= kWorldHeight)
+        return blocks::Air;
+    const Chunk* c = voxelsAt({wp.x >> 5, wp.y >> 5, wp.z >> 5});
+    return c ? c->get(wp.x & 31, wp.y & 31, wp.z & 31) : blocks::Stone;
+}
+
+void ChunkManager::remeshNow(Renderer& renderer, ChunkPos pos) {
+    const auto it = m_chunks.find(pos);
+    if (it == m_chunks.end() || it->second.state == ChunkState::Generating)
+        return;
+    Entry& e = it->second;
+
+    const Chunk* neighbors[6] = {
+        voxelsAt({pos.x + 1, pos.y, pos.z}), voxelsAt({pos.x - 1, pos.y, pos.z}),
+        voxelsAt({pos.x, pos.y + 1, pos.z}), voxelsAt({pos.x, pos.y - 1, pos.z}),
+        voxelsAt({pos.x, pos.y, pos.z + 1}), voxelsAt({pos.x, pos.y, pos.z - 1}),
+    };
+    const GreedyStats stats = m_mesher.mesh(*e.voxels, neighbors, m_quadScratch);
+    e.connectivity = computeConnectivity(*e.voxels);
+
+    if (e.range.count != 0) {
+        renderer.free(e.range);
+        e.range = {};
+    }
+    e.quads = stats.quads;
+    if (stats.quads > 0) {
+        e.range = renderer.alloc(m_quadScratch);
+        if (e.range.count == 0) {
+            rebuildArena(renderer);
+            e.range = renderer.alloc(m_quadScratch);
+        }
+        e.quadsCpu.assign(m_quadScratch.begin(), m_quadScratch.end());
+    } else {
+        e.quadsCpu.clear();
+    }
+    e.state = ChunkState::Meshed; // a stale worker result for this chunk now gets dropped
+    m_dirty = true;
+    m_visDirty = true;
+}
+
+bool ChunkManager::setBlock(Renderer& renderer, LightEngine& light, const glm::ivec3& wp,
+                            BlockId id) {
+    if (wp.y < 0 || wp.y >= kWorldHeight)
+        return false;
+    const ChunkPos pos{wp.x >> 5, wp.y >> 5, wp.z >> 5};
+    const auto it = m_chunks.find(pos);
+    if (it == m_chunks.end() || it->second.state == ChunkState::Generating)
+        return false;
+    Chunk* c = it->second.voxels;
+    const int lx = wp.x & 31;
+    const int ly = wp.y & 31;
+    const int lz = wp.z & 31;
+    const BlockId old = c->get(lx, ly, lz);
+    if (old == id)
+        return false;
+
+    // palette writes are not safe under a concurrent worker read; in-flight mesh jobs
+    // finish in well under a millisecond, so a bounded spin here beats copy-on-write
+    while (c->hasJobRefs()) {
+    }
+    c->set(lx, ly, lz, id);
+
+    light.onBlockChanged(wp, old, id);
+    while (!light.idle())
+        light.process(4.0); // a single edit's BFS is bounded; settle it now
+
+    // remesh this chunk, any border-adjacent neighbor, and whatever light touched
+    m_remeshScratch.clear();
+    const auto want = [&](ChunkPos p) {
+        for (const ChunkPos& q : m_remeshScratch)
+            if (q == p)
+                return;
+        m_remeshScratch.push_back(p);
+    };
+    want(pos);
+    if (lx == 0) want({pos.x - 1, pos.y, pos.z});
+    if (lx == 31) want({pos.x + 1, pos.y, pos.z});
+    if (ly == 0) want({pos.x, pos.y - 1, pos.z});
+    if (ly == 31) want({pos.x, pos.y + 1, pos.z});
+    if (lz == 0) want({pos.x, pos.y, pos.z - 1});
+    if (lz == 31) want({pos.x, pos.y, pos.z + 1});
+    for (const ChunkPos p : light.touched())
+        want(p);
+    light.touched().clear();
+    for (const ChunkPos p : m_remeshScratch)
+        remeshNow(renderer, p);
+    return true;
 }
 
 ChunkManager::Stats ChunkManager::stats() const {

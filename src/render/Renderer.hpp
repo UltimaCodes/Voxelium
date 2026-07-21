@@ -65,7 +65,7 @@ public:
 private:
     void recycle(Range range);
 
-    static constexpr std::uint32_t kArenaQuads = 4u << 20; // 4M quads = 32 MB
+    static constexpr std::uint32_t kArenaQuads = 8u << 20; // 8M quads = 64 MB
     static constexpr std::uint32_t kMaxChunks = 8192;
     static constexpr int kFrameRing = 3;
 

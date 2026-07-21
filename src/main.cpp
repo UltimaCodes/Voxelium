@@ -16,6 +16,8 @@
 #include "ui/DebugHud.hpp"
 #include "world/Chunk.hpp"
 #include "world/ChunkManager.hpp"
+#include "world/Player.hpp"
+#include "world/Raycast.hpp"
 
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
@@ -119,9 +121,10 @@ int runSmokeTest(vx::Renderer& renderer, vx::ChunkManager& world, vx::JobSystem&
     // lighting checks against the enclosed glow room in the terrain (see TestTerrain)
     {
         const int skyInRoom = light.lightAt({16, 48, 16}) >> 4;
-        const int glowAbove = light.lightAt({16, 46, 16}) & 15;   // 1 above the glow block
-        const int glowEdge = light.lightAt({16, 48, 19}) & 15;    // a few steps away
-        const int skySurface = light.lightAt({16, 100, 16}) >> 4; // open air above terrain
+        const int glowAbove = light.lightAt({16, 46, 16}) & 15; // 1 above the glow block
+        const int glowEdge = light.lightAt({16, 48, 19}) & 15;  // a few steps away
+        const int surf = world.generator().surfaceHeight(16, 16);
+        const int skySurface = light.lightAt({16, surf + 5, 16}) >> 4; // open air
         bool ok = skyInRoom == 0 && glowAbove == 13 && glowEdge > 0 && glowEdge < 13 &&
                   skySurface == 15;
         VX_INFO("light: room sky %d (want 0), above-glow %d (want 13), edge %d, surface sky "
@@ -285,6 +288,32 @@ int runSmokeTest(vx::Renderer& renderer, vx::ChunkManager& world, vx::JobSystem&
     VX_INFO("smoke: buried in stone — %d chunks drawn with cave culling, %d without",
             buriedOn, buriedOff);
 
+    // physics: drop a player from the sky onto the surface, fixed deterministic ticks
+    {
+        vx::Player testPlayer;
+        testPlayer.position = {16.0, 120.0, 16.0};
+        for (int i = 0; i < 900; ++i)
+            testPlayer.step(world, {});
+        const int surf = world.generator().surfaceHeight(16, 16);
+        const bool ok = testPlayer.onGround &&
+                        std::abs(testPlayer.position.y - double(surf + 1)) < 0.01;
+        VX_INFO("physics: landed at y=%.4f, surface %d -> %s", testPlayer.position.y, surf,
+                ok ? "PASS" : "FAIL");
+        if (!ok)
+            return 1;
+
+        // edits: place + break, synchronous remesh path
+        const glm::ivec3 ep{18, surf + 3, 18};
+        world.setBlock(renderer, light, ep, vx::blocks::Stone);
+        const bool placed = world.blockAtWorld(ep) == vx::blocks::Stone;
+        world.setBlock(renderer, light, ep, vx::blocks::Air);
+        const bool broken = world.blockAtWorld(ep) == vx::blocks::Air;
+        VX_INFO("edits: place %s, break %s", placed ? "PASS" : "FAIL",
+                broken ? "PASS" : "FAIL");
+        if (!placed || !broken)
+            return 1;
+    }
+
     // screenshot from inside the glow room: block light gradient, zero sky
     camera.position = {16.5, 48.0, 16.5};
     camera.yawDeg = 40.0f;
@@ -372,7 +401,7 @@ int main(int argc, char** argv) {
     VX_INFO("job system: %d workers", jobs->workerCount());
 
     vx::FlyCamera camera;
-    camera.position = {16.0, 104.0, 16.0};
+    camera.position = {16.0, 110.0, 16.0};
     camera.yawDeg = -35.0f;
     camera.pitchDeg = -25.0f;
 
@@ -393,11 +422,18 @@ int main(int argc, char** argv) {
     gpuTimer.init();
 
     std::vector<vx::ChunkDrawInfo> drawInfo;
+    vx::Player player;
     double prevTime = glfwGetTime();
+    double physAccum = 0.0;
     bool f3Held = false;
+    bool f5Held = false;
+    bool lmbHeld = false;
+    bool mmbHeld = false;
+    bool walkMode = false;
     bool vsync = false;
     bool caveCull = true;
     bool loadLogged = false;
+    vx::BlockId placeBlock = vx::blocks::Stone;
     std::uint64_t allocsPrevFrame = vx::heapAllocCount();
 
     while (!window->shouldClose()) {
@@ -410,6 +446,19 @@ int main(int argc, char** argv) {
         if (f3 && !f3Held)
             hud.toggle();
         f3Held = f3;
+        const bool f5 = window->keyDown(GLFW_KEY_F5);
+        if (f5 && !f5Held) {
+            walkMode = !walkMode;
+            if (walkMode) {
+                player.position = camera.position - glm::dvec3(0.0, vx::Player::kEyeHeight, 0.0);
+                player.velocity = {0.0, 0.0, 0.0};
+                physAccum = 0.0;
+            }
+        }
+        f5Held = f5;
+        if (window->keyDown(GLFW_KEY_1)) placeBlock = vx::blocks::Stone;
+        if (window->keyDown(GLFW_KEY_2)) placeBlock = vx::blocks::Dirt;
+        if (window->keyDown(GLFW_KEY_3)) placeBlock = vx::blocks::Glow;
 
         const double now = glfwGetTime();
         const float frameMs = float((now - prevTime) * 1000.0);
@@ -418,7 +467,46 @@ int main(int argc, char** argv) {
 
         renderer.beginFrame();
         hud.beginFrame();
-        camera.update(*window, dt, hud.wantsMouse(), hud.wantsKeyboard());
+        if (walkMode) {
+            camera.lookOnly(*window);
+            // fixed timestep: framerate never changes physics, per the house rule
+            physAccum += double(dt);
+            while (physAccum >= vx::Player::kTickDt) {
+                vx::PlayerInput in;
+                in.yawDeg = camera.yawDeg;
+                if (window->keyDown(GLFW_KEY_W)) in.forward += 1.0f;
+                if (window->keyDown(GLFW_KEY_S)) in.forward -= 1.0f;
+                if (window->keyDown(GLFW_KEY_D)) in.strafe += 1.0f;
+                if (window->keyDown(GLFW_KEY_A)) in.strafe -= 1.0f;
+                in.jump = window->keyDown(GLFW_KEY_SPACE);
+                player.step(*world, in);
+                physAccum -= vx::Player::kTickDt;
+            }
+            camera.position = player.eye();
+        } else {
+            camera.update(*window, dt, hud.wantsMouse(), hud.wantsKeyboard());
+        }
+
+        // block edits: LMB breaks, MMB places, aim is the camera ray. only while the
+        // cursor is captured so UI clicks never punch holes in the world
+        if (camera.flying()) {
+            const bool lmb = window->mouseDown(GLFW_MOUSE_BUTTON_LEFT);
+            const bool mmb = window->mouseDown(GLFW_MOUSE_BUTTON_MIDDLE);
+            if ((lmb && !lmbHeld) || (mmb && !mmbHeld)) {
+                const auto hit = vx::raycastVoxels(
+                    camera.position, camera.forward(), 6.0, [&](const glm::ivec3& p) {
+                        return vx::blocks::opaque(world->blockAtWorld(p));
+                    });
+                if (hit.hit) {
+                    if (lmb && !lmbHeld)
+                        world->setBlock(renderer, *light, hit.voxel, vx::blocks::Air);
+                    else
+                        world->setBlock(renderer, *light, hit.voxel + hit.normal, placeBlock);
+                }
+            }
+            lmbHeld = lmb;
+            mmbHeld = mmb;
+        }
 
         world->update(*jobs, renderer, *light, camera.position);
         if (world->consumeDirty()) {
@@ -464,6 +552,8 @@ int main(int argc, char** argv) {
             .arenaUsedQuads = as.usedQuads,
             .arenaCapQuads = as.capacityQuads,
             .arenaFreeBlocks = as.freeBlocks,
+            .walkMode = walkMode,
+            .placeBlock = int(placeBlock),
         };
         allocsPrevFrame = allocsNow;
         const bool vsyncBefore = vsync;

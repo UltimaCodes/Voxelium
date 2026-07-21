@@ -60,6 +60,24 @@ void FlyCamera::update(Window& window, float dt, bool uiWantsMouse, bool uiWants
         position += glm::dvec3(glm::normalize(move) * speed * dt);
 }
 
+void FlyCamera::lookOnly(Window& window) {
+    (void)window.consumeScrollY(); // don't let it pile up for fly mode
+    if (!m_flying) {
+        m_flying = true;
+        window.setCursorCaptured(true);
+        window.cursorPos(m_lastX, m_lastY);
+        return;
+    }
+    double x = 0.0;
+    double y = 0.0;
+    window.cursorPos(x, y);
+    yawDeg += float(x - m_lastX) * sensitivity;
+    pitchDeg -= float(y - m_lastY) * sensitivity;
+    pitchDeg = std::clamp(pitchDeg, -89.0f, 89.0f);
+    m_lastX = x;
+    m_lastY = y;
+}
+
 glm::vec3 FlyCamera::forward() const {
     const float yaw = glm::radians(yawDeg);
     const float pitch = glm::radians(pitchDeg);

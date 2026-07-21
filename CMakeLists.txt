@@ -18,7 +18,7 @@ add_executable(voxelium
     src/core/Paths.cpp
     src/gfx/GlDebug.cpp
     src/gfx/GpuTimer.cpp
-    src/gen/TestTerrain.cpp
+    src/gen/TerrainGenerator.cpp
     src/gfx/Shader.cpp
     src/jobs/JobSystem.cpp
     src/light/LightEngine.cpp
@@ -31,10 +31,11 @@ add_executable(voxelium
     src/ui/DebugHud.cpp
     src/world/Chunk.cpp
     src/world/ChunkManager.cpp
+    src/world/Player.cpp
 )
 
 target_include_directories(voxelium PRIVATE src)
-target_link_libraries(voxelium PRIVATE glad glfw glm::glm imgui unordered_dense::unordered_dense)
+target_link_libraries(voxelium PRIVATE glad glfw glm::glm imgui unordered_dense::unordered_dense FastNoise)
 
 # GLFW must not drag in the system GL headers; glad owns all GL declarations.
 # GLM depth range 0..1 to match glClipControl(GL_ZERO_TO_ONE) — we run reversed-Z.

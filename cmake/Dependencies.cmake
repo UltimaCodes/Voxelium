@@ -35,6 +35,17 @@ FetchContent_Declare(imgui
     SYSTEM
 )
 
+# --- FastNoise2 1.1.1 (M10: SIMD terrain noise) ---------------------------------------
+set(FASTNOISE2_NOISETOOL OFF CACHE BOOL "" FORCE)
+set(FASTNOISE2_TESTS     OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(fastnoise2
+    GIT_REPOSITORY https://github.com/Auburn/FastNoise2.git
+    GIT_TAG        v1.1.1
+    GIT_SHALLOW    ON
+    SYSTEM
+)
+
 # --- ankerl::unordered_dense 4.8.1 (M5: world chunk map) ------------------------------
 FetchContent_Declare(unordered_dense
     GIT_REPOSITORY https://github.com/martinus/unordered_dense.git
@@ -43,7 +54,7 @@ FetchContent_Declare(unordered_dense
     SYSTEM
 )
 
-FetchContent_MakeAvailable(glfw glm imgui unordered_dense)
+FetchContent_MakeAvailable(glfw glm imgui unordered_dense fastnoise2)
 
 # imgui ships no CMakeLists — build the core + the two backends we use as a static lib.
 add_library(imgui STATIC

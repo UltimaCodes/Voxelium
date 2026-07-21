@@ -22,6 +22,10 @@ public:
 
     void update(Window& window, float dt, bool uiWantsMouse, bool uiWantsKeyboard);
 
+    // Walk mode: cursor always captured, mouse look only — position comes from the
+    // player. Reuses the capture state so mode switches hand off cleanly.
+    void lookOnly(Window& window);
+
     bool flying() const { return m_flying; }
     glm::vec3 forward() const;
     glm::mat4 viewAtOrigin() const; // camera-relative rendering: translation lives elsewhere

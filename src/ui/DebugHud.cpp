@@ -97,6 +97,11 @@ void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera, bool& v
                 double(camera.position.x), double(camera.position.y), double(camera.position.z),
                 double(camera.yawDeg), double(camera.pitchDeg), double(camera.baseSpeed),
                 camera.flying() ? "  [flying]" : "");
+    static const char* kBlockNames[] = {"air", "stone", "dirt", "grass", "glow"};
+    ImGui::Text("%s | place: %s (keys 1-3) | LMB break, MMB place | F5 mode",
+                stats.walkMode ? "walk" : "fly",
+                kBlockNames[stats.placeBlock >= 0 && stats.placeBlock <= 4 ? stats.placeBlock
+                                                                           : 0]);
     ImGui::TextDisabled("hold RMB: fly | wasd + space/ctrl | shift fast | scroll speed");
 
     ImGui::Separator();
