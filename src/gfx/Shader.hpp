@@ -12,4 +12,6 @@ namespace vx {
 unsigned int loadProgram(const std::filesystem::path& vertPath,
                          const std::filesystem::path& fragPath);
 
+unsigned int loadComputeProgram(const std::filesystem::path& compPath);
+
 } // namespace vx

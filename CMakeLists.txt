@@ -25,6 +25,7 @@ add_executable(voxelium
     src/mesh/NaiveMesher.cpp
     src/platform/Window.cpp
     src/render/Camera.cpp
+    src/render/Renderer.cpp
     src/ui/DebugHud.cpp
     src/world/Chunk.cpp
     src/world/ChunkManager.cpp

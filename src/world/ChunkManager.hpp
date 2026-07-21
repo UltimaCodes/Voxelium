@@ -2,6 +2,7 @@
 
 #include "core/Pool.hpp"
 #include "mesh/GreedyMesher.hpp"
+#include "render/Renderer.hpp"
 #include "world/Chunk.hpp"
 #include "world/ChunkPos.hpp"
 
@@ -33,18 +34,12 @@ enum class ChunkState : std::uint8_t {
 };
 
 // Owns the loaded world. Generation and meshing run on JobSystem workers; the main
-// thread schedules jobs, drains results, and does the only GL work (uploads) under a
-// per-frame time budget so a streaming burst never stalls a frame.
+// thread schedules jobs, drains results, and does the only GL work (arena uploads)
+// under a per-frame time budget so a streaming burst never stalls a frame. Quads live
+// in the Renderer's arena; a CPU copy stays here so the arena can be rebuilt after a
+// hard reset without remeshing.
 class ChunkManager {
 public:
-    ~ChunkManager();
-
-    struct DrawItem {
-        glm::vec3 offset; // chunk origin relative to the camera
-        unsigned int ssbo;
-        int quads;
-    };
-
     struct Stats {
         int loaded = 0;
         int meshed = 0;
@@ -60,9 +55,15 @@ public:
         double uploadMsLast = 0.0;
     };
 
-    void update(JobSystem& jobs, const glm::dvec3& cameraPos);
-    void collectVisible(const Frustum& frustum, const glm::dvec3& cameraPos,
-                        std::vector<DrawItem>& out) const;
+    void update(JobSystem& jobs, Renderer& renderer, const glm::dvec3& cameraPos);
+
+    // For the cull compute pass; call when consumeDirty() says the chunk set changed.
+    void collectDrawInfo(std::vector<ChunkDrawInfo>& out) const;
+    bool consumeDirty() {
+        const bool was = m_dirty;
+        m_dirty = false;
+        return was;
+    }
 
     bool busy() const {
         return !m_genQueue.empty() || m_jobsInFlight > 0 || !m_uploads.empty() ||
@@ -76,9 +77,10 @@ public:
 private:
     struct Entry {
         Chunk* voxels = nullptr;
-        unsigned int ssbo = 0;
+        Renderer::Range range; // quads in the arena
         int quads = 0;
         ChunkState state = ChunkState::Generating;
+        std::vector<std::uint64_t> quadsCpu; // kept for arena rebuilds
     };
 
     struct MeshResult {
@@ -88,7 +90,8 @@ private:
     };
 
     void rescan(ChunkPos center);
-    void processEvictions();
+    void processEvictions(Renderer& renderer);
+    void rebuildArena(Renderer& renderer);
     const Chunk* voxelsAt(ChunkPos pos) const;
 
     static constexpr double kUploadBudgetMs = 2.0;
@@ -111,6 +114,7 @@ private:
 
     ChunkPos m_center{INT32_MIN, 0, INT32_MIN};
     int m_lastRadius = -1;
+    bool m_dirty = false;
     int m_jobsInFlight = 0; // main-thread view: submit increments, result-drain decrements
     int m_pendingMesh = 0;
     double m_uploadMsLast = 0.0;

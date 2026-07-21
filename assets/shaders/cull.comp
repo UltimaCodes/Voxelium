@@ -1,0 +1,51 @@
+#version 460 core
+
+// GPU-driven culling: one invocation per loaded chunk. Frustum-tests the chunk AABB
+// and, if visible, appends a draw command + its camera-relative offset. The vertex
+// shader then indexes offsets by gl_DrawID. Chunk positions are stored in chunk units
+// as ints so the camera-relative math stays exact at any distance from the origin.
+
+layout(local_size_x = 64) in;
+
+struct ChunkMeta {
+    ivec4 posFirst; // xyz = chunk pos in chunk units, w = first quad in the arena
+    uvec4 countPad; // x = quad count
+};
+
+struct DrawCmd {
+    uint count;
+    uint instanceCount;
+    uint first;
+    uint baseInstance;
+};
+
+layout(std430, binding = 0) readonly buffer Meta { ChunkMeta meta[]; };
+layout(std430, binding = 1) writeonly buffer Cmds { DrawCmd cmds[]; };
+layout(std430, binding = 2) buffer DrawCount { uint drawCount; };
+layout(std430, binding = 3) writeonly buffer Offsets { vec4 offsets[]; };
+
+layout(location = 0) uniform vec4 uPlanes[5]; // no far plane with infinite reversed-z
+layout(location = 5) uniform ivec3 uCameraChunk;
+layout(location = 6) uniform vec3 uCameraFrac;
+layout(location = 7) uniform uint uChunkCount;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uChunkCount)
+        return;
+
+    ChunkMeta m = meta[i];
+    vec3 offset = vec3((m.posFirst.xyz - uCameraChunk) * 32) - uCameraFrac;
+    vec3 center = offset + 16.0;
+    for (int p = 0; p < 5; ++p) {
+        vec3 n = uPlanes[p].xyz;
+        if (dot(n, center) + uPlanes[p].w + dot(abs(n), vec3(16.0)) < 0.0)
+            return; // box entirely behind this plane
+    }
+
+    uint slot = atomicAdd(drawCount, 1u);
+    // gl_VertexID starts at `first` for each MDI sub-draw, so first = quad*6 makes the
+    // vertex shader's gl_VertexID/6 index the global arena directly
+    cmds[slot] = DrawCmd(m.countPad.x * 6u, 1u, uint(m.posFirst.w) * 6u, 0u);
+    offsets[slot] = vec4(offset, 0.0);
+}

@@ -11,6 +11,7 @@
 #include "platform/Window.hpp"
 #include "render/Camera.hpp"
 #include "render/Frustum.hpp"
+#include "render/Renderer.hpp"
 #include "ui/DebugHud.hpp"
 #include "world/Chunk.hpp"
 #include "world/ChunkManager.hpp"
@@ -18,7 +19,6 @@
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
-#include <glm/gtc/type_ptr.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -46,7 +46,7 @@ double benchBestMs(int runs, F&& fn) {
 }
 
 // Runs at every startup: naive vs greedy on the fixed test chunk. Merged quad area per
-// direction must equal the naive face count exactly — this catches mesher AND palette
+// direction must equal the naive face count exactly — catches mesher AND palette
 // storage regressions in one go, since both meshers read through Chunk::get().
 bool runMesherOracle() {
     auto chunk = std::make_unique<vx::Chunk>();
@@ -83,26 +83,36 @@ void beginFrameGl(int fbWidth, int fbHeight) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 
-void drawWorld(GLuint program, GLuint vao, const glm::mat4& viewProj,
-               const std::vector<vx::ChunkManager::DrawItem>& items) {
-    glUseProgram(program);
-    glProgramUniformMatrix4fv(program, 0, 1, GL_FALSE, glm::value_ptr(viewProj));
-    glBindVertexArray(vao); // one shared empty VAO; per-chunk state is just the SSBO
-    for (const auto& item : items) {
-        glProgramUniform3fv(program, 4, 1, &item.offset.x);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, item.ssbo);
-        glDrawArrays(GL_TRIANGLES, 0, item.quads * 6);
-    }
+struct CameraFrame {
+    glm::mat4 viewProj;
+    vx::Frustum frustum;
+    glm::ivec3 cameraChunk;
+    glm::vec3 cameraFrac;
+};
+
+CameraFrame buildCameraFrame(const vx::FlyCamera& camera, int fbWidth, int fbHeight) {
+    CameraFrame f;
+    f.viewProj = camera.projReversedZ(float(fbWidth) / float(fbHeight)) * camera.viewAtOrigin();
+    f.frustum = vx::Frustum::fromViewProj(f.viewProj);
+    f.cameraChunk = glm::ivec3(glm::floor(camera.position / double(vx::kChunkSize)));
+    f.cameraFrac = glm::vec3(camera.position - glm::dvec3(f.cameraChunk) * double(vx::kChunkSize));
+    return f;
 }
 
-// Renders the streamed-in world offscreen after draining the load queues, verifies
-// pixels were produced, writes a BMP. Same rationale as before: an FBO always owns its
-// pixels, a hidden window's backbuffer doesn't.
-int runSmokeTest(GLuint program, GLuint vao, vx::ChunkManager& world, vx::JobSystem& jobs,
+// Renders the streamed world offscreen after draining the load queues, verifies pixels
+// were produced, checks the GPU cull count, writes a BMP.
+int runSmokeTest(vx::Renderer& renderer, vx::ChunkManager& world, vx::JobSystem& jobs,
                  vx::FlyCamera& camera, vx::DebugHud& hud, vx::Window& window,
                  const std::filesystem::path& outPath) {
-    for (int i = 0; i < 20000 && (world.busy() || i == 0); ++i)
-        world.update(jobs, camera.position);
+    const auto drain = [&] {
+        for (int i = 0; i < 20000 && (world.busy() || i == 0); ++i) {
+            renderer.beginFrame();
+            world.update(jobs, renderer, camera.position);
+            renderer.endFrame();
+        }
+    };
+
+    drain();
     world.logSummary();
 
     // hitch check: teleport 16 chunks east and re-stream the world, recording the worst
@@ -111,19 +121,21 @@ int runSmokeTest(GLuint program, GLuint vao, vx::ChunkManager& world, vx::JobSys
     double worstMs = 0.0;
     int frames = 0;
     for (; frames < 20000; ++frames) {
+        renderer.beginFrame();
         const auto t0 = std::chrono::steady_clock::now();
-        world.update(jobs, camera.position);
+        world.update(jobs, renderer, camera.position);
         worstMs = std::max(
-            worstMs, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
-                         .count());
+            worstMs,
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+                .count());
+        renderer.endFrame();
         if (frames > 0 && !world.busy())
             break;
     }
     VX_INFO("stress: re-streamed after teleport in %d updates, worst main-thread cost %.2f ms",
             frames, worstMs);
     camera.position.x -= 512.0;
-    for (int i = 0; i < 20000 && (world.busy() || i == 0); ++i)
-        world.update(jobs, camera.position);
+    drain();
 
     int w = 0;
     int h = 0;
@@ -145,38 +157,46 @@ int runSmokeTest(GLuint program, GLuint vao, vx::ChunkManager& world, vx::JobSys
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    const glm::mat4 vp = camera.projReversedZ(float(w) / float(h)) * camera.viewAtOrigin();
-    const vx::Frustum frustum = vx::Frustum::fromViewProj(vp);
-    std::vector<vx::ChunkManager::DrawItem> items;
-    world.collectVisible(frustum, camera.position, items);
 
-    int quadsDrawn = 0;
-    for (const auto& item : items)
-        quadsDrawn += item.quads;
-    VX_INFO("smoke: %d chunks in frustum, %d quads drawn", int(items.size()), quadsDrawn);
+    std::vector<vx::ChunkDrawInfo> drawInfo;
+    world.collectDrawInfo(drawInfo);
+    renderer.updateChunkMeta(drawInfo);
+    const CameraFrame cam = buildCameraFrame(camera, w, h);
 
+    const vx::ChunkManager::Stats ws = world.stats();
+    const vx::Renderer::ArenaStats as = renderer.arenaStats();
     bool vsyncDummy = false;
     int radiusDummy = world.radius;
-    const vx::ChunkManager::Stats ws = world.stats();
     for (int i = 0; i < 5; ++i) {
         window.pollEvents();
+        renderer.beginFrame();
         hud.beginFrame();
         beginFrameGl(w, h);
-        drawWorld(program, vao, vp, items);
+        renderer.drawWorld(cam.viewProj, cam.frustum, cam.cameraChunk, cam.cameraFrac);
         const vx::FrameStats stats{.frameMs = 1.0f,
                                    .gpuMs = 0.5f,
                                    .heapAllocs = 0,
-                                   .drawCalls = int(items.size()),
-                                   .quads = quadsDrawn,
-                                   .triangles = quadsDrawn * 2,
+                                   .drawCalls = 1,
+                                   .quads = int(ws.totalQuads),
+                                   .triangles = int(ws.totalQuads) * 2,
                                    .chunksLoaded = ws.loaded,
                                    .chunksMeshed = ws.meshed,
                                    .genQueue = ws.genQueue,
+                                   .jobsInFlight = ws.jobsInFlight,
+                                   .uploadsPending = ws.pendingUploads,
+                                   .uploadMs = float(ws.uploadMsLast),
                                    .voxelBytes = ws.voxelBytes,
-                                   .quadBytes = ws.quadBytes};
+                                   .quadBytes = ws.quadBytes,
+                                   .gpuChunksDrawn = renderer.gpuVisibleChunks(),
+                                   .arenaUsedQuads = as.usedQuads,
+                                   .arenaCapQuads = as.capacityQuads,
+                                   .arenaFreeBlocks = as.freeBlocks};
         hud.buildUi(stats, camera, vsyncDummy, radiusDummy);
         hud.render();
+        renderer.endFrame();
     }
+    VX_INFO("smoke: gpu culled %d of %d chunks (1 draw call)", renderer.debugReadDrawCount(),
+            int(drawInfo.size()));
 
     std::vector<std::uint8_t> pixels(std::size_t(w) * std::size_t(h) * 3u);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
@@ -256,16 +276,18 @@ int main(int argc, char** argv) {
         VX_ERROR("could not locate assets/ directory");
         return 1;
     }
-    const GLuint program =
+    const GLuint drawProgram =
         vx::loadProgram(assets / "shaders/chunk.vert", assets / "shaders/chunk.frag");
-    if (!program)
+    const GLuint cullProgram = vx::loadComputeProgram(assets / "shaders/cull.comp");
+    if (!drawProgram || !cullProgram)
         return 1;
 
     if (!runMesherOracle())
         return 1;
 
-    GLuint worldVao = 0;
-    glCreateVertexArrays(1, &worldVao);
+    vx::Renderer renderer;
+    if (!renderer.init(drawProgram, cullProgram))
+        return 1;
 
     // declaration order matters: jobs is destroyed first, joining all workers, so no
     // job can touch world's chunks or queues during teardown
@@ -285,15 +307,16 @@ int main(int argc, char** argv) {
 
     if (smoke) {
         const int rc =
-            runSmokeTest(program, worldVao, *world, *jobs, camera, hud, *window, smokeOut);
+            runSmokeTest(renderer, *world, *jobs, camera, hud, *window, smokeOut);
         hud.shutdown();
+        renderer.shutdown();
         return rc;
     }
 
     vx::GpuTimer gpuTimer;
     gpuTimer.init();
 
-    std::vector<vx::ChunkManager::DrawItem> drawItems;
+    std::vector<vx::ChunkDrawInfo> drawInfo;
     double prevTime = glfwGetTime();
     bool f3Held = false;
     bool vsync = false;
@@ -316,10 +339,15 @@ int main(int argc, char** argv) {
         const float dt = std::min(float(now - prevTime), 0.1f);
         prevTime = now;
 
+        renderer.beginFrame();
         hud.beginFrame();
         camera.update(*window, dt, hud.wantsMouse(), hud.wantsKeyboard());
 
-        world->update(*jobs, camera.position);
+        world->update(*jobs, renderer, camera.position);
+        if (world->consumeDirty()) {
+            world->collectDrawInfo(drawInfo);
+            renderer.updateChunkMeta(drawInfo);
+        }
         if (!loadLogged && !world->busy()) {
             world->logSummary();
             loadLogged = true;
@@ -329,26 +357,22 @@ int main(int argc, char** argv) {
         int fbH = 0;
         window->framebufferSize(fbW, fbH);
         gpuTimer.begin();
-        int quadsDrawn = 0;
         if (fbW > 0 && fbH > 0) {
-            const glm::mat4 vp =
-                camera.projReversedZ(float(fbW) / float(fbH)) * camera.viewAtOrigin();
-            world->collectVisible(vx::Frustum::fromViewProj(vp), camera.position, drawItems);
-            for (const auto& item : drawItems)
-                quadsDrawn += item.quads;
+            const CameraFrame cam = buildCameraFrame(camera, fbW, fbH);
             beginFrameGl(fbW, fbH);
-            drawWorld(program, worldVao, vp, drawItems);
+            renderer.drawWorld(cam.viewProj, cam.frustum, cam.cameraChunk, cam.cameraFrac);
         }
 
         const vx::ChunkManager::Stats ws = world->stats();
+        const vx::Renderer::ArenaStats as = renderer.arenaStats();
         const std::uint64_t allocsNow = vx::heapAllocCount();
         const vx::FrameStats stats{
             .frameMs = frameMs,
             .gpuMs = gpuTimer.milliseconds(),
             .heapAllocs = allocsNow - allocsPrevFrame,
-            .drawCalls = int(drawItems.size()),
-            .quads = quadsDrawn,
-            .triangles = quadsDrawn * 2,
+            .drawCalls = 1,
+            .quads = int(ws.totalQuads),
+            .triangles = int(ws.totalQuads) * 2,
             .chunksLoaded = ws.loaded,
             .chunksMeshed = ws.meshed,
             .genQueue = ws.genQueue,
@@ -357,6 +381,10 @@ int main(int argc, char** argv) {
             .uploadMs = float(ws.uploadMsLast),
             .voxelBytes = ws.voxelBytes,
             .quadBytes = ws.quadBytes,
+            .gpuChunksDrawn = renderer.gpuVisibleChunks(),
+            .arenaUsedQuads = as.usedQuads,
+            .arenaCapQuads = as.capacityQuads,
+            .arenaFreeBlocks = as.freeBlocks,
         };
         allocsPrevFrame = allocsNow;
         const bool vsyncBefore = vsync;
@@ -365,11 +393,13 @@ int main(int argc, char** argv) {
             window->setVsync(vsync);
         hud.render();
         gpuTimer.end();
+        renderer.endFrame();
 
         window->swapBuffers();
     }
 
     VX_INFO("window closed, shutting down");
     hud.shutdown();
+    renderer.shutdown();
     return 0;
 }

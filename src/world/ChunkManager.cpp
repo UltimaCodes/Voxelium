@@ -3,9 +3,6 @@
 #include "core/Log.hpp"
 #include "gen/TestTerrain.hpp"
 #include "jobs/JobSystem.hpp"
-#include "render/Frustum.hpp"
-
-#include <glad/gl.h>
 
 #include <algorithm>
 #include <array>
@@ -35,17 +32,6 @@ std::int64_t horizontalDist2(ChunkPos p, ChunkPos center) {
 
 } // namespace
 
-ChunkManager::~ChunkManager() {
-    // JobSystem is destroyed before the manager (declaration order in main), so no
-    // worker can be touching chunks by the time this runs.
-    for (const auto& item : m_chunks) {
-        if (item.second.ssbo != 0) {
-            const GLuint ssbo = item.second.ssbo;
-            glDeleteBuffers(1, &ssbo);
-        }
-    }
-}
-
 const Chunk* ChunkManager::voxelsAt(ChunkPos pos) const {
     const auto it = m_chunks.find(pos);
     return it != m_chunks.end() ? it->second.voxels : nullptr;
@@ -74,7 +60,7 @@ void ChunkManager::rescan(ChunkPos center) {
     });
 }
 
-void ChunkManager::processEvictions() {
+void ChunkManager::processEvictions(Renderer& renderer) {
     for (std::size_t i = 0; i < m_evictList.size();) {
         const auto it = m_chunks.find(m_evictList[i]);
         if (it == m_chunks.end()) {
@@ -89,9 +75,9 @@ void ChunkManager::processEvictions() {
             ++i; // a worker still holds it — retry next frame
             continue;
         }
-        if (e.ssbo != 0) {
-            const GLuint ssbo = e.ssbo;
-            glDeleteBuffers(1, &ssbo);
+        if (e.range.count != 0) {
+            renderer.free(e.range);
+            m_dirty = true;
         }
         m_pool.release(e.voxels);
         m_chunks.erase(it);
@@ -100,7 +86,20 @@ void ChunkManager::processEvictions() {
     }
 }
 
-void ChunkManager::update(JobSystem& jobs, const glm::dvec3& cameraPos) {
+void ChunkManager::rebuildArena(Renderer& renderer) {
+    renderer.hardReset();
+    for (auto& item : m_chunks) {
+        Entry& e = item.second;
+        if (e.state != ChunkState::Meshed || e.quadsCpu.empty())
+            continue;
+        e.range = renderer.alloc(e.quadsCpu);
+        if (e.range.count == 0)
+            VX_ERROR("arena rebuild: chunk still does not fit — arena too small");
+    }
+    m_dirty = true;
+}
+
+void ChunkManager::update(JobSystem& jobs, Renderer& renderer, const glm::dvec3& cameraPos) {
     const ChunkPos center{int(std::floor(cameraPos.x / kChunkSize)), 0,
                           int(std::floor(cameraPos.z / kChunkSize))};
     if (center != m_center || radius != m_lastRadius) {
@@ -109,7 +108,7 @@ void ChunkManager::update(JobSystem& jobs, const glm::dvec3& cameraPos) {
         rescan(center);
     }
 
-    processEvictions();
+    processEvictions(renderer);
 
     // drain finished generations (cheap: a state flip per chunk)
     {
@@ -135,7 +134,9 @@ void ChunkManager::update(JobSystem& jobs, const glm::dvec3& cameraPos) {
             continue;
         Chunk* voxels = m_pool.acquire();
         voxels->retainJob();
-        m_chunks.try_emplace(pos, Entry{voxels, 0, 0, ChunkState::Generating});
+        Entry entry; // state defaults to Generating
+        entry.voxels = voxels;
+        m_chunks.try_emplace(pos, std::move(entry));
         ++m_jobsInFlight;
         jobs.submit([this, voxels, pos] {
             const auto t0 = Clock::now();
@@ -233,13 +234,15 @@ void ChunkManager::update(JobSystem& jobs, const glm::dvec3& cameraPos) {
             Entry& e = it->second;
             e.quads = int(r.quads.size());
             if (!r.quads.empty()) {
-                GLuint ssbo = 0;
-                glCreateBuffers(1, &ssbo);
-                glNamedBufferStorage(ssbo, GLsizeiptr(r.quads.size() * sizeof(std::uint64_t)),
-                                     r.quads.data(), 0);
-                e.ssbo = ssbo;
+                e.range = renderer.alloc(r.quads);
+                if (e.range.count == 0) { // arena full — defrag and retry once
+                    rebuildArena(renderer);
+                    e.range = renderer.alloc(r.quads);
+                }
+                e.quadsCpu = std::move(r.quads);
             }
             e.state = ChunkState::Meshed;
+            m_dirty = true;
         }
         --m_jobsInFlight;
         ++uploaded;
@@ -248,21 +251,14 @@ void ChunkManager::update(JobSystem& jobs, const glm::dvec3& cameraPos) {
     m_uploadMsLast = msSince(uploadStart);
 }
 
-void ChunkManager::collectVisible(const Frustum& frustum, const glm::dvec3& cameraPos,
-                                  std::vector<DrawItem>& out) const {
+void ChunkManager::collectDrawInfo(std::vector<ChunkDrawInfo>& out) const {
     out.clear();
     for (const auto& item : m_chunks) {
         const Entry& e = item.second;
-        if (e.state != ChunkState::Meshed || e.quads == 0)
+        if (e.state != ChunkState::Meshed || e.quads == 0 || e.range.count == 0)
             continue;
-        const ChunkPos pos = item.first;
-        const glm::vec3 rel(glm::dvec3(pos.x * kChunkSize, pos.y * kChunkSize,
-                                       pos.z * kChunkSize) -
-                            cameraPos);
-        const float half = kChunkSize * 0.5f;
-        if (!frustum.intersects(rel + half, glm::vec3(half)))
-            continue;
-        out.push_back({rel, e.ssbo, e.quads});
+        out.push_back({{item.first.x, item.first.y, item.first.z}, e.range.first,
+                       e.range.count});
     }
 }
 

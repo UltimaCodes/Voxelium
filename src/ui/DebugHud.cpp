@@ -80,6 +80,11 @@ void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera, bool& v
     ImGui::Text("%.1f MB voxels   %.2f MB quads",
                 double(stats.voxelBytes) / (1024.0 * 1024.0),
                 double(stats.quadBytes) / (1024.0 * 1024.0));
+    ImGui::Text("gpu drew %d chunks   arena %.1f / %.0f MB (%d free blocks)",
+                stats.gpuChunksDrawn,
+                double(stats.arenaUsedQuads) * 8.0 / (1024.0 * 1024.0),
+                double(stats.arenaCapQuads) * 8.0 / (1024.0 * 1024.0),
+                stats.arenaFreeBlocks);
     ImGui::Checkbox("vsync", &vsync);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(160.0f);

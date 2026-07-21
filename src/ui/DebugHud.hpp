@@ -23,6 +23,10 @@ struct FrameStats {
     float uploadMs = 0.0f;
     std::uint64_t voxelBytes = 0;
     std::uint64_t quadBytes = 0;
+    int gpuChunksDrawn = 0; // from the cull shader's counter, ~3 frames of latency
+    std::uint32_t arenaUsedQuads = 0;
+    std::uint32_t arenaCapQuads = 0;
+    int arenaFreeBlocks = 0;
 };
 
 // ImGui debug overlay: frame graph, timings, alloc counter, camera state, log view.

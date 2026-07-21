@@ -75,4 +75,30 @@ unsigned int loadProgram(const std::filesystem::path& vertPath,
     return program;
 }
 
+unsigned int loadComputeProgram(const std::filesystem::path& compPath) {
+    const std::string src = readTextFile(compPath);
+    if (src.empty())
+        return 0;
+
+    GLuint comp = compileStage(GL_COMPUTE_SHADER, src, compPath.string().c_str());
+    if (!comp)
+        return 0;
+
+    GLuint program = glCreateProgram();
+    glAttachShader(program, comp);
+    glLinkProgram(program);
+    glDeleteShader(comp);
+
+    GLint ok = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char infoLog[4096];
+        glGetProgramInfoLog(program, sizeof(infoLog), nullptr, infoLog);
+        VX_ERROR("compute link failed (%s):\n%s", compPath.string().c_str(), infoLog);
+        glDeleteProgram(program);
+        return 0;
+    }
+    return program;
+}
+
 } // namespace vx
