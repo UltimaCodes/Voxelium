@@ -7,26 +7,34 @@
 
 #include <glm/glm.hpp>
 
+#include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <vector>
 
 namespace vx {
 
 struct Frustum;
+class JobSystem;
 
 // Fixed world height for now: 4 chunks (128 blocks). Sky light (M9) needs a defined
 // top of the world anyway; this grows when terrain does.
 inline constexpr int kWorldChunksY = 4;
 
-// Owns the loaded world: voxel data from a pool, one quad SSBO per meshed chunk,
-// load/unload by distance around the camera. Chunks are meshed only once all six
-// neighbors have voxel data, so seams cull correctly the first time and nothing gets
-// remeshed when a neighbor appears. Data is generated one ring beyond the render
-// radius to guarantee that.
-//
-// Everything runs on the main thread under per-frame budgets until M6 moves gen and
-// mesh to workers; the budgets exist so a load burst degrades into a few slightly
-// longer frames instead of one giant stall.
+// Per-chunk pipeline state. Only the main thread reads or writes it — workers are pure
+// functions that hand results back through queues, so no state needs to be atomic. The
+// one cross-thread liveness concern (a mesh job reading a neighbor while it unloads)
+// is handled by the job refcount on Chunk itself.
+enum class ChunkState : std::uint8_t {
+    Generating, // gen job in flight, voxels being written on a worker
+    Ready,      // voxel data present and immutable, not meshed yet
+    Meshing,    // mesh job in flight
+    Meshed,     // quads uploaded (possibly zero of them)
+};
+
+// Owns the loaded world. Generation and meshing run on JobSystem workers; the main
+// thread schedules jobs, drains results, and does the only GL work (uploads) under a
+// per-frame time budget so a streaming burst never stalls a frame.
 class ChunkManager {
 public:
     ~ChunkManager();
@@ -42,20 +50,24 @@ public:
         int meshed = 0;
         int uniformChunks = 0;
         int genQueue = 0;
+        int jobsInFlight = 0;
+        int pendingUploads = 0;
         std::int64_t totalQuads = 0;
         std::size_t voxelBytes = 0;
         std::size_t quadBytes = 0;
-        double genMsTotal = 0.0;
-        double meshMsTotal = 0.0;
-        int genCount = 0;
-        int meshCount = 0;
+        double genMsAvg = 0.0;
+        double meshMsAvg = 0.0;
+        double uploadMsLast = 0.0;
     };
 
-    void update(const glm::dvec3& cameraPos);
+    void update(JobSystem& jobs, const glm::dvec3& cameraPos);
     void collectVisible(const Frustum& frustum, const glm::dvec3& cameraPos,
                         std::vector<DrawItem>& out) const;
 
-    bool busy() const { return !m_genQueue.empty() || m_pendingMesh > 0; }
+    bool busy() const {
+        return !m_genQueue.empty() || m_jobsInFlight > 0 || !m_uploads.empty() ||
+               m_pendingMesh > 0;
+    }
     Stats stats() const;
     void logSummary() const;
 
@@ -66,31 +78,47 @@ private:
         Chunk* voxels = nullptr;
         unsigned int ssbo = 0;
         int quads = 0;
-        bool meshed = false;
+        ChunkState state = ChunkState::Generating;
+    };
+
+    struct MeshResult {
+        ChunkPos pos;
+        std::vector<std::uint64_t> quads;
+        GreedyStats stats;
     };
 
     void rescan(ChunkPos center);
-    void meshOne(ChunkPos pos, Entry& entry);
+    void processEvictions();
     const Chunk* voxelsAt(ChunkPos pos) const;
-    bool neighborsHaveData(ChunkPos pos) const;
 
-    static constexpr int kGenBudget = 24;  // chunks generated per frame
-    static constexpr int kMeshBudget = 16; // chunks meshed per frame
+    static constexpr double kUploadBudgetMs = 2.0;
 
     ankerl::unordered_dense::map<ChunkPos, Entry, ChunkPosHash> m_chunks;
     Pool<Chunk> m_pool;
-    GreedyMesher m_mesher;
-    std::vector<std::uint64_t> m_quadScratch;
+
     std::vector<ChunkPos> m_genQueue; // farthest-first, pop_back serves nearest
     std::vector<ChunkPos> m_meshScratch;
-    std::vector<ChunkPos> m_evictScratch;
+    std::vector<ChunkPos> m_evictList; // outside the ring; may wait on in-flight jobs
+
+    // worker -> main queues
+    std::mutex m_genDoneMutex;
+    std::vector<ChunkPos> m_genDone;
+    std::mutex m_meshDoneMutex;
+    std::vector<MeshResult> m_meshDone;
+
+    std::vector<ChunkPos> m_genDoneScratch;
+    std::vector<MeshResult> m_uploads; // drained results awaiting budgeted GL upload
+
     ChunkPos m_center{INT32_MIN, 0, INT32_MIN};
     int m_lastRadius = -1;
+    int m_jobsInFlight = 0; // main-thread view: submit increments, result-drain decrements
     int m_pendingMesh = 0;
-    double m_genMsTotal = 0.0;
-    double m_meshMsTotal = 0.0;
-    int m_genCount = 0;
-    int m_meshCount = 0;
+    double m_uploadMsLast = 0.0;
+
+    std::atomic<std::uint64_t> m_genNanos{0};
+    std::atomic<std::uint64_t> m_meshNanos{0};
+    std::atomic<int> m_genCount{0};
+    std::atomic<int> m_meshCount{0};
 };
 
 } // namespace vx

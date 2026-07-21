@@ -18,6 +18,9 @@ struct FrameStats {
     int chunksLoaded = 0;
     int chunksMeshed = 0;
     int genQueue = 0;
+    int jobsInFlight = 0;
+    int uploadsPending = 0;
+    float uploadMs = 0.0f;
     std::uint64_t voxelBytes = 0;
     std::uint64_t quadBytes = 0;
 };

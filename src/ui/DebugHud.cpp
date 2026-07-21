@@ -75,6 +75,8 @@ void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera, bool& v
                 stats.triangles);
     ImGui::Text("chunks %d loaded   %d meshed   gen queue %d", stats.chunksLoaded,
                 stats.chunksMeshed, stats.genQueue);
+    ImGui::Text("jobs %d in flight   uploads %d pending (%.2f ms)", stats.jobsInFlight,
+                stats.uploadsPending, double(stats.uploadMs));
     ImGui::Text("%.1f MB voxels   %.2f MB quads",
                 double(stats.voxelBytes) / (1024.0 * 1024.0),
                 double(stats.quadBytes) / (1024.0 * 1024.0));

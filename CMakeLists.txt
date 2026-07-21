@@ -20,6 +20,7 @@ add_executable(voxelium
     src/gfx/GpuTimer.cpp
     src/gen/TestTerrain.cpp
     src/gfx/Shader.cpp
+    src/jobs/JobSystem.cpp
     src/mesh/GreedyMesher.cpp
     src/mesh/NaiveMesher.cpp
     src/platform/Window.cpp

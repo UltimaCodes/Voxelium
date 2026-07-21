@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <vector>
 
@@ -53,6 +54,14 @@ public:
 
     void set(int x, int y, int z, BlockId id);
 
+    // In-flight job references (this chunk's own gen/mesh job, or a neighbor's mesh
+    // job reading across the border). Workers release on completion; the main thread
+    // must not pool-release a chunk while any are held. Voxel data is immutable after
+    // generation (until M10 edits), so refs guard lifetime only, not content.
+    void retainJob() const { m_jobRefs.fetch_add(1, std::memory_order_relaxed); }
+    void releaseJob() const { m_jobRefs.fetch_sub(1, std::memory_order_release); }
+    bool hasJobRefs() const { return m_jobRefs.load(std::memory_order_acquire) != 0; }
+
     int paletteBits() const { return m_bits; }
     std::size_t paletteSize() const { return m_palette.size(); }
     std::size_t storageBytes() const {
@@ -77,6 +86,7 @@ private:
     std::vector<BlockId> m_palette; // [0] doubles as the uniform id when bits == 0
     std::vector<std::uint64_t> m_indices;
     int m_bits = 0;
+    mutable std::atomic<std::uint32_t> m_jobRefs{0};
 };
 
 // Deterministic single-chunk test fixture for the mesher oracle (see docs/M3, M4).

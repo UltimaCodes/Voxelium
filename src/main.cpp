@@ -5,6 +5,7 @@
 #include "gfx/GlDebug.hpp"
 #include "gfx/GpuTimer.hpp"
 #include "gfx/Shader.hpp"
+#include "jobs/JobSystem.hpp"
 #include "mesh/GreedyMesher.hpp"
 #include "mesh/NaiveMesher.hpp"
 #include "platform/Window.hpp"
@@ -97,11 +98,32 @@ void drawWorld(GLuint program, GLuint vao, const glm::mat4& viewProj,
 // Renders the streamed-in world offscreen after draining the load queues, verifies
 // pixels were produced, writes a BMP. Same rationale as before: an FBO always owns its
 // pixels, a hidden window's backbuffer doesn't.
-int runSmokeTest(GLuint program, GLuint vao, vx::ChunkManager& world, vx::FlyCamera& camera,
-                 vx::DebugHud& hud, vx::Window& window, const std::filesystem::path& outPath) {
-    for (int i = 0; i < 2000 && (world.busy() || i == 0); ++i)
-        world.update(camera.position);
+int runSmokeTest(GLuint program, GLuint vao, vx::ChunkManager& world, vx::JobSystem& jobs,
+                 vx::FlyCamera& camera, vx::DebugHud& hud, vx::Window& window,
+                 const std::filesystem::path& outPath) {
+    for (int i = 0; i < 20000 && (world.busy() || i == 0); ++i)
+        world.update(jobs, camera.position);
     world.logSummary();
+
+    // hitch check: teleport 16 chunks east and re-stream the world, recording the worst
+    // single main-thread update() cost. workers absorb gen+mesh; the budget caps uploads.
+    camera.position.x += 512.0;
+    double worstMs = 0.0;
+    int frames = 0;
+    for (; frames < 20000; ++frames) {
+        const auto t0 = std::chrono::steady_clock::now();
+        world.update(jobs, camera.position);
+        worstMs = std::max(
+            worstMs, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+                         .count());
+        if (frames > 0 && !world.busy())
+            break;
+    }
+    VX_INFO("stress: re-streamed after teleport in %d updates, worst main-thread cost %.2f ms",
+            frames, worstMs);
+    camera.position.x -= 512.0;
+    for (int i = 0; i < 20000 && (world.busy() || i == 0); ++i)
+        world.update(jobs, camera.position);
 
     int w = 0;
     int h = 0;
@@ -245,7 +267,11 @@ int main(int argc, char** argv) {
     GLuint worldVao = 0;
     glCreateVertexArrays(1, &worldVao);
 
+    // declaration order matters: jobs is destroyed first, joining all workers, so no
+    // job can touch world's chunks or queues during teardown
     auto world = std::make_unique<vx::ChunkManager>();
+    auto jobs = std::make_unique<vx::JobSystem>();
+    VX_INFO("job system: %d workers", jobs->workerCount());
 
     vx::FlyCamera camera;
     camera.position = {16.0, 104.0, 16.0};
@@ -258,7 +284,8 @@ int main(int argc, char** argv) {
     window->hookScroll();
 
     if (smoke) {
-        const int rc = runSmokeTest(program, worldVao, *world, camera, hud, *window, smokeOut);
+        const int rc =
+            runSmokeTest(program, worldVao, *world, *jobs, camera, hud, *window, smokeOut);
         hud.shutdown();
         return rc;
     }
@@ -292,7 +319,7 @@ int main(int argc, char** argv) {
         hud.beginFrame();
         camera.update(*window, dt, hud.wantsMouse(), hud.wantsKeyboard());
 
-        world->update(camera.position);
+        world->update(*jobs, camera.position);
         if (!loadLogged && !world->busy()) {
             world->logSummary();
             loadLogged = true;
@@ -325,6 +352,9 @@ int main(int argc, char** argv) {
             .chunksLoaded = ws.loaded,
             .chunksMeshed = ws.meshed,
             .genQueue = ws.genQueue,
+            .jobsInFlight = ws.jobsInFlight,
+            .uploadsPending = ws.pendingUploads,
+            .uploadMs = float(ws.uploadMsLast),
             .voxelBytes = ws.voxelBytes,
             .quadBytes = ws.quadBytes,
         };
