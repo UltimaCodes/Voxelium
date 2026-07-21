@@ -37,12 +37,13 @@ private:
     struct Plane {
         std::uint32_t rows[kChunkSize];
         BlockId block;
+        std::uint8_t light; // sky<<4 | block, part of the merge key like the spec says
         std::uint8_t dir;
         std::uint8_t slice;
         std::int16_t next; // chain of planes sharing (dir, slice)
     };
 
-    void addFace(int dir, int slice, int u, int v, BlockId block);
+    void addFace(int dir, int slice, int u, int v, BlockId block, std::uint8_t light);
 
     std::uint64_t m_alongX[kChunkSize][kChunkSize]; // [y][z], solidity bits along x
     std::uint64_t m_alongY[kChunkSize][kChunkSize]; // [z][x], along y

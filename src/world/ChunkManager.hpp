@@ -17,6 +17,7 @@ namespace vx {
 
 struct Frustum;
 class JobSystem;
+class LightEngine;
 
 // Fixed world height for now: 4 chunks (128 blocks). Sky light (M9) needs a defined
 // top of the world anyway; this grows when terrain does.
@@ -55,7 +56,14 @@ public:
         double uploadMsLast = 0.0;
     };
 
-    void update(JobSystem& jobs, Renderer& renderer, const glm::dvec3& cameraPos);
+    void update(JobSystem& jobs, Renderer& renderer, LightEngine& light,
+                const glm::dvec3& cameraPos);
+
+    const Chunk* chunkData(ChunkPos pos) const { return voxelsAt(pos); }
+    Chunk* chunkDataMutable(ChunkPos pos) {
+        const auto it = m_chunks.find(pos);
+        return it != m_chunks.end() ? it->second.voxels : nullptr;
+    }
 
     // For the cull compute pass; call when consumeDirty() says the chunk set changed.
     // Assigns each drawable chunk its meta index (the visibility bitset uses the same
@@ -88,6 +96,7 @@ private:
         Renderer::Range range; // quads in the arena
         int quads = 0;
         ChunkState state = ChunkState::Generating;
+        bool lit = false; // sky/emissive seeding done; meshing waits for it
         // all faces connected until meshed: never cave-cull what isn't known yet
         std::uint16_t connectivity = 0x7FFF;
         std::int32_t metaIndex = -1;   // slot in the cull meta buffer, -1 = not drawn
@@ -118,6 +127,8 @@ private:
     static constexpr double kUploadBudgetMs = 2.0;
 
     ankerl::unordered_dense::map<ChunkPos, Entry, ChunkPosHash> m_chunks;
+    ankerl::unordered_dense::set<ChunkPos, ChunkPosHash> m_seededColumns; // y always 0
+    std::vector<ChunkPos> m_seedQueue; // columns with full data, waiting for light seed
     Pool<Chunk> m_pool;
 
     std::vector<ChunkPos> m_genQueue; // farthest-first, pop_back serves nearest

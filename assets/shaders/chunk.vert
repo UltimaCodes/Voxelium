@@ -29,11 +29,12 @@ const vec2 kCorner[6][4] = vec2[6][4](
 const float kShade[6] = float[6](0.80, 0.80, 1.00, 0.50, 0.65, 0.65);
 
 // placeholder until the texture array lands; matches the M3 vertex colors
-const vec3 kBlockColor[4] = vec3[4](
+const vec3 kBlockColor[5] = vec3[5](
     vec3(0.0),                    // air, never drawn
     vec3(0.490, 0.490, 0.490),    // stone
     vec3(0.525, 0.376, 0.263),    // dirt
-    vec3(0.416, 0.667, 0.251)     // grass
+    vec3(0.416, 0.667, 0.251),    // grass
+    vec3(1.000, 0.850, 0.550)     // glow
 );
 
 // Greedy meshing creates T-junctions (a quad corner in the middle of a neighbor's
@@ -63,5 +64,13 @@ void main() {
     else                pos += vec3(uv.x, uv.y, 0.0);
 
     gl_Position = uViewProj * vec4(pos + uOffsets[gl_DrawID].xyz, 1.0);
-    vColor = kBlockColor[min(block, 3u)] * kShade[dir];
+
+    // voxel light: low nibble block light, high nibble sky. smoothstep curve keeps
+    // full daylight at exactly 1.0 and leaves caves dark instead of muddy-grey
+    float blockL = float((q.y >> 20) & 15u) / 15.0;
+    float skyL = float((q.y >> 24) & 15u) / 15.0;
+    float bright = max(blockL, skyL);
+    bright = mix(0.04, 1.0, bright * bright * (3.0 - 2.0 * bright));
+
+    vColor = kBlockColor[min(block, 4u)] * kShade[dir] * bright;
 }

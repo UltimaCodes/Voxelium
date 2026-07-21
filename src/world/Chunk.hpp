@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace vx {
@@ -16,6 +17,10 @@ inline constexpr BlockId Air = 0;
 inline constexpr BlockId Stone = 1;
 inline constexpr BlockId Dirt = 2;
 inline constexpr BlockId Grass = 3;
+inline constexpr BlockId Glow = 4;
+
+inline constexpr int luminance(BlockId id) { return id == Glow ? 14 : 0; }
+inline constexpr bool opaque(BlockId id) { return id != Air; }
 } // namespace blocks
 
 // Palette-compressed voxel storage. A uniform chunk (bits == 0) stores one id and no
@@ -62,6 +67,32 @@ public:
     void releaseJob() const { m_jobRefs.fetch_sub(1, std::memory_order_release); }
     bool hasJobRefs() const { return m_jobRefs.load(std::memory_order_acquire) != 0; }
 
+    // Light nibbles: low = block light, high = sky light. Atomic bytes so mesh jobs can
+    // read while the main-thread BFS writes — relaxed loads/stores are plain MOVs on
+    // x86, so this costs nothing and is formally race-free. A stale read only means the
+    // chunk gets remeshed again when the light engine marks it touched.
+    std::uint8_t lightAt(int x, int y, int z) const {
+        return m_light ? m_light[std::size_t(index(x, y, z))].load(std::memory_order_relaxed)
+                       : m_uniformLight;
+    }
+    void setLight(int x, int y, int z, std::uint8_t v) {
+        ensureLightArray();
+        m_light[std::size_t(index(x, y, z))].store(v, std::memory_order_relaxed);
+    }
+    void fillLight(std::uint8_t v) {
+        m_uniformLight = v;
+        if (m_light)
+            for (int i = 0; i < kChunkSize3; ++i)
+                m_light[std::size_t(i)].store(v, std::memory_order_relaxed);
+    }
+
+    bool paletteHas(BlockId id) const {
+        for (const BlockId b : m_palette)
+            if (b == id)
+                return true;
+        return false;
+    }
+
     int paletteBits() const { return m_bits; }
     std::size_t paletteSize() const { return m_palette.size(); }
     std::size_t storageBytes() const {
@@ -83,9 +114,20 @@ private:
     std::uint32_t paletteIndexOf(BlockId id); // adds the id, growing bits if needed
     void repackTo(int newBits);
 
+    void ensureLightArray() {
+        if (m_light)
+            return;
+        m_light = std::make_unique<std::atomic<std::uint8_t>[]>(kChunkSize3);
+        for (int i = 0; i < kChunkSize3; ++i)
+            m_light[std::size_t(i)].store(m_uniformLight, std::memory_order_relaxed);
+    }
+
     std::vector<BlockId> m_palette; // [0] doubles as the uniform id when bits == 0
     std::vector<std::uint64_t> m_indices;
     int m_bits = 0;
+    // light array survives pool reuse (fillLight resets values, never frees)
+    std::unique_ptr<std::atomic<std::uint8_t>[]> m_light;
+    std::uint8_t m_uniformLight = 0;
     mutable std::atomic<std::uint32_t> m_jobRefs{0};
 };
 

@@ -7,11 +7,12 @@
 
 namespace vx {
 
-void GreedyMesher::addFace(int dir, int slice, int u, int v, BlockId block) {
+void GreedyMesher::addFace(int dir, int slice, int u, int v, BlockId block,
+                           std::uint8_t light) {
     std::int16_t idx = m_heads[dir][slice];
     while (idx >= 0) {
         Plane& p = m_planes[std::size_t(idx)];
-        if (p.block == block) {
+        if (p.block == block && p.light == light) {
             p.rows[v] |= 1u << u;
             return;
         }
@@ -19,6 +20,7 @@ void GreedyMesher::addFace(int dir, int slice, int u, int v, BlockId block) {
     }
     Plane p{};
     p.block = block;
+    p.light = light;
     p.dir = std::uint8_t(dir);
     p.slice = std::uint8_t(slice);
     p.next = m_heads[dir][slice];
@@ -105,6 +107,8 @@ GreedyStats GreedyMesher::mesh(const Chunk& chunk, const Chunk* const* neighbors
             const std::uint64_t cz = m_alongZ[a][b]; // a=y, b=x
 
             const auto scatter = [&](int dir, std::uint64_t faceBits) {
+                static constexpr int kStep[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                                    {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
                 std::uint32_t m = std::uint32_t(faceBits >> 1); // drop pad: bit i = voxel i
                 while (m != 0) {
                     const int s = std::countr_zero(m);
@@ -115,7 +119,21 @@ GreedyStats GreedyMesher::mesh(const Chunk& chunk, const Chunk* const* neighbors
                         case 1: x = b, y = s, z = a; break;
                         default: x = b, y = a, z = s; break;
                     }
-                    addFace(dir, s, b, a, chunk.get(x, y, z));
+                    // a face is lit by the air voxel it looks into
+                    const int ax = x + kStep[dir][0];
+                    const int ay = y + kStep[dir][1];
+                    const int az = z + kStep[dir][2];
+                    std::uint8_t light;
+                    if (ax >= 0 && ax < kChunkSize && ay >= 0 && ay < kChunkSize &&
+                        az >= 0 && az < kChunkSize) {
+                        light = chunk.lightAt(ax, ay, az);
+                    } else {
+                        const Chunk* n = neighbors ? neighbors[dir] : nullptr;
+                        // no neighbor: above the world is open sky, below is void
+                        light = n ? n->lightAt(ax & 31, ay & 31, az & 31)
+                                  : (dir == 3 ? std::uint8_t(0x00) : std::uint8_t(0xF0));
+                    }
+                    addFace(dir, s, b, a, chunk.get(x, y, z), light);
                 }
             };
             scatter(0, cx & ~(cx >> 1));
@@ -151,7 +169,7 @@ GreedyStats GreedyMesher::mesh(const Chunk& chunk, const Chunk* const* neighbors
                     case 1: x = u0, y = p.slice, z = v; break;
                     default: x = u0, y = v, z = p.slice; break;
                 }
-                outQuads.push_back(packQuad(x, y, z, w, h, p.dir, p.block));
+                outQuads.push_back(packQuad(x, y, z, w, h, p.dir, p.block, 0, p.light));
                 ++stats.quads;
                 stats.areaPerDir[p.dir] += std::int64_t(w) * h;
             }

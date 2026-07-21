@@ -6,6 +6,7 @@
 #include "gfx/GpuTimer.hpp"
 #include "gfx/Shader.hpp"
 #include "jobs/JobSystem.hpp"
+#include "light/LightEngine.hpp"
 #include "mesh/GreedyMesher.hpp"
 #include "mesh/NaiveMesher.hpp"
 #include "platform/Window.hpp"
@@ -102,18 +103,53 @@ CameraFrame buildCameraFrame(const vx::FlyCamera& camera, int fbWidth, int fbHei
 // Renders the streamed world offscreen after draining the load queues, verifies pixels
 // were produced, checks the GPU cull count, writes a BMP.
 int runSmokeTest(vx::Renderer& renderer, vx::ChunkManager& world, vx::JobSystem& jobs,
-                 vx::FlyCamera& camera, vx::DebugHud& hud, vx::Window& window,
-                 const std::filesystem::path& outPath) {
+                 vx::LightEngine& light, vx::FlyCamera& camera, vx::DebugHud& hud,
+                 vx::Window& window, const std::filesystem::path& outPath) {
     const auto drain = [&] {
-        for (int i = 0; i < 20000 && (world.busy() || i == 0); ++i) {
+        for (int i = 0; i < 20000 && (world.busy() || !light.idle() || i == 0); ++i) {
             renderer.beginFrame();
-            world.update(jobs, renderer, camera.position);
+            world.update(jobs, renderer, light, camera.position);
             renderer.endFrame();
         }
     };
 
     drain();
     world.logSummary();
+
+    // lighting checks against the enclosed glow room in the terrain (see TestTerrain)
+    {
+        const int skyInRoom = light.lightAt({16, 48, 16}) >> 4;
+        const int glowAbove = light.lightAt({16, 46, 16}) & 15;   // 1 above the glow block
+        const int glowEdge = light.lightAt({16, 48, 19}) & 15;    // a few steps away
+        const int skySurface = light.lightAt({16, 100, 16}) >> 4; // open air above terrain
+        bool ok = skyInRoom == 0 && glowAbove == 13 && glowEdge > 0 && glowEdge < 13 &&
+                  skySurface == 15;
+        VX_INFO("light: room sky %d (want 0), above-glow %d (want 13), edge %d, surface sky "
+                "%d (want 15) -> %s",
+                skyInRoom, glowAbove, glowEdge, skySurface, ok ? "PASS" : "FAIL");
+        if (!ok)
+            return 1;
+
+        // removal is the pass everyone gets wrong: delete the glow block, light must
+        // collapse to zero; put it back, light must return to the same values
+        vx::Chunk* roomChunk = world.chunkDataMutable({0, 1, 0});
+        roomChunk->set(16, 13, 16, vx::blocks::Air); // world y 45
+        light.onBlockChanged({16, 45, 16}, vx::blocks::Glow, vx::blocks::Air);
+        while (!light.idle())
+            light.process(10.0);
+        const int afterRemove = light.lightAt({16, 46, 16}) & 15;
+        roomChunk->set(16, 13, 16, vx::blocks::Glow);
+        light.onBlockChanged({16, 45, 16}, vx::blocks::Air, vx::blocks::Glow);
+        while (!light.idle())
+            light.process(10.0);
+        const int afterRestore = light.lightAt({16, 46, 16}) & 15;
+        ok = afterRemove == 0 && afterRestore == 13;
+        VX_INFO("light: removal %d (want 0), re-add %d (want 13) -> %s", afterRemove,
+                afterRestore, ok ? "PASS" : "FAIL");
+        if (!ok)
+            return 1;
+        drain(); // let the touched chunks remesh
+    }
 
     // hitch check: teleport 16 chunks east and re-stream the world, recording the worst
     // single main-thread update() cost. workers absorb gen+mesh; the budget caps uploads.
@@ -123,7 +159,7 @@ int runSmokeTest(vx::Renderer& renderer, vx::ChunkManager& world, vx::JobSystem&
     for (; frames < 20000; ++frames) {
         renderer.beginFrame();
         const auto t0 = std::chrono::steady_clock::now();
-        world.update(jobs, renderer, camera.position);
+        world.update(jobs, renderer, light, camera.position);
         worstMs = std::max(
             worstMs,
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
@@ -248,6 +284,23 @@ int runSmokeTest(vx::Renderer& renderer, vx::ChunkManager& world, vx::JobSystem&
     const int buriedOff = renderer.debugReadDrawCount();
     VX_INFO("smoke: buried in stone — %d chunks drawn with cave culling, %d without",
             buriedOn, buriedOff);
+
+    // screenshot from inside the glow room: block light gradient, zero sky
+    camera.position = {16.5, 48.0, 16.5};
+    camera.yawDeg = 40.0f;
+    camera.pitchDeg = -20.0f;
+    world.updateVisibilityIfNeeded(renderer, camera.position, true);
+    const CameraFrame room = buildCameraFrame(camera, w, h);
+    renderer.beginFrame();
+    beginFrameGl(w, h);
+    renderer.drawWorld(room.viewProj, room.frustum, room.cameraChunk, room.cameraFrac, true);
+    renderer.endFrame();
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, pixels.data());
+    std::filesystem::path roomPath = outPath;
+    roomPath.replace_filename(outPath.stem().string() + "_room.bmp");
+    vx::writeBmp24(roomPath, w, h, pixels);
+    VX_INFO("smoke: glow room screenshot -> %s", roomPath.string().c_str());
     return 0;
 }
 
@@ -314,6 +367,7 @@ int main(int argc, char** argv) {
     // declaration order matters: jobs is destroyed first, joining all workers, so no
     // job can touch world's chunks or queues during teardown
     auto world = std::make_unique<vx::ChunkManager>();
+    auto light = std::make_unique<vx::LightEngine>(*world);
     auto jobs = std::make_unique<vx::JobSystem>();
     VX_INFO("job system: %d workers", jobs->workerCount());
 
@@ -329,7 +383,7 @@ int main(int argc, char** argv) {
 
     if (smoke) {
         const int rc =
-            runSmokeTest(renderer, *world, *jobs, camera, hud, *window, smokeOut);
+            runSmokeTest(renderer, *world, *jobs, *light, camera, hud, *window, smokeOut);
         hud.shutdown();
         renderer.shutdown();
         return rc;
@@ -366,7 +420,7 @@ int main(int argc, char** argv) {
         hud.beginFrame();
         camera.update(*window, dt, hud.wantsMouse(), hud.wantsKeyboard());
 
-        world->update(*jobs, renderer, camera.position);
+        world->update(*jobs, renderer, *light, camera.position);
         if (world->consumeDirty()) {
             world->collectDrawInfo(drawInfo);
             renderer.updateChunkMeta(drawInfo);

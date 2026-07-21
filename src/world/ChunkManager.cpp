@@ -3,6 +3,7 @@
 #include "core/Log.hpp"
 #include "gen/TestTerrain.hpp"
 #include "jobs/JobSystem.hpp"
+#include "light/LightEngine.hpp"
 #include "mesh/Connectivity.hpp"
 
 #include <algorithm>
@@ -81,6 +82,7 @@ void ChunkManager::processEvictions(Renderer& renderer) {
             m_dirty = true;
         }
         m_pool.release(e.voxels);
+        m_seededColumns.erase(ChunkPos{m_evictList[i].x, 0, m_evictList[i].z});
         m_chunks.erase(it);
         m_evictList[i] = m_evictList.back();
         m_evictList.pop_back();
@@ -100,7 +102,8 @@ void ChunkManager::rebuildArena(Renderer& renderer) {
     m_dirty = true;
 }
 
-void ChunkManager::update(JobSystem& jobs, Renderer& renderer, const glm::dvec3& cameraPos) {
+void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& light,
+                          const glm::dvec3& cameraPos) {
     const ChunkPos center{int(std::floor(cameraPos.x / kChunkSize)), 0,
                           int(std::floor(cameraPos.z / kChunkSize))};
     if (center != m_center || radius != m_lastRadius) {
@@ -121,8 +124,41 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, const glm::dvec3&
         if (it != m_chunks.end() && it->second.state == ChunkState::Generating)
             it->second.state = ChunkState::Ready;
         --m_jobsInFlight;
+
+        // once the whole vertical column has data, it can be light-seeded (sky descent
+        // spans all of it at once)
+        const ChunkPos col{pos.x, 0, pos.z};
+        if (!m_seededColumns.contains(col)) {
+            bool complete = true;
+            for (int cy = 0; cy < kWorldChunksY && complete; ++cy) {
+                const auto cit = m_chunks.find({pos.x, cy, pos.z});
+                complete = cit != m_chunks.end() && cit->second.state != ChunkState::Generating;
+            }
+            if (complete) {
+                m_seededColumns.insert(col);
+                m_seedQueue.push_back(col);
+            }
+        }
     }
     m_genDoneScratch.clear();
+
+    // budgeted light seeding + propagation, then remesh whatever light touched.
+    // seeding costs ~0.5-1 ms per column, so keep the per-frame count low
+    for (int n = 0; n < 3 && !m_seedQueue.empty(); ++n) {
+        const ChunkPos col = m_seedQueue.back();
+        m_seedQueue.pop_back();
+        light.seedColumn(col.x, col.z);
+        for (int cy = 0; cy < kWorldChunksY; ++cy)
+            if (const auto cit = m_chunks.find({col.x, cy, col.z}); cit != m_chunks.end())
+                cit->second.lit = true;
+    }
+    light.process(1.5);
+    for (const ChunkPos pos : light.touched()) {
+        const auto it = m_chunks.find(pos);
+        if (it != m_chunks.end() && it->second.state == ChunkState::Meshed)
+            it->second.state = ChunkState::Ready; // back through the mesh pipeline
+    }
+    light.touched().clear();
 
     // keep enough jobs in flight to feed the workers without racing miles ahead of
     // the camera — stale far-away work is wasted work when it moves
@@ -150,10 +186,11 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, const glm::dvec3&
         });
     }
 
-    // schedule meshing for chunks whose whole neighborhood has data, nearest first
+    // schedule meshing for chunks whose whole neighborhood has data AND light, nearest
+    // first — meshes bake light values into quads, so lighting has to land first
     m_meshScratch.clear();
     for (const auto& item : m_chunks) {
-        if (item.second.state != ChunkState::Ready)
+        if (item.second.state != ChunkState::Ready || !item.second.lit)
             continue;
         if (std::abs(item.first.x - center.x) > radius ||
             std::abs(item.first.z - center.z) > radius)
@@ -166,7 +203,8 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, const glm::dvec3&
             if (n.y < 0 || n.y >= kWorldChunksY)
                 continue; // outside the world counts as present (air)
             const auto nit = m_chunks.find(n);
-            if (nit == m_chunks.end() || nit->second.state == ChunkState::Generating) {
+            if (nit == m_chunks.end() || nit->second.state == ChunkState::Generating ||
+                !nit->second.lit) {
                 ready = false;
                 break;
             }
@@ -235,6 +273,10 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, const glm::dvec3&
         const auto it = m_chunks.find(r.pos);
         if (it != m_chunks.end() && it->second.state == ChunkState::Meshing) {
             Entry& e = it->second;
+            if (e.range.count != 0) { // remesh: the old quads' range goes back to the arena
+                renderer.free(e.range);
+                e.range = {};
+            }
             e.quads = int(r.quads.size());
             if (!r.quads.empty()) {
                 e.range = renderer.alloc(r.quads);

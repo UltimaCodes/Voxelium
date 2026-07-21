@@ -1,5 +1,7 @@
 #include "gen/TestTerrain.hpp"
 
+#include <glm/glm.hpp>
+
 #include <algorithm>
 #include <cmath>
 
@@ -10,7 +12,39 @@ static int surfaceHeight(float wx, float wz) {
                5.0f * std::sin(wx * 0.013f + wz * 0.021f));
 }
 
+namespace {
+
+// deterministic glow-lit test room, carved after the terrain fill. entirely enclosed:
+// sky light inside must be exactly 0, the glow block is the only source. M10's real
+// caves replace this as the lighting showcase.
+constexpr glm::ivec3 kRoomCenter{16, 48, 16};
+constexpr int kRoomRadius = 5;
+constexpr glm::ivec3 kGlowPos{16, 45, 16};
+
+void carveTestRoom(Chunk& chunk, ChunkPos pos) {
+    const glm::ivec3 base{pos.x * kChunkSize, pos.y * kChunkSize, pos.z * kChunkSize};
+    const glm::ivec3 lo = kRoomCenter - kRoomRadius - base;
+    const glm::ivec3 hi = kRoomCenter + kRoomRadius - base;
+    if (hi.x < 0 || hi.y < 0 || hi.z < 0 || lo.x >= kChunkSize || lo.y >= kChunkSize ||
+        lo.z >= kChunkSize)
+        return;
+    for (int z = std::max(lo.z, 0); z <= std::min(hi.z, kChunkSize - 1); ++z)
+        for (int y = std::max(lo.y, 0); y <= std::min(hi.y, kChunkSize - 1); ++y)
+            for (int x = std::max(lo.x, 0); x <= std::min(hi.x, kChunkSize - 1); ++x) {
+                const glm::ivec3 d = base + glm::ivec3(x, y, z) - kRoomCenter;
+                if (d.x * d.x + d.y * d.y + d.z * d.z <= kRoomRadius * kRoomRadius)
+                    chunk.set(x, y, z, blocks::Air);
+            }
+    const glm::ivec3 g = kGlowPos - base;
+    if (g.x >= 0 && g.x < kChunkSize && g.y >= 0 && g.y < kChunkSize && g.z >= 0 &&
+        g.z < kChunkSize)
+        chunk.set(g.x, g.y, g.z, blocks::Glow);
+}
+
+} // namespace
+
 void generateTerrain(Chunk& chunk, ChunkPos pos) {
+    chunk.fillLight(0); // pooled chunks carry the previous tenant's light
     const int baseY = pos.y * kChunkSize;
 
     int heights[kChunkSize][kChunkSize];
@@ -33,6 +67,7 @@ void generateTerrain(Chunk& chunk, ChunkPos pos) {
     }
     if (baseY + kChunkSize - 1 <= hMin - 4) {
         chunk.makeUniform(blocks::Stone);
+        carveTestRoom(chunk, pos);
         return;
     }
 
@@ -52,6 +87,7 @@ void generateTerrain(Chunk& chunk, ChunkPos pos) {
             }
         }
     }
+    carveTestRoom(chunk, pos);
 }
 
 } // namespace vx
