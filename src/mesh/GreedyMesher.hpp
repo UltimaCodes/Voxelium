@@ -27,7 +27,11 @@ struct GreedyStats {
 // thread when M6 lands.
 class GreedyMesher {
 public:
-    GreedyStats mesh(const Chunk& chunk, std::vector<std::uint64_t>& outQuads);
+    // neighbors: 6 pointers in dir order (+X,-X,+Y,-Y,+Z,-Z) feeding the pad bits, or
+    // nullptr entries (or a null array) meaning air — border faces then get emitted,
+    // which is right for a lone chunk and for the edge of the loaded world.
+    GreedyStats mesh(const Chunk& chunk, const Chunk* const* neighbors,
+                     std::vector<std::uint64_t>& outQuads);
 
 private:
     struct Plane {

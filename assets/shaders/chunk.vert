@@ -5,7 +5,8 @@
 // src/mesh/QuadFormat.hpp — that header is the source of truth.
 layout(std430, binding = 0) readonly buffer Quads { uvec2 quads[]; };
 
-layout(location = 0) uniform mat4 uViewProj;
+layout(location = 0) uniform mat4 uViewProj;   // camera-relative: view is at the origin
+layout(location = 4) uniform vec3 uChunkOffset; // chunk origin minus camera position
 
 out vec3 vColor;
 
@@ -59,6 +60,6 @@ void main() {
     else if (dir == 4u) pos += vec3(uv.x, uv.y, 1.0);
     else                pos += vec3(uv.x, uv.y, 0.0);
 
-    gl_Position = uViewProj * vec4(pos, 1.0);
+    gl_Position = uViewProj * vec4(pos + uChunkOffset, 1.0);
     vColor = kBlockColor[min(block, 3u)] * kShade[dir];
 }

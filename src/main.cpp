@@ -9,8 +9,10 @@
 #include "mesh/NaiveMesher.hpp"
 #include "platform/Window.hpp"
 #include "render/Camera.hpp"
+#include "render/Frustum.hpp"
 #include "ui/DebugHud.hpp"
 #include "world/Chunk.hpp"
+#include "world/ChunkManager.hpp"
 
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
@@ -24,51 +26,86 @@
 #include <cstring>
 #include <filesystem>
 #include <memory>
-#include <span>
 #include <vector>
 
 namespace {
 
-constexpr float kClearColor[3] = {0.35f, 0.58f, 0.85f}; // sky-ish, terrain reads better
+constexpr float kClearColor[3] = {0.35f, 0.58f, 0.85f};
 
-// A chunk's renderable mesh: packed quads in an SSBO, an empty VAO (core profile wants
-// one bound even with zero attributes), and nothing else. No vertex buffer exists.
-struct QuadMesh {
-    GLuint vao = 0;
-    GLuint ssbo = 0;
-    int quadCount = 0;
-};
-
-QuadMesh uploadQuads(std::span<const std::uint64_t> quads) {
-    QuadMesh mesh;
-    mesh.quadCount = int(quads.size());
-    glCreateBuffers(1, &mesh.ssbo);
-    glNamedBufferStorage(mesh.ssbo, GLsizeiptr(quads.size_bytes()), quads.data(), 0);
-    glCreateVertexArrays(1, &mesh.vao);
-    return mesh;
+template <typename F>
+double benchBestMs(int runs, F&& fn) {
+    double best = 1e9;
+    for (int i = 0; i < runs; ++i) {
+        const auto t0 = std::chrono::steady_clock::now();
+        fn();
+        const auto t1 = std::chrono::steady_clock::now();
+        best = std::min(best, std::chrono::duration<double, std::milli>(t1 - t0).count());
+    }
+    return best;
 }
 
-void drawScene(GLuint program, const QuadMesh& mesh, const glm::mat4& viewProj, int fbWidth,
-               int fbHeight) {
+// Runs at every startup: naive vs greedy on the fixed test chunk. Merged quad area per
+// direction must equal the naive face count exactly — this catches mesher AND palette
+// storage regressions in one go, since both meshers read through Chunk::get().
+bool runMesherOracle() {
+    auto chunk = std::make_unique<vx::Chunk>();
+    vx::fillTestTerrain(*chunk);
+
+    std::vector<vx::ChunkVertex> naiveVerts;
+    vx::MeshStats naive;
+    const double naiveBest =
+        benchBestMs(50, [&] { naive = vx::meshNaive(*chunk, naiveVerts); });
+
+    auto mesher = std::make_unique<vx::GreedyMesher>();
+    std::vector<std::uint64_t> quads;
+    vx::GreedyStats greedy;
+    const double greedyBest =
+        benchBestMs(50, [&] { greedy = mesher->mesh(*chunk, nullptr, quads); });
+
+    bool ok = true;
+    for (int d = 0; d < 6; ++d)
+        ok = ok && greedy.areaPerDir[d] == std::int64_t(naive.facesPerDir[d]);
+    if (!ok) {
+        for (int d = 0; d < 6; ++d)
+            VX_ERROR("oracle dir %d: greedy area %lld vs naive faces %d", d,
+                     static_cast<long long>(greedy.areaPerDir[d]), naive.facesPerDir[d]);
+        return false;
+    }
+    VX_INFO("oracle ok | naive %d tris %.3f ms | greedy %d quads %.3f ms", naive.triangles,
+            naiveBest, greedy.quads, greedyBest);
+    return true;
+}
+
+void beginFrameGl(int fbWidth, int fbHeight) {
     glViewport(0, 0, fbWidth, fbHeight);
     glClearColor(kClearColor[0], kClearColor[1], kClearColor[2], 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    glUseProgram(program);
-    glProgramUniformMatrix4fv(program, 0, 1, GL_FALSE, glm::value_ptr(viewProj));
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, mesh.ssbo);
-    glBindVertexArray(mesh.vao);
-    glDrawArrays(GL_TRIANGLES, 0, mesh.quadCount * 6);
 }
 
-// Renders a few frames (scene + HUD) into an offscreen FBO, verifies pixels were
-// produced, writes a BMP, exits 0/1. Offscreen because reading back a hidden window's
-// default framebuffer is undefined (pixel-ownership test); an FBO always owns its pixels.
-int runSmokeTest(GLuint program, const QuadMesh& mesh, const vx::FlyCamera& camera,
+void drawWorld(GLuint program, GLuint vao, const glm::mat4& viewProj,
+               const std::vector<vx::ChunkManager::DrawItem>& items) {
+    glUseProgram(program);
+    glProgramUniformMatrix4fv(program, 0, 1, GL_FALSE, glm::value_ptr(viewProj));
+    glBindVertexArray(vao); // one shared empty VAO; per-chunk state is just the SSBO
+    for (const auto& item : items) {
+        glProgramUniform3fv(program, 4, 1, &item.offset.x);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, item.ssbo);
+        glDrawArrays(GL_TRIANGLES, 0, item.quads * 6);
+    }
+}
+
+// Renders the streamed-in world offscreen after draining the load queues, verifies
+// pixels were produced, writes a BMP. Same rationale as before: an FBO always owns its
+// pixels, a hidden window's backbuffer doesn't.
+int runSmokeTest(GLuint program, GLuint vao, vx::ChunkManager& world, vx::FlyCamera& camera,
                  vx::DebugHud& hud, vx::Window& window, const std::filesystem::path& outPath) {
+    for (int i = 0; i < 2000 && (world.busy() || i == 0); ++i)
+        world.update(camera.position);
+    world.logSummary();
+
     int w = 0;
     int h = 0;
-    window.framebufferSize(w, h); // match the window so ImGui's layout maps 1:1
+    window.framebufferSize(w, h);
 
     GLuint color = 0;
     GLuint depth = 0;
@@ -86,19 +123,36 @@ int runSmokeTest(GLuint program, const QuadMesh& mesh, const vx::FlyCamera& came
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    const glm::mat4 vp = camera.projReversedZ(float(w) / float(h)) * camera.view();
+    const glm::mat4 vp = camera.projReversedZ(float(w) / float(h)) * camera.viewAtOrigin();
+    const vx::Frustum frustum = vx::Frustum::fromViewProj(vp);
+    std::vector<vx::ChunkManager::DrawItem> items;
+    world.collectVisible(frustum, camera.position, items);
+
+    int quadsDrawn = 0;
+    for (const auto& item : items)
+        quadsDrawn += item.quads;
+    VX_INFO("smoke: %d chunks in frustum, %d quads drawn", int(items.size()), quadsDrawn);
+
     bool vsyncDummy = false;
+    int radiusDummy = world.radius;
+    const vx::ChunkManager::Stats ws = world.stats();
     for (int i = 0; i < 5; ++i) {
         window.pollEvents();
         hud.beginFrame();
-        drawScene(program, mesh, vp, w, h);
+        beginFrameGl(w, h);
+        drawWorld(program, vao, vp, items);
         const vx::FrameStats stats{.frameMs = 1.0f,
                                    .gpuMs = 0.5f,
                                    .heapAllocs = 0,
-                                   .drawCalls = 1,
-                                   .quads = mesh.quadCount,
-                                   .triangles = mesh.quadCount * 2};
-        hud.buildUi(stats, camera, vsyncDummy);
+                                   .drawCalls = int(items.size()),
+                                   .quads = quadsDrawn,
+                                   .triangles = quadsDrawn * 2,
+                                   .chunksLoaded = ws.loaded,
+                                   .chunksMeshed = ws.meshed,
+                                   .genQueue = ws.genQueue,
+                                   .voxelBytes = ws.voxelBytes,
+                                   .quadBytes = ws.quadBytes};
+        hud.buildUi(stats, camera, vsyncDummy, radiusDummy);
         hud.render();
     }
 
@@ -131,18 +185,6 @@ int runSmokeTest(GLuint program, const QuadMesh& mesh, const vx::FlyCamera& came
         return 1;
     }
     return 0;
-}
-
-template <typename F>
-double benchBestMs(int runs, F&& fn) {
-    double best = 1e9;
-    for (int i = 0; i < runs; ++i) {
-        const auto t0 = std::chrono::steady_clock::now();
-        fn();
-        const auto t1 = std::chrono::steady_clock::now();
-        best = std::min(best, std::chrono::duration<double, std::milli>(t1 - t0).count());
-    }
-    return best;
 }
 
 } // namespace
@@ -180,14 +222,12 @@ int main(int argc, char** argv) {
             reinterpret_cast<const char*>(glGetString(GL_RENDERER)),
             reinterpret_cast<const char*>(glGetString(GL_VENDOR)));
 
-    // Reversed-Z depth, set up once: 0..1 clip range (instead of GL's default -1..1,
-    // which throws away half the depth precision), clear to 0, pass what's greater.
-    // Rationale in render/Camera.hpp next to projReversedZ().
+    // Reversed-Z depth, set up once (rationale in render/Camera.hpp).
     glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_GREATER);
     glClearDepth(0.0);
-    glEnable(GL_CULL_FACE); // quad corners wind CCW from outside; backfaces never rasterize
+    glEnable(GL_CULL_FACE);
 
     const std::filesystem::path assets = vx::findAssetsDir(argv[0]);
     if (assets.empty()) {
@@ -199,58 +239,26 @@ int main(int argc, char** argv) {
     if (!program)
         return 1;
 
-    // --- the one chunk, meshed both ways ----------------------------------------------
-    auto chunk = std::make_unique<vx::Chunk>();
-    vx::fillTestTerrain(*chunk);
-
-    // Naive stays as the oracle: every merged quad covers exactly the unit faces the
-    // naive mesher emits, so summed quad area per direction must match its face counts.
-    std::vector<vx::ChunkVertex> naiveVerts;
-    vx::MeshStats naive;
-    const double naiveBest =
-        benchBestMs(50, [&] { naive = vx::meshNaive(*chunk, naiveVerts); });
-
-    auto mesher = std::make_unique<vx::GreedyMesher>();
-    std::vector<std::uint64_t> quads;
-    vx::GreedyStats greedy;
-    const double greedyBest =
-        benchBestMs(50, [&] { greedy = mesher->mesh(*chunk, quads); });
-
-    bool oracleOk = true;
-    for (int d = 0; d < 6; ++d)
-        oracleOk = oracleOk && greedy.areaPerDir[d] == std::int64_t(naive.facesPerDir[d]);
-    if (oracleOk) {
-        VX_INFO("oracle: merged quad area == naive face count in all 6 directions");
-    } else {
-        for (int d = 0; d < 6; ++d)
-            VX_ERROR("oracle dir %d: greedy area %lld vs naive faces %d", d,
-                     static_cast<long long>(greedy.areaPerDir[d]), naive.facesPerDir[d]);
+    if (!runMesherOracle())
         return 1;
-    }
 
-    VX_INFO("naive : %d tris, %.0f KB vbo, best %.3f ms", naive.triangles,
-            double(naive.vertices * sizeof(vx::ChunkVertex)) / 1024.0, naiveBest);
-    VX_INFO("greedy: %d quads -> %d tris, %.1f KB ssbo, best %.3f ms", greedy.quads,
-            greedy.triangles, double(quads.size() * sizeof(std::uint64_t)) / 1024.0,
-            greedyBest);
-    VX_INFO("       %.1fx fewer tris, %.0fx less geometry memory", double(naive.triangles) / double(greedy.triangles),
-            double(naive.vertices * sizeof(vx::ChunkVertex)) /
-                double(quads.size() * sizeof(std::uint64_t)));
+    GLuint worldVao = 0;
+    glCreateVertexArrays(1, &worldVao);
 
-    const QuadMesh mesh = uploadQuads(quads);
+    auto world = std::make_unique<vx::ChunkManager>();
 
     vx::FlyCamera camera;
-    camera.position = {48.0f, 44.0f, 48.0f};
-    camera.yawDeg = -45.0f; // look back at the chunk center
-    camera.pitchDeg = -32.0f;
+    camera.position = {16.0, 104.0, 16.0};
+    camera.yawDeg = -35.0f;
+    camera.pitchDeg = -25.0f;
 
     vx::DebugHud hud;
     if (!hud.init(window->handle()))
         return 1;
-    window->hookScroll(); // wrap ImGui's scroll callback so both UI and camera see it
+    window->hookScroll();
 
     if (smoke) {
-        const int rc = runSmokeTest(program, mesh, camera, hud, *window, smokeOut);
+        const int rc = runSmokeTest(program, worldVao, *world, camera, hud, *window, smokeOut);
         hud.shutdown();
         return rc;
     }
@@ -258,15 +266,19 @@ int main(int argc, char** argv) {
     vx::GpuTimer gpuTimer;
     gpuTimer.init();
 
+    std::vector<vx::ChunkManager::DrawItem> drawItems;
     double prevTime = glfwGetTime();
     bool f3Held = false;
     bool vsync = false;
+    bool loadLogged = false;
     std::uint64_t allocsPrevFrame = vx::heapAllocCount();
 
     while (!window->shouldClose()) {
         window->pollEvents();
-        if (window->keyDown(GLFW_KEY_ESCAPE))
+        if (window->keyDown(GLFW_KEY_ESCAPE)) {
+            VX_INFO("esc pressed — closing");
             window->requestClose();
+        }
         const bool f3 = window->keyDown(GLFW_KEY_F3);
         if (f3 && !f3Held)
             hud.toggle();
@@ -274,33 +286,51 @@ int main(int argc, char** argv) {
 
         const double now = glfwGetTime();
         const float frameMs = float((now - prevTime) * 1000.0);
-        const float dt = std::min(float(now - prevTime), 0.1f); // clamp debugger pauses
+        const float dt = std::min(float(now - prevTime), 0.1f);
         prevTime = now;
 
         hud.beginFrame();
         camera.update(*window, dt, hud.wantsMouse(), hud.wantsKeyboard());
 
+        world->update(camera.position);
+        if (!loadLogged && !world->busy()) {
+            world->logSummary();
+            loadLogged = true;
+        }
+
         int fbW = 0;
         int fbH = 0;
         window->framebufferSize(fbW, fbH);
         gpuTimer.begin();
-        if (fbW > 0 && fbH > 0) { // minimized window has a 0x0 framebuffer
-            const glm::mat4 vp = camera.projReversedZ(float(fbW) / float(fbH)) * camera.view();
-            drawScene(program, mesh, vp, fbW, fbH);
+        int quadsDrawn = 0;
+        if (fbW > 0 && fbH > 0) {
+            const glm::mat4 vp =
+                camera.projReversedZ(float(fbW) / float(fbH)) * camera.viewAtOrigin();
+            world->collectVisible(vx::Frustum::fromViewProj(vp), camera.position, drawItems);
+            for (const auto& item : drawItems)
+                quadsDrawn += item.quads;
+            beginFrameGl(fbW, fbH);
+            drawWorld(program, worldVao, vp, drawItems);
         }
 
+        const vx::ChunkManager::Stats ws = world->stats();
         const std::uint64_t allocsNow = vx::heapAllocCount();
         const vx::FrameStats stats{
             .frameMs = frameMs,
             .gpuMs = gpuTimer.milliseconds(),
             .heapAllocs = allocsNow - allocsPrevFrame,
-            .drawCalls = 1,
-            .quads = mesh.quadCount,
-            .triangles = mesh.quadCount * 2,
+            .drawCalls = int(drawItems.size()),
+            .quads = quadsDrawn,
+            .triangles = quadsDrawn * 2,
+            .chunksLoaded = ws.loaded,
+            .chunksMeshed = ws.meshed,
+            .genQueue = ws.genQueue,
+            .voxelBytes = ws.voxelBytes,
+            .quadBytes = ws.quadBytes,
         };
         allocsPrevFrame = allocsNow;
         const bool vsyncBefore = vsync;
-        hud.buildUi(stats, camera, vsync);
+        hud.buildUi(stats, camera, vsync, world->radius);
         if (vsync != vsyncBefore)
             window->setVsync(vsync);
         hud.render();
@@ -309,6 +339,7 @@ int main(int argc, char** argv) {
         window->swapBuffers();
     }
 
+    VX_INFO("window closed, shutting down");
     hud.shutdown();
     return 0;
 }

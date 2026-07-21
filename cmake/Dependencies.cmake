@@ -35,7 +35,15 @@ FetchContent_Declare(imgui
     SYSTEM
 )
 
-FetchContent_MakeAvailable(glfw glm imgui)
+# --- ankerl::unordered_dense 4.8.1 (M5: world chunk map) ------------------------------
+FetchContent_Declare(unordered_dense
+    GIT_REPOSITORY https://github.com/martinus/unordered_dense.git
+    GIT_TAG        v4.8.1
+    GIT_SHALLOW    ON
+    SYSTEM
+)
+
+FetchContent_MakeAvailable(glfw glm imgui unordered_dense)
 
 # imgui ships no CMakeLists — build the core + the two backends we use as a static lib.
 add_library(imgui STATIC

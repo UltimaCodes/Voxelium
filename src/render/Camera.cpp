@@ -57,7 +57,7 @@ void FlyCamera::update(Window& window, float dt, bool uiWantsMouse, bool uiWants
     if (window.keyDown(GLFW_KEY_LEFT_CONTROL)) move -= kUp;
 
     if (glm::dot(move, move) > 0.0f)
-        position += glm::normalize(move) * speed * dt;
+        position += glm::dvec3(glm::normalize(move) * speed * dt);
 }
 
 glm::vec3 FlyCamera::forward() const {
@@ -66,7 +66,9 @@ glm::vec3 FlyCamera::forward() const {
     return {std::cos(pitch) * std::sin(yaw), std::sin(pitch), -std::cos(pitch) * std::cos(yaw)};
 }
 
-glm::mat4 FlyCamera::view() const { return glm::lookAt(position, position + forward(), kUp); }
+glm::mat4 FlyCamera::viewAtOrigin() const {
+    return glm::lookAt(glm::vec3(0.0f), forward(), kUp);
+}
 
 glm::mat4 FlyCamera::projReversedZ(float aspect) const {
     const float f = 1.0f / std::tan(glm::radians(fovYDeg) * 0.5f);

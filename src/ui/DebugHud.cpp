@@ -47,7 +47,8 @@ void DebugHud::beginFrame() {
 bool DebugHud::wantsMouse() const { return ImGui::GetIO().WantCaptureMouse; }
 bool DebugHud::wantsKeyboard() const { return ImGui::GetIO().WantCaptureKeyboard; }
 
-void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera, bool& vsync) {
+void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera, bool& vsync,
+                       int& radius) {
     m_frameMs[m_cursor] = stats.frameMs;
     m_cursor = (m_cursor + 1) % kSamples;
 
@@ -72,7 +73,15 @@ void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera, bool& v
                            static_cast<unsigned long long>(stats.heapAllocs));
     ImGui::Text("draw calls %d   quads %d   tris %d", stats.drawCalls, stats.quads,
                 stats.triangles);
+    ImGui::Text("chunks %d loaded   %d meshed   gen queue %d", stats.chunksLoaded,
+                stats.chunksMeshed, stats.genQueue);
+    ImGui::Text("%.1f MB voxels   %.2f MB quads",
+                double(stats.voxelBytes) / (1024.0 * 1024.0),
+                double(stats.quadBytes) / (1024.0 * 1024.0));
     ImGui::Checkbox("vsync", &vsync);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::SliderInt("radius", &radius, 4, 16);
 
     ImGui::Separator();
     ImGui::Text("cam (%.1f, %.1f, %.1f)  yaw %.0f  pitch %.0f  speed %.1f%s",

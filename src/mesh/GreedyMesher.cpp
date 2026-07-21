@@ -27,23 +27,73 @@ void GreedyMesher::addFace(int dir, int slice, int u, int v, BlockId block) {
     m_planes.push_back(p);
 }
 
-GreedyStats GreedyMesher::mesh(const Chunk& chunk, std::vector<std::uint64_t>& outQuads) {
+GreedyStats GreedyMesher::mesh(const Chunk& chunk, const Chunk* const* neighbors,
+                               std::vector<std::uint64_t>& outQuads) {
     outQuads.clear();
+    if (chunk.uniform() && chunk.uniformId() == blocks::Air)
+        return {}; // nothing solid, nothing to mesh
+
     m_planes.clear();
-    std::memset(m_alongX, 0, sizeof(m_alongX));
-    std::memset(m_alongY, 0, sizeof(m_alongY));
-    std::memset(m_alongZ, 0, sizeof(m_alongZ));
     std::memset(m_heads, 0xFF, sizeof(m_heads)); // all -1
 
     // pass 1: solidity columns
-    for (int y = 0; y < kChunkSize; ++y)
-        for (int z = 0; z < kChunkSize; ++z)
-            for (int x = 0; x < kChunkSize; ++x)
-                if (chunk.get(x, y, z) != blocks::Air) {
-                    m_alongX[y][z] |= 1ull << (x + 1);
-                    m_alongY[z][x] |= 1ull << (y + 1);
-                    m_alongZ[y][x] |= 1ull << (z + 1);
-                }
+    if (chunk.uniform()) {
+        // all solid: bits 1..32 set, pad bits clear
+        constexpr std::uint64_t kAllSolid = 0x1FFFFFFFEull;
+        for (int a = 0; a < kChunkSize; ++a)
+            for (int b = 0; b < kChunkSize; ++b) {
+                m_alongX[a][b] = kAllSolid;
+                m_alongY[a][b] = kAllSolid;
+                m_alongZ[a][b] = kAllSolid;
+            }
+    } else {
+        std::memset(m_alongX, 0, sizeof(m_alongX));
+        std::memset(m_alongY, 0, sizeof(m_alongY));
+        std::memset(m_alongZ, 0, sizeof(m_alongZ));
+        for (int y = 0; y < kChunkSize; ++y)
+            for (int z = 0; z < kChunkSize; ++z)
+                for (int x = 0; x < kChunkSize; ++x)
+                    if (chunk.get(x, y, z) != blocks::Air) {
+                        m_alongX[y][z] |= 1ull << (x + 1);
+                        m_alongY[z][x] |= 1ull << (y + 1);
+                        m_alongZ[y][x] |= 1ull << (z + 1);
+                    }
+    }
+
+    // neighbor pads: bit 0 = the voxel just outside at -1, bit 33 = the one at 32.
+    // Solid pad bits suppress border faces, so chunk seams only mesh what's visible.
+    if (neighbors) {
+        if (const Chunk* n = neighbors[0]) // +X
+            for (int y = 0; y < kChunkSize; ++y)
+                for (int z = 0; z < kChunkSize; ++z)
+                    if (n->get(0, y, z) != blocks::Air)
+                        m_alongX[y][z] |= 1ull << 33;
+        if (const Chunk* n = neighbors[1]) // -X
+            for (int y = 0; y < kChunkSize; ++y)
+                for (int z = 0; z < kChunkSize; ++z)
+                    if (n->get(kChunkSize - 1, y, z) != blocks::Air)
+                        m_alongX[y][z] |= 1ull;
+        if (const Chunk* n = neighbors[2]) // +Y
+            for (int z = 0; z < kChunkSize; ++z)
+                for (int x = 0; x < kChunkSize; ++x)
+                    if (n->get(x, 0, z) != blocks::Air)
+                        m_alongY[z][x] |= 1ull << 33;
+        if (const Chunk* n = neighbors[3]) // -Y
+            for (int z = 0; z < kChunkSize; ++z)
+                for (int x = 0; x < kChunkSize; ++x)
+                    if (n->get(x, kChunkSize - 1, z) != blocks::Air)
+                        m_alongY[z][x] |= 1ull;
+        if (const Chunk* n = neighbors[4]) // +Z
+            for (int y = 0; y < kChunkSize; ++y)
+                for (int x = 0; x < kChunkSize; ++x)
+                    if (n->get(x, y, 0) != blocks::Air)
+                        m_alongZ[y][x] |= 1ull << 33;
+        if (const Chunk* n = neighbors[5]) // -Z
+            for (int y = 0; y < kChunkSize; ++y)
+                for (int x = 0; x < kChunkSize; ++x)
+                    if (n->get(x, y, kChunkSize - 1) != blocks::Air)
+                        m_alongZ[y][x] |= 1ull;
+    }
 
     // pass 2: face masks per column, scattered into planes. A face exists where a solid
     // bit has an air bit next to it along the axis; the shifted-AND does all 32 voxels
