@@ -296,47 +296,53 @@ void TerrainGenerator::placeTrees(Chunk& chunk, ChunkPos pos) const {
             if (surf < kSeaLevel + 2)
                 continue; // no trees on beaches or underwater
 
-            const auto disk = [&](int wy, int r) {
-                for (int dz = -r; dz <= r; ++dz)
-                    for (int dx = -r; dx <= r; ++dx)
-                        if (dx * dx + dz * dz <= r * r + 1)
-                            put(tx + dx, wy, tz + dz, blocks::Leaves);
+            // per-tree variation: an independent hash drives size/shape/raggedness, and a
+            // per-voxel hash punches holes in the canopy so no two trees are the same and
+            // none is a solid blob. all deterministic -> still seamless across chunk borders.
+            const std::uint32_t rv = voxelHash(tx, 7, tz);
+            const auto leaf = [&](int wx, int wy, int wz, int holePerMille) {
+                if (int(voxelHash(wx, wy, wz) % 1000) >= holePerMille)
+                    put(wx, wy, wz, blocks::Leaves);
             };
 
             if (hsh & (1u << 22)) {
-                // SPRUCE: tall trunk, tiered conical needles narrowing to a point
-                const int trunk = 8 + int((hsh >> 18) % 4u); // 8..11
+                // SPRUCE: tall, tiered conical needles; height + width jittered, gappy
+                const int trunk = 7 + int(rv % 6u);       // 7..12
+                const int maxR = 2 + int((rv >> 4) & 1u); // 2..3
                 for (int i = 1; i <= trunk; ++i)
                     put(tx, surf + i, tz, blocks::Wood);
                 put(tx, surf + trunk + 1, tz, blocks::Leaves); // tip
                 const int leafTop = surf + trunk;
-                for (int wy = leafTop; wy >= surf + 3; --wy) {
-                    const int up = leafTop - wy;      // 0 at the top
-                    int r = (up + 1) / 2;             // 0,1,1,2,2,3,3 — bumpy cone
-                    r = r > 3 ? 3 : r;
+                const int leafBot = surf + 2 + int((rv >> 8) & 1u);
+                for (int wy = leafTop; wy >= leafBot; --wy) {
+                    int r = (leafTop - wy) / 2; // widening cone, a tier every two rows
+                    if (r > maxR)
+                        r = maxR;
                     for (int dz = -r; dz <= r; ++dz)
                         for (int dx = -r; dx <= r; ++dx) {
                             if (dx == 0 && dz == 0)
                                 continue; // keep the trunk clear
                             if (dx * dx + dz * dz <= r * r + 1)
-                                put(tx + dx, wy, tz + dz, blocks::Leaves);
+                                leaf(tx + dx, wy, tz + dz, 250);
                         }
                 }
             } else {
-                // OAK: short trunk, bushy rounded canopy (two wide layers, two narrow)
-                const int trunk = 4 + int((hsh >> 18) % 3u); // 4..6
+                // OAK: bushy rounded canopy; radius, height + edge raggedness jittered
+                const int trunk = 4 + int(rv % 4u);      // 4..7
+                const int cr = 2 + int((rv >> 3) & 1u);  // canopy radius 2..3
+                const int ch = 1 + int((rv >> 6) & 1u);  // vertical half-extent 1..2
                 const int topY = surf + trunk;
                 for (int i = 1; i <= trunk; ++i)
                     put(tx, surf + i, tz, blocks::Wood);
-                for (int dz = -2; dz <= 2; ++dz)
-                    for (int dx = -2; dx <= 2; ++dx) {
-                        if (dx * dx == 4 && dz * dz == 4)
-                            continue; // trim the four corners
-                        put(tx + dx, topY - 1, tz + dz, blocks::Leaves);
-                        put(tx + dx, topY, tz + dz, blocks::Leaves);
-                    }
-                disk(topY + 1, 1);
-                disk(topY + 2, 1);
+                const float edge = float(cr) + 0.4f;
+                const float inner = float(cr - 1) * float(cr - 1);
+                for (int dy = -ch; dy <= ch + 1; ++dy)
+                    for (int dz = -cr; dz <= cr; ++dz)
+                        for (int dx = -cr; dx <= cr; ++dx) {
+                            const float rr = float(dx * dx + dz * dz) + float(dy * dy) * 1.5f;
+                            if (rr <= edge * edge)
+                                leaf(tx + dx, topY + dy, tz + dz, rr > inner ? 430 : 80);
+                        }
             }
         }
 }
