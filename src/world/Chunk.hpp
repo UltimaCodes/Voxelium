@@ -12,8 +12,10 @@ using BlockId = std::uint16_t;
 inline constexpr int kChunkSize = 32;
 inline constexpr int kChunkSize3 = kChunkSize * kChunkSize * kChunkSize;
 
-// Fixed world height for now; sky light needs a defined top. Grows when terrain does.
-inline constexpr int kWorldChunksY = 4;
+// World height in chunks. 8 => 256 blocks of vertical range so terrain isn't capped so
+// low. Most vertical chunks are uniform air (above) or uniform stone (below), which cost
+// nothing, so this barely moves memory or quad counts — only the surface band meshes.
+inline constexpr int kWorldChunksY = 8;
 inline constexpr int kWorldHeight = kWorldChunksY * kChunkSize;
 
 namespace blocks {

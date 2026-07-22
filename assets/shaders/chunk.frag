@@ -1,7 +1,8 @@
 #version 460 core
 
 in vec3 vWorldRel;
-flat in vec3 vAlbedo;
+in vec2 vUv;
+flat in uint vLayer;
 flat in uint vDir;
 flat in vec2 vLight;
 
@@ -13,6 +14,7 @@ layout(location = 6) uniform mat4 uCascadeVp[3]; // consumes 6..17
 layout(location = 18) uniform vec3 uCascadeSplit; // radial split distances
 layout(location = 19) uniform vec3 uCascadeTexel; // world units per shadow texel
 
+layout(binding = 0) uniform sampler2DArray uBlockTex;
 layout(binding = 1) uniform sampler2DArrayShadow uShadowMap;
 
 const vec3 kNormal[6] = vec3[6](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0),
@@ -60,6 +62,7 @@ float sunShadow(vec3 pos, vec3 N) {
 
 void main() {
     vec3 N = kNormal[vDir];
+    vec3 albedo = texture(uBlockTex, vec3(vUv, float(vLayer))).rgb;
     float blockL = vLight.x;
     float skyL = vLight.y;
 
@@ -74,5 +77,5 @@ void main() {
     vec3 ambient = vec3(0.26, 0.36, 0.55) * (0.10 + 0.90 * skyL) + vec3(0.035, 0.04, 0.05);
     vec3 torch = vec3(1.35, 0.95, 0.55) * (blockL * blockL * 1.6);
 
-    outColor = vec4(vAlbedo * kShade[vDir] * (direct + ambient + torch), 1.0);
+    outColor = vec4(albedo * kShade[vDir] * (direct + ambient + torch), 1.0);
 }

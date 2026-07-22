@@ -2,6 +2,7 @@
 #include "core/Bmp.hpp"
 #include "core/Log.hpp"
 #include "core/Paths.hpp"
+#include "gfx/BlockTextures.hpp"
 #include "gfx/GlDebug.hpp"
 #include "gfx/GpuTimer.hpp"
 #include "gfx/Shader.hpp"
@@ -110,6 +111,7 @@ struct RenderContext {
     vx::PostFx& postfx;
     unsigned int drawProgram;
     unsigned int waterProgram;
+    unsigned int blockTex;
 };
 
 struct FrameTimers {
@@ -148,6 +150,8 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     glProgramUniform3fv(rc.drawProgram, 18, 1, &splits.x);
     const glm::vec3 texel = rc.shadows.cascadeTexelWorld();
     glProgramUniform3fv(rc.drawProgram, 19, 1, &texel.x);
+    glProgramUniform1f(rc.drawProgram, 20, time); // leaf sway
+    glBindTextureUnit(0, rc.blockTex);
     glBindTextureUnit(1, rc.shadows.texture());
 
     rc.renderer.drawWorld(cam.viewProj, cam.frustum, cam.cameraChunk, cam.cameraFrac,
@@ -549,7 +553,8 @@ int main(int argc, char** argv) {
     vx::PostFx postfx;
     if (!postfx.init(shaders))
         return 1;
-    RenderContext rc{renderer, shadowMap, postfx, drawProgram, waterProgram};
+    const GLuint blockTex = vx::createBlockTextureArray();
+    RenderContext rc{renderer, shadowMap, postfx, drawProgram, waterProgram, blockTex};
 
     // isolate the smoke test's save data so repeated runs start clean and can't touch a
     // real world save

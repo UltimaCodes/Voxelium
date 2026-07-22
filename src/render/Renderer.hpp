@@ -80,10 +80,10 @@ public:
 private:
     void recycle(Range range);
 
-    // 16M quads = 128 MB. radius 16 with caves needs ~7.7M live + free-list headroom;
-    // 8M overflowed and thrashed hardReset every frame (glFinish stalls = the "glitchy
-    // lag"). 128 MB is nothing on the target GPUs and leaves 2x room for fragmentation.
-    static constexpr std::uint32_t kArenaQuads = 16u << 20;
+    // 24M quads = 192 MB. taller terrain (256-block world, bigger mountains) pushes the
+    // working set up; this leaves generous headroom over the ~8-9M live at radius 16 so
+    // fragmentation during streaming churn doesn't trigger the (stalling) hardReset.
+    static constexpr std::uint32_t kArenaQuads = 24u << 20;
     static constexpr std::uint32_t kMaxChunks = 8192;
     static constexpr int kFrameRing = 3;
 

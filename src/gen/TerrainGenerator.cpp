@@ -12,8 +12,10 @@ namespace {
 // continentalness -> base surface height, piecewise linear ("splines" per the spec —
 // linear segments are all the control this terrain needs)
 float heightSpline(float c) {
+    // taller peaks now that the world is 256 blocks — deep valleys near sea level up to
+    // real mountains around 190
     static constexpr float kX[] = {-1.0f, -0.5f, 0.0f, 0.45f, 1.0f};
-    static constexpr float kY[] = {52.0f, 62.0f, 72.0f, 88.0f, 108.0f};
+    static constexpr float kY[] = {50.0f, 64.0f, 82.0f, 120.0f, 190.0f};
     if (c <= kX[0])
         return kY[0];
     for (int i = 1; i < 5; ++i)
@@ -50,8 +52,9 @@ std::int32_t floorDivI(std::int32_t a, std::int32_t b) {
 }
 
 constexpr int kSeaLevel = 62;   // air at or below this over the seafloor becomes water
+constexpr int kCaveDepth = 56;  // caves only within this many blocks below the surface
 constexpr int kTreeCell = 7;    // one tree candidate per 7x7 column cell
-constexpr int kTreeCanopyR = 3; // horizontal reach — how far trees bleed across chunks
+constexpr int kTreeCanopyR = 4; // scan overlap: >= the widest canopy so no tree is missed
 
 // glow-lit test room kept from M9 as the lighting regression anchor; a 1-block stone
 // shell is re-solidified around it so no cave can crack it open
@@ -127,7 +130,7 @@ int TerrainGenerator::surfaceHeight(int wx, int wz) const {
     float c = 0.0f;
     m_height->GenUniformGrid2D(&h, float(wx), float(wz), 1, 1, 1.0f, 1.0f, m_seed);
     m_continent->GenUniformGrid2D(&c, float(wx), float(wz), 1, 1, 1.0f, 1.0f, m_seed + 1);
-    return std::clamp(int(heightSpline(c) + h * 18.0f), 8, kWorldHeight - 8);
+    return std::clamp(int(heightSpline(c) + h * 26.0f), 8, kWorldHeight - 8);
 }
 
 void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos) const {
@@ -151,7 +154,7 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos) const {
             // grid order: x + z * kChunkSize (x start axis first)
             const float hn = heightNoise[x + z * kChunkSize];
             const float c = contNoise[x + z * kChunkSize];
-            const int h = std::clamp(int(heightSpline(c) + hn * 18.0f), 8,
+            const int h = std::clamp(int(heightSpline(c) + hn * 26.0f), 8,
                                      kWorldHeight - 8);
             heights[z][x] = h;
             hMin = std::min(hMin, h);
@@ -163,6 +166,15 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos) const {
         chunk.makeUniform(blocks::Air);
         placeTrees(chunk, pos);
         carveTestRoom(chunk, pos); // no-op unless the room overlaps
+        return;
+    }
+
+    // deep bedrock: caves only reach ~56 blocks below the surface, so a chunk entirely
+    // below that band is solid stone — makeUniform costs nothing (no palette/index array,
+    // no quads). this is what keeps a 256-block world as cheap as the old 128.
+    if (baseY + kChunkSize - 1 < hMin - kCaveDepth) {
+        chunk.makeUniform(blocks::Stone);
+        carveTestRoom(chunk, pos);
         return;
     }
 
@@ -198,8 +210,8 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos) const {
             for (int y = 0; y < kChunkSize; ++y)
                 for (int x = 0; x < kChunkSize; ++x) {
                     const int wy = baseY + y;
-                    if (wy < 4 || wy > heights[z][x] - 4)
-                        continue; // keep bedrock floor and the surface skin intact
+                    if (wy < 4 || wy > heights[z][x] - 4 || wy < heights[z][x] - kCaveDepth)
+                        continue; // skip the skin, the bedrock floor, and deep stone
                     const std::size_t i =
                         std::size_t(x) + std::size_t(y) * kChunkSize +
                         std::size_t(z) * kChunkSize * kChunkSize;
@@ -272,18 +284,48 @@ void TerrainGenerator::placeTrees(Chunk& chunk, ChunkPos pos) const {
             if (surf < kSeaLevel + 2)
                 continue; // no trees on beaches or underwater
 
-            const int trunk = 4 + int((hsh >> 18) % 3u); // 4..6 tall
-            const int topY = surf + trunk;
-            for (int i = 1; i <= trunk; ++i)
-                put(tx, surf + i, tz, blocks::Wood);
-            // rounded canopy blob around the top
-            for (int dy = -2; dy <= 1; ++dy)
-                for (int dz = -kTreeCanopyR; dz <= kTreeCanopyR; ++dz)
-                    for (int dx = -kTreeCanopyR; dx <= kTreeCanopyR; ++dx) {
-                        const int r2 = dx * dx + dz * dz + dy * dy * 2;
-                        if (r2 <= kTreeCanopyR * kTreeCanopyR + 1)
-                            put(tx + dx, topY + dy, tz + dz, blocks::Leaves);
+            const auto disk = [&](int wy, int r) {
+                for (int dz = -r; dz <= r; ++dz)
+                    for (int dx = -r; dx <= r; ++dx)
+                        if (dx * dx + dz * dz <= r * r + 1)
+                            put(tx + dx, wy, tz + dz, blocks::Leaves);
+            };
+
+            if (hsh & (1u << 22)) {
+                // SPRUCE: tall trunk, tiered conical needles narrowing to a point
+                const int trunk = 8 + int((hsh >> 18) % 4u); // 8..11
+                for (int i = 1; i <= trunk; ++i)
+                    put(tx, surf + i, tz, blocks::Wood);
+                put(tx, surf + trunk + 1, tz, blocks::Leaves); // tip
+                const int leafTop = surf + trunk;
+                for (int wy = leafTop; wy >= surf + 3; --wy) {
+                    const int up = leafTop - wy;      // 0 at the top
+                    int r = (up + 1) / 2;             // 0,1,1,2,2,3,3 — bumpy cone
+                    r = r > 3 ? 3 : r;
+                    for (int dz = -r; dz <= r; ++dz)
+                        for (int dx = -r; dx <= r; ++dx) {
+                            if (dx == 0 && dz == 0)
+                                continue; // keep the trunk clear
+                            if (dx * dx + dz * dz <= r * r + 1)
+                                put(tx + dx, wy, tz + dz, blocks::Leaves);
+                        }
+                }
+            } else {
+                // OAK: short trunk, bushy rounded canopy (two wide layers, two narrow)
+                const int trunk = 4 + int((hsh >> 18) % 3u); // 4..6
+                const int topY = surf + trunk;
+                for (int i = 1; i <= trunk; ++i)
+                    put(tx, surf + i, tz, blocks::Wood);
+                for (int dz = -2; dz <= 2; ++dz)
+                    for (int dx = -2; dx <= 2; ++dx) {
+                        if (dx * dx == 4 && dz * dz == 4)
+                            continue; // trim the four corners
+                        put(tx + dx, topY - 1, tz + dz, blocks::Leaves);
+                        put(tx + dx, topY, tz + dz, blocks::Leaves);
                     }
+                disk(topY + 1, 1);
+                disk(topY + 2, 1);
+            }
         }
 }
 
