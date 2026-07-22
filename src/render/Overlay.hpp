@@ -23,9 +23,15 @@ public:
     // after post, on the final image.
     void drawCrosshair(int fbWidth, int fbHeight) const;
 
+    // Minecraft-style hotbar along the bottom: a panel, block-texture icons for each of
+    // `blockIds`, and a frame on the selected slot. Samples `blockTexArray` for icons.
+    void drawHotbar(int fbWidth, int fbHeight, const int* blockIds, int count, int selected,
+                    unsigned int blockTexArray) const;
+
 private:
     unsigned int m_boxProg = 0;
     unsigned int m_crossProg = 0;
+    unsigned int m_hudProg = 0;
     unsigned int m_vao = 0;
 };
 

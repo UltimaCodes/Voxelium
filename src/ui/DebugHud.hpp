@@ -51,8 +51,6 @@ public:
     // ESC window: all the knobs. Sets open=false on Resume, quit=true on Quit.
     void settings(bool& open, bool& vsync, bool& caveCull, int& radius, float& fovDeg,
                   FxToggles& fx, bool& quit);
-    // Block-picker window (toggled with E). Sets `placeBlock` when one is clicked.
-    void blockPicker(int& placeBlock, bool open);
     void render();
 
     void toggle() { m_visible = !m_visible; }

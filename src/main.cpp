@@ -635,11 +635,16 @@ int main(int argc, char** argv) {
     bool caveCull = true;
     bool loadLogged = false;
     bool everBusy = false; // don't log the "loaded" summary before streaming even starts
-    bool e_Held = false;
-    bool inventoryOpen = false;
+    bool f4Held = false;
+    bool hotbarOpen = false;
     bool escHeld = false;
     bool settingsOpen = false;
-    int placeBlock = vx::blocks::Stone;
+    constexpr int kHotbar[] = {vx::blocks::Stone, vx::blocks::Dirt,   vx::blocks::Grass,
+                               vx::blocks::Sand,  vx::blocks::Wood,   vx::blocks::Leaves,
+                               vx::blocks::Glow,  vx::blocks::Water};
+    constexpr int kHotbarCount = int(sizeof(kHotbar) / sizeof(kHotbar[0]));
+    int hotbarSel = 0;
+    int placeBlock = kHotbar[hotbarSel];
     std::uint64_t allocsPrevFrame = vx::heapAllocCount();
 
     while (!window->shouldClose()) {
@@ -669,13 +674,21 @@ int main(int argc, char** argv) {
             }
         }
         f5Held = f5;
-        const bool eKey = window->keyDown(GLFW_KEY_E);
-        if (eKey && !e_Held)
-            inventoryOpen = !inventoryOpen;
-        e_Held = eKey;
-        if (window->keyDown(GLFW_KEY_1)) placeBlock = vx::blocks::Stone;
-        if (window->keyDown(GLFW_KEY_2)) placeBlock = vx::blocks::Dirt;
-        if (window->keyDown(GLFW_KEY_3)) placeBlock = vx::blocks::Glow;
+        const bool f4 = window->keyDown(GLFW_KEY_F4);
+        if (f4 && !f4Held)
+            hotbarOpen = !hotbarOpen;
+        f4Held = f4;
+        if (hotbarOpen && !settingsOpen) {
+            for (int k = 0; k < kHotbarCount; ++k)
+                if (window->keyDown(GLFW_KEY_1 + k))
+                    hotbarSel = k;
+            // scroll cycles slots while the hotbar is up (drained here so it doesn't also
+            // change fly speed); when it's hidden the camera gets the scroll for speed
+            const double sc = window->consumeScrollY();
+            if (sc != 0.0)
+                hotbarSel = (hotbarSel - (sc > 0.0 ? 1 : -1) + kHotbarCount) % kHotbarCount;
+        }
+        placeBlock = kHotbar[hotbarSel];
 
         const double now = glfwGetTime();
         const float frameMs = float((now - prevTime) * 1000.0);
@@ -755,9 +768,12 @@ int main(int argc, char** argv) {
         int fbW = 0;
         int fbH = 0;
         window->framebufferSize(fbW, fbH);
-        if (fbW > 0 && fbH > 0)
+        if (fbW > 0 && fbH > 0) {
             renderFrame(rc, camera, fx, caveCull, fbW, fbH, 0, float(now), &timers, hasSel,
                         selMin);
+            if (hotbarOpen)
+                overlay.drawHotbar(fbW, fbH, kHotbar, kHotbarCount, hotbarSel, blockTex);
+        }
 
         const vx::ChunkManager::Stats ws = world->stats();
         const vx::Renderer::ArenaStats as = renderer.arenaStats();
@@ -793,7 +809,6 @@ int main(int argc, char** argv) {
         hud.diagnostics(stats, camera);
         hud.settings(settingsOpen, vsync, caveCull, world->radius, camera.fovYDeg, fx,
                      quitRequested);
-        hud.blockPicker(placeBlock, inventoryOpen);
         if (vsync != vsyncBefore)
             window->setVsync(vsync);
         hud.render();

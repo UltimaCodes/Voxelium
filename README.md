@@ -31,13 +31,14 @@ trees and IDE working dirs just work.
 
 controls:
 
-- F3 debug HUD, E inventory, F5 walk/fly, F2 save edited chunks, ESC quit
+- F3 debug HUD, ESC settings/pause, F4 hotbar, F5 walk/fly, F2 save edited chunks
 - fly: hold RMB, wasd + space/ctrl, shift = fast, scroll = speed
 - walk: wasd, space to jump, mouse look
-- LMB break block, MMB place; E opens the block picker (or keys 1-3 for stone/dirt/glow)
+- LMB break block, MMB place; F4 opens the hotbar (keys 1-8 or scroll to pick a block)
 
-the HUD has live toggles for every shader effect (shadows, ssao, volumetric, bloom) plus
-sun angle, exposure, vsync and render distance.
+ESC opens the settings menu (it pauses too): every shader toggle (shadows, ssao,
+volumetric, bloom) plus sun angle, exposure, fov, vsync and render distance. F3 is the
+read-only diagnostics overlay — frame graph, timings, chunk/arena stats, log.
 
 ## what's in it
 
