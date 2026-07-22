@@ -55,6 +55,7 @@ constexpr int kSeaLevel = 62;   // air at or below this over the seafloor become
 constexpr int kCaveDepth = 56;  // caves only within this many blocks below the surface
 constexpr int kTreeCell = 7;    // one tree candidate per 7x7 column cell
 constexpr int kTreeCanopyR = 4; // scan overlap: >= the widest canopy so no tree is missed
+constexpr int kSnowLine = 150;  // peaks at/above this get snow (jittered per column)
 
 // glow-lit test room kept from M9 as the lighting regression anchor; a 1-block stone
 // shell is re-solidified around it so no cave can crack it open
@@ -183,12 +184,23 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos) const {
         for (int x = 0; x < kChunkSize; ++x) {
             const int h = heights[z][x];
             const bool coastal = h <= kSeaLevel + 1; // beaches and seabed are sand
+            // ragged snow line so peaks cap in snow without a razor-straight edge
+            const int snowLine = kSnowLine + int(cellHash(baseX + x, baseZ + z) & 7u) - 3;
+            const bool snowy = !coastal && h >= snowLine;
             const int top = std::min(h - baseY, kChunkSize - 1);
             for (int y = 0; y <= top; ++y) {
                 const int wy = baseY + y;
                 BlockId id = blocks::Stone;
-                if (wy >= h - 3)
-                    id = coastal ? blocks::Sand : (wy == h ? blocks::Grass : blocks::Dirt);
+                if (wy >= h - 3) {
+                    if (coastal)
+                        id = blocks::Sand;
+                    else if (snowy && wy >= h - 1)
+                        id = blocks::Snow; // a couple blocks of cap
+                    else if (wy == h)
+                        id = blocks::Grass;
+                    else
+                        id = blocks::Dirt;
+                }
                 chunk.set(x, y, z, id);
             }
         }

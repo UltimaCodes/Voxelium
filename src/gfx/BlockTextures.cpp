@@ -16,12 +16,12 @@ namespace vx {
 namespace {
 
 constexpr int kTile = 16;
-constexpr int kLayers = 9;
+constexpr int kLayers = 12;
 
 // filename (without extension) per layer, looked up in assets/textures/
-constexpr const char* kNames[kLayers] = {"stone", "dirt",      "grass_top",
-                                         "grass_side", "glow", "wood_side",
-                                         "wood_top", "leaves",  "sand"};
+constexpr const char* kNames[kLayers] = {"stone",    "dirt",     "grass_top", "grass_side",
+                                         "glow",     "wood_side", "wood_top", "leaves",
+                                         "sand",     "snow",     "planks",    "bricks"};
 
 // value hash in [0,1) — deterministic per texel so textures are identical every run
 float h01(int x, int y, int salt) {
@@ -112,9 +112,35 @@ Rgba genGlow(int x, int y) {
     return shade(1.0f, 0.86f, 0.55f, glow);
 }
 
+Rgba genSnow(int x, int y) {
+    float n = 0.92f + 0.08f * h01(x, y, 16);
+    if (h01(x, y, 17) > 0.96f) n = 1.0f; // sparkle
+    return shade(0.93f, 0.95f, 1.0f, n);
+}
+
+Rgba genPlanks(int x, int y) {
+    // horizontal boards: darker seam every 4 rows, faint lengthwise grain
+    float n = 0.86f + 0.14f * h01(x, 0, 18);
+    if (y % 4 == 0) n *= 0.72f;                    // board seam
+    n *= 0.94f + 0.06f * std::sin(float(x) * 1.3f); // grain
+    return shade(0.60f, 0.44f, 0.27f, n);
+}
+
+Rgba genBricks(int x, int y) {
+    // running-bond brick: mortar lines every 4 rows, offset the vertical joint per course
+    const int row = y / 4;
+    const int off = (row % 2) * 4;
+    const bool mortar = (y % 4 == 0) || ((x + off) % 8 == 0);
+    if (mortar)
+        return shade(0.78f, 0.76f, 0.72f, 0.9f + 0.1f * h01(x, y, 19)); // pale mortar
+    float n = 0.85f + 0.18f * h01(x, y, 20);
+    return shade(0.62f, 0.26f, 0.20f, n); // clay red
+}
+
 constexpr std::array<Gen, kLayers> kGens = {genStone,    genDirt,    genGrassTop,
                                             genGrassSide, genGlow,   genWoodSide,
-                                            genWoodTop,  genLeaves,  genSand};
+                                            genWoodTop,  genLeaves,  genSand,
+                                            genSnow,    genPlanks,  genBricks};
 
 } // namespace
 

@@ -34,6 +34,9 @@ uint texLayer(uint block, uint dir) {
     if (block == 6u) return (dir == 2u || dir == 3u) ? 6u : 5u;     // wood top/side
     if (block == 7u) return 7u;                              // leaves
     if (block == 8u) return 8u;                              // sand
+    if (block == 9u) return 9u;                              // snow
+    if (block == 10u) return 10u;                            // planks
+    if (block == 11u) return 11u;                            // bricks
     return 0u;
 }
 

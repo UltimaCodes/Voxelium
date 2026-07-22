@@ -18,6 +18,9 @@ int iconLayerFor(int block) {
         case 6: return 5; // wood side
         case 7: return 7; // leaves
         case 8: return 8; // sand
+        case 9: return 9; // snow
+        case 10: return 10; // planks
+        case 11: return 11; // bricks
         default: return -1; // water and anything untextured
     }
 }

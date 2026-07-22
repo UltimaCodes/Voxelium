@@ -687,9 +687,10 @@ int main(int argc, char** argv) {
     bool hotbarOpen = false;
     bool escHeld = false;
     bool settingsOpen = false;
-    constexpr int kHotbar[] = {vx::blocks::Stone, vx::blocks::Dirt,   vx::blocks::Grass,
-                               vx::blocks::Sand,  vx::blocks::Wood,   vx::blocks::Leaves,
-                               vx::blocks::Glow,  vx::blocks::Water};
+    constexpr int kHotbar[] = {vx::blocks::Stone,  vx::blocks::Dirt,   vx::blocks::Grass,
+                               vx::blocks::Sand,   vx::blocks::Snow,   vx::blocks::Wood,
+                               vx::blocks::Planks, vx::blocks::Bricks, vx::blocks::Leaves,
+                               vx::blocks::Glow,   vx::blocks::Water};
     constexpr int kHotbarCount = int(sizeof(kHotbar) / sizeof(kHotbar[0]));
     int hotbarSel = 0;
     int placeBlock = kHotbar[hotbarSel];

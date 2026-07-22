@@ -28,7 +28,10 @@ inline constexpr BlockId Water = 5;
 inline constexpr BlockId Wood = 6;
 inline constexpr BlockId Leaves = 7;
 inline constexpr BlockId Sand = 8;
-inline constexpr int kBlockCount = 9;
+inline constexpr BlockId Snow = 9;
+inline constexpr BlockId Planks = 10;
+inline constexpr BlockId Bricks = 11;
+inline constexpr int kBlockCount = 12;
 
 inline constexpr int luminance(BlockId id) { return id == Glow ? 14 : 0; }
 
