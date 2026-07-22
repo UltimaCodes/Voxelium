@@ -16,6 +16,16 @@ constexpr double kJumpVelocity = 9.0;
 constexpr double kGroundAccel = 10.0; // fraction of target velocity gained per tick-ish
 constexpr double kAirAccel = 2.0;
 
+// swimming: buoyant, draggy, hold jump to rise. tuned so you bob and sink slowly rather
+// than plummeting like the old "water isn't there" behaviour.
+constexpr double kSwimSpeed = 0.6;   // horizontal scale vs walking
+constexpr double kSwimAccel = 8.0;
+constexpr double kWaterGravity = 8.0; // much gentler than air -> slow sink
+constexpr double kSwimUpAccel = 30.0; // holding jump overcomes gravity and rises
+constexpr double kSwimRise = 4.0;     // clamp vertical speed both ways
+constexpr double kSwimSink = 3.0;
+constexpr double kWaterVDrag = 0.9; // per-tick vertical drag -> settles to a bob
+
 } // namespace
 
 void Player::step(const ChunkManager& world, const PlayerInput& input) {
@@ -30,18 +40,35 @@ void Player::step(const ChunkManager& world, const PlayerInput& input) {
         wish = glm::normalize(wish);
     wish *= kWalkSpeed;
 
-    const double accel = (onGround ? kGroundAccel : kAirAccel) * kTickDt;
-    velocity.x += (wish.x - velocity.x) * std::min(accel, 1.0);
-    velocity.z += (wish.z - velocity.z) * std::min(accel, 1.0);
-
-    if (input.jump && onGround)
-        velocity.y = kJumpVelocity;
-    velocity.y = std::max(velocity.y - kGravity * kTickDt, -kTerminal);
+    inWater = submergedAt(world);
+    if (inWater) {
+        const double a = std::min(kSwimAccel * kTickDt, 1.0);
+        velocity.x += (wish.x * kSwimSpeed - velocity.x) * a;
+        velocity.z += (wish.z * kSwimSpeed - velocity.z) * a;
+        velocity.y -= kWaterGravity * kTickDt;
+        if (input.jump)
+            velocity.y += kSwimUpAccel * kTickDt;
+        velocity.y = std::clamp(velocity.y * kWaterVDrag, -kSwimSink, kSwimRise);
+    } else {
+        const double accel = (onGround ? kGroundAccel : kAirAccel) * kTickDt;
+        velocity.x += (wish.x - velocity.x) * std::min(accel, 1.0);
+        velocity.z += (wish.z - velocity.z) * std::min(accel, 1.0);
+        if (input.jump && onGround)
+            velocity.y = kJumpVelocity;
+        velocity.y = std::max(velocity.y - kGravity * kTickDt, -kTerminal);
+    }
 
     onGround = false;
     moveAxis(world, 1, velocity.y * kTickDt); // y first so ground state is fresh
     moveAxis(world, 0, velocity.x * kTickDt);
     moveAxis(world, 2, velocity.z * kTickDt);
+}
+
+// chest-deep test: water at the AABB centre means we're swimming, not wading
+bool Player::submergedAt(const ChunkManager& world) const {
+    const glm::dvec3 c = position + glm::dvec3(0.0, kHeight * 0.5, 0.0);
+    const glm::ivec3 p{int(std::floor(c.x)), int(std::floor(c.y)), int(std::floor(c.z))};
+    return blocks::isWater(world.blockAtWorld(p));
 }
 
 void Player::moveAxis(const ChunkManager& world, int axis, double delta) {

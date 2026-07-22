@@ -26,11 +26,13 @@ public:
     glm::dvec3 position{0.0}; // feet center
     glm::dvec3 velocity{0.0};
     bool onGround = false;
+    bool inWater = false; // chest-deep in water as of the last step(); drives swim + fog
 
     void step(const ChunkManager& world, const PlayerInput& input);
     glm::dvec3 eye() const { return position + glm::dvec3(0.0, kEyeHeight, 0.0); }
 
 private:
+    bool submergedAt(const ChunkManager& world) const;
     void moveAxis(const ChunkManager& world, int axis, double delta);
 };
 
