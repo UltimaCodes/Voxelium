@@ -14,11 +14,12 @@ class ShadowMap {
 public:
     static constexpr int kCascades = 3;
     static constexpr int kResolution = 1536;
-    // radial split distances, also the shaders' cascade selector. the shadow pass is
-    // vertex-bound (every quad drawn per cascade), so the far split is the main cost
-    // lever — 150 keeps crisp shadows out to ~5 chunks and roughly halves the far
-    // cascade's geometry vs 240. beyond it terrain is sky-lit but unshadowed.
-    static constexpr float kSplits[kCascades] = {22.0f, 60.0f, 150.0f};
+    // splits reach ~9-10 chunks so shadows cover the whole radius-10 view instead of
+    // vanishing a few chunks out (that was the "shadows disappear when I look far / fly
+    // up"). the far cascade is the cost (vertex-bound — every quad drawn per cascade),
+    // which is the price of consistent shadows without terrain LOD; per-cascade culling
+    // keeps it bounded and each cascade is texel-snapped so nothing swims.
+    static constexpr float kSplits[kCascades] = {28.0f, 82.0f, 220.0f};
 
     bool init(unsigned int shadowProgram);
     void shutdown();

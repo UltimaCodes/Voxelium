@@ -25,6 +25,22 @@ layout(binding = 3) uniform sampler2D uSceneDepth;
 const vec3 kNormal[6] = vec3[6](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0),
                                 vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1));
 
+// sum of four directional waves -> organic surface. returns the xz slope gradient so the
+// normal varies smoothly and irregularly (a single sine product makes a lattice of
+// specular dots — that was the "squares on the water").
+vec2 waveGrad(vec2 p) {
+    const vec4 W[4] = vec4[4](vec4(0.80, 0.20, 0.28, 0.055), vec4(-0.30, 0.95, 0.41, 0.040),
+                              vec4(0.55, -0.72, 0.67, 0.024), vec4(-0.92, -0.35, 0.93, 0.015));
+    const float sp[4] = float[4](1.1, 1.5, 2.1, 2.7);
+    vec2 g = vec2(0.0);
+    for (int i = 0; i < 4; ++i) {
+        vec2 d = normalize(W[i].xy);
+        float ph = dot(d, p) * W[i].z + uTime * sp[i];
+        g += d * W[i].z * W[i].w * cos(ph);
+    }
+    return g;
+}
+
 vec3 skyColor(vec3 d) {
     float up = clamp(d.y, 0.0, 1.0);
     vec3 col = mix(vec3(0.66, 0.78, 0.92), vec3(0.14, 0.34, 0.80), pow(up, 0.5));
@@ -64,10 +80,9 @@ vec3 reflection(vec3 P, vec3 R) {
 
 void main() {
     vec3 N = kNormal[vDir];
-    if (vDir == 2u) { // ripple the top-surface normal
-        float dx = 0.12 * cos(vWorldRel.x * 0.7 + uTime * 1.6);
-        float dz = 0.12 * cos(vWorldRel.z * 0.9 + uTime * 1.3);
-        N = normalize(vec3(-dx, 1.0, -dz));
+    if (vDir == 2u) { // organic ripple on the top surface
+        vec2 g = waveGrad(vWorldRel.xz) * 6.0;
+        N = normalize(vec3(-g.x, 1.0, -g.y));
     }
     vec3 V = normalize(-vWorldRel); // camera at the origin
     float fres = mix(0.02, 1.0, pow(1.0 - max(dot(N, V), 0.0), 5.0));
@@ -83,8 +98,9 @@ void main() {
     vec3 tint = mix(vec3(0.10, 0.30, 0.38), vec3(0.01, 0.055, 0.12), deep) * (0.3 + 0.7 * vSky);
     vec3 refl = reflection(vWorldRel, reflect(-V, N)) * (0.35 + 0.65 * vSky);
 
+    // broader, softer sun glint (was a razor-thin pow(400) that only lit the lattice)
     vec3 H = normalize(uSunL + V);
-    float spec = pow(max(dot(N, H), 0.0), 400.0) * 1.4 * vSky;
+    float spec = pow(max(dot(N, H), 0.0), 90.0) * 0.9 * vSky;
 
     vec3 col = mix(tint, refl, fres) + vec3(1.0, 0.96, 0.86) * spec;
     // shallow + steep -> low alpha (see the seabed); deep or grazing -> opaque water

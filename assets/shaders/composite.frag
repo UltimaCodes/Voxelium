@@ -85,7 +85,7 @@ void main() {
         float len = min(length(world), 150.0);
         vec3 rd = normalize(world);
 
-        const int kSteps = 24;
+        const int kSteps = 16;
         float stepLen = len / float(kSteps);
         float t = stepLen * ign(gl_FragCoord.xy); // dithered start, breaks up banding
         float scatter = 0.0;

@@ -40,9 +40,12 @@ void main() {
     else                pos += vec3(uv.x, uv.y, 0.0);
 
     vec3 world = pos + uOffsets[gl_DrawID].xyz;
-    if (dir == 2u) { // top surface: drop it under the block top and ripple
-        float wave = sin(world.x * 0.7 + uTime * 1.6) + sin(world.z * 0.9 + uTime * 1.3);
-        world.y -= 0.12 - wave * 0.05;
+    if (dir == 2u) { // top surface: drop under the block top, organic bob
+        vec2 p = world.xz;
+        float wave = 0.055 * sin(dot(vec2(0.80, 0.20), p) * 0.28 + uTime * 1.1) +
+                     0.040 * sin(dot(vec2(-0.30, 0.95), p) * 0.41 + uTime * 1.5) +
+                     0.024 * sin(dot(vec2(0.55, -0.72), p) * 0.67 + uTime * 2.1);
+        world.y -= 0.10 - wave;
     }
 
     vWorldRel = world;

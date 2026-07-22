@@ -54,7 +54,19 @@ FetchContent_Declare(unordered_dense
     SYSTEM
 )
 
-FetchContent_MakeAvailable(glfw glm imgui unordered_dense fastnoise2)
+# --- stb_image (block texture loading; header-only, no stable tags so pin a commit) ----
+FetchContent_Declare(stb
+    GIT_REPOSITORY https://github.com/nothings/stb.git
+    GIT_TAG        f0569113c93ad095470c54bf34a17b36646bbbb5
+    GIT_SHALLOW    OFF
+    SYSTEM
+)
+
+FetchContent_MakeAvailable(glfw glm imgui unordered_dense fastnoise2 stb)
+
+# stb ships no CMake — expose it as a header-only interface target.
+add_library(stb INTERFACE)
+target_include_directories(stb SYSTEM INTERFACE ${stb_SOURCE_DIR})
 
 # imgui ships no CMakeLists — build the core + the two backends we use as a static lib.
 add_library(imgui STATIC

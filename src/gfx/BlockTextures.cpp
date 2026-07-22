@@ -1,6 +1,11 @@
 #include "gfx/BlockTextures.hpp"
 
+#include "core/Log.hpp"
+
 #include <glad/gl.h>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
 
 #include <array>
 #include <cmath>
@@ -12,6 +17,11 @@ namespace {
 
 constexpr int kTile = 16;
 constexpr int kLayers = 9;
+
+// filename (without extension) per layer, looked up in assets/textures/
+constexpr const char* kNames[kLayers] = {"stone", "dirt",      "grass_top",
+                                         "grass_side", "glow", "wood_side",
+                                         "wood_top", "leaves",  "sand"};
 
 // value hash in [0,1) — deterministic per texel so textures are identical every run
 float h01(int x, int y, int salt) {
@@ -108,12 +118,41 @@ constexpr std::array<Gen, kLayers> kGens = {genStone,    genDirt,    genGrassTop
 
 } // namespace
 
-unsigned int createBlockTextureArray() {
+// Loads <dir>/<name>.png into the 16x16 layer slot, nearest-resampling any size down to
+// the tile. Returns false if the file is missing/unreadable (caller uses procedural).
+bool loadLayerPng(const std::filesystem::path& path, Rgba* out) {
+    int w = 0, h = 0, comp = 0;
+    stbi_uc* data = stbi_load(path.string().c_str(), &w, &h, &comp, 4);
+    if (!data)
+        return false;
+    for (int y = 0; y < kTile; ++y)
+        for (int x = 0; x < kTile; ++x) {
+            const int sx = x * w / kTile;
+            const int sy = y * h / kTile;
+            const stbi_uc* p = data + (std::size_t(sy) * w + sx) * 4;
+            out[y * kTile + x] = {p[0], p[1], p[2], p[3]};
+        }
+    stbi_image_free(data);
+    return true;
+}
+
+unsigned int createBlockTextureArray(const std::filesystem::path& textureDir) {
     std::array<Rgba, kTile * kTile * kLayers> pixels{};
-    for (int layer = 0; layer < kLayers; ++layer)
-        for (int y = 0; y < kTile; ++y)
-            for (int x = 0; x < kTile; ++x)
-                pixels[std::size_t((layer * kTile + y) * kTile + x)] = kGens[layer](x, y);
+    int loaded = 0;
+    for (int layer = 0; layer < kLayers; ++layer) {
+        Rgba* slot = pixels.data() + std::size_t(layer) * kTile * kTile;
+        const std::filesystem::path png = textureDir / (std::string(kNames[layer]) + ".png");
+        if (loadLayerPng(png, slot)) {
+            ++loaded;
+        } else {
+            for (int y = 0; y < kTile; ++y)
+                for (int x = 0; x < kTile; ++x)
+                    slot[y * kTile + x] = kGens[layer](x, y);
+        }
+    }
+    if (loaded > 0)
+        VX_INFO("block textures: loaded %d/%d from %s (rest procedural)", loaded, kLayers,
+                textureDir.string().c_str());
 
     GLuint tex = 0;
     glCreateTextures(GL_TEXTURE_2D_ARRAY, 1, &tex);

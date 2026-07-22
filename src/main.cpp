@@ -553,7 +553,7 @@ int main(int argc, char** argv) {
     vx::PostFx postfx;
     if (!postfx.init(shaders))
         return 1;
-    const GLuint blockTex = vx::createBlockTextureArray();
+    const GLuint blockTex = vx::createBlockTextureArray(assets / "textures");
     RenderContext rc{renderer, shadowMap, postfx, drawProgram, waterProgram, blockTex};
 
     // isolate the smoke test's save data so repeated runs start clean and can't touch a

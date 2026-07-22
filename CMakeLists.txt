@@ -40,7 +40,7 @@ add_executable(voxelium
 )
 
 target_include_directories(voxelium PRIVATE src)
-target_link_libraries(voxelium PRIVATE glad glfw glm::glm imgui unordered_dense::unordered_dense FastNoise)
+target_link_libraries(voxelium PRIVATE glad glfw glm::glm imgui unordered_dense::unordered_dense FastNoise stb)
 
 # GLFW must not drag in the system GL headers; glad owns all GL declarations.
 # GLM depth range 0..1 to match glClipControl(GL_ZERO_TO_ONE) — we run reversed-Z.
