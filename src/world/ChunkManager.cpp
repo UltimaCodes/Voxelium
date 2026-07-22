@@ -37,12 +37,17 @@ std::int64_t horizontalDist2(ChunkPos p, ChunkPos center) {
 }
 
 // detail level from squared chunk distance. near chunks full res; far chunks downsample
-// so their meshes collapse to a fraction of the triangles (main pass + shadows).
+// so their meshes collapse to a fraction of the triangles (main pass + shadows). the far
+// bands (L4 16x, L5 32x = one dominant block per chunk) make big render distances almost
+// free — a very-distant chunk is a handful of quads. near bands are unchanged, so raising
+// the radius only adds cheap coarse geometry out on the horizon.
 int lodForDist2(std::int64_t d2) {
     if (d2 <= 8 * 8) return 0;
     if (d2 <= 14 * 14) return 1;
     if (d2 <= 22 * 22) return 2;
-    return 3;
+    if (d2 <= 30 * 30) return 3;
+    if (d2 <= 42 * 42) return 4;
+    return 5;
 }
 
 } // namespace

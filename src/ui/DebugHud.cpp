@@ -145,7 +145,7 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     ImGui::SameLine();
     ImGui::Checkbox("cave cull", &caveCull);
     ImGui::SetNextItemWidth(-100.0f);
-    ImGui::SliderInt("render dist", &radius, 4, 16, "%d chunks");
+    ImGui::SliderInt("render dist", &radius, 4, 32, "%d chunks");
     ImGui::SetNextItemWidth(-100.0f);
     ImGui::SliderFloat("fov", &fovDeg, 50.0f, 100.0f, "%.0f deg");
 
