@@ -12,7 +12,9 @@
 #include "platform/Window.hpp"
 #include "render/Camera.hpp"
 #include "render/Frustum.hpp"
+#include "render/PostFx.hpp"
 #include "render/Renderer.hpp"
+#include "render/ShadowMap.hpp"
 #include "ui/DebugHud.hpp"
 #include "world/Chunk.hpp"
 #include "world/ChunkManager.hpp"
@@ -25,6 +27,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -33,8 +36,6 @@
 #include <vector>
 
 namespace {
-
-constexpr float kClearColor[3] = {0.35f, 0.58f, 0.85f};
 
 template <typename F>
 double benchBestMs(int runs, F&& fn) {
@@ -80,12 +81,6 @@ bool runMesherOracle() {
     return true;
 }
 
-void beginFrameGl(int fbWidth, int fbHeight) {
-    glViewport(0, 0, fbWidth, fbHeight);
-    glClearColor(kClearColor[0], kClearColor[1], kClearColor[2], 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-}
-
 struct CameraFrame {
     glm::mat4 viewProj;
     vx::Frustum frustum;
@@ -102,29 +97,97 @@ CameraFrame buildCameraFrame(const vx::FlyCamera& camera, int fbWidth, int fbHei
     return f;
 }
 
-// Renders the streamed world offscreen after draining the load queues, verifies pixels
-// were produced, checks the GPU cull count, writes a BMP.
-int runSmokeTest(vx::Renderer& renderer, vx::ChunkManager& world, vx::JobSystem& jobs,
+glm::vec3 sunFromAltitude(float deg) {
+    const float a = glm::radians(deg);
+    return glm::normalize(glm::vec3(0.55f * std::cos(a), std::sin(a), 0.35f * std::cos(a)));
+}
+
+struct RenderContext {
+    vx::Renderer& renderer;
+    vx::ShadowMap& shadows;
+    vx::PostFx& postfx;
+    unsigned int drawProgram;
+};
+
+struct FrameTimers {
+    vx::GpuTimer shadow, scene, post;
+};
+
+// One full frame: cascades -> HDR scene -> post stack into targetFbo.
+void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxToggles& fx,
+                 bool caveCull, int fbW, int fbH, unsigned int targetFbo,
+                 FrameTimers* timers) {
+    const CameraFrame cam = buildCameraFrame(camera, fbW, fbH);
+    const glm::vec3 sunL = sunFromAltitude(fx.sunAltitudeDeg);
+    const float aspect = float(fbW) / float(fbH);
+
+    rc.postfx.resize(fbW, fbH);
+
+    if (timers) timers->shadow.begin();
+    if (fx.shadows) {
+        rc.shadows.update(camera.position, camera.forward(), sunL,
+                          glm::radians(camera.fovYDeg), aspect);
+        rc.shadows.render(rc.renderer, cam.cameraChunk, cam.cameraFrac);
+    }
+    if (timers) timers->shadow.end();
+
+    if (timers) timers->scene.begin();
+    rc.postfx.beginScene();
+    glClearColor(0.42f, 0.68f, 1.05f, 1.0f); // HDR sky
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    glProgramUniform3fv(rc.drawProgram, 4, 1, &sunL.x);
+    glProgramUniform1f(rc.drawProgram, 5, fx.shadows ? 1.0f : 0.0f);
+    glProgramUniformMatrix4fv(rc.drawProgram, 6, 3, GL_FALSE,
+                              &rc.shadows.cascadeVp()[0][0][0]);
+    const glm::vec3 splits{vx::ShadowMap::kSplits[0], vx::ShadowMap::kSplits[1],
+                           vx::ShadowMap::kSplits[2]};
+    glProgramUniform3fv(rc.drawProgram, 18, 1, &splits.x);
+    const glm::vec3 texel = rc.shadows.cascadeTexelWorld();
+    glProgramUniform3fv(rc.drawProgram, 19, 1, &texel.x);
+    glBindTextureUnit(1, rc.shadows.texture());
+
+    rc.renderer.drawWorld(cam.viewProj, cam.frustum, cam.cameraChunk, cam.cameraFrac,
+                          caveCull);
+    if (timers) timers->scene.end();
+
+    if (timers) timers->post.begin();
+    const float f = 1.0f / std::tan(glm::radians(camera.fovYDeg) * 0.5f);
+    vx::PostFx::RunParams rp;
+    rp.projScale = {aspect / f, 1.0f / f};
+    rp.nearPlane = camera.nearPlane;
+    rp.invViewRot = glm::transpose(glm::mat3(camera.viewAtOrigin()));
+    rp.sunL = sunL;
+    rp.shadows = &rc.shadows;
+    rp.toggles = fx;
+    rp.targetFbo = targetFbo;
+    rp.targetWidth = fbW;
+    rp.targetHeight = fbH;
+    rc.postfx.run(rp);
+    if (timers) timers->post.end();
+}
+
+int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
                  vx::LightEngine& light, vx::FlyCamera& camera, vx::DebugHud& hud,
                  vx::Window& window, const std::filesystem::path& outPath) {
     const auto drain = [&] {
         for (int i = 0; i < 20000 && (world.busy() || !light.idle() || i == 0); ++i) {
-            renderer.beginFrame();
-            world.update(jobs, renderer, light, camera.position);
-            renderer.endFrame();
+            rc.renderer.beginFrame();
+            world.update(jobs, rc.renderer, light, camera.position);
+            rc.renderer.endFrame();
         }
     };
 
     drain();
     world.logSummary();
 
-    // lighting checks against the enclosed glow room in the terrain (see TestTerrain)
+    // lighting checks against the enclosed glow room in the terrain
     {
         const int skyInRoom = light.lightAt({16, 48, 16}) >> 4;
-        const int glowAbove = light.lightAt({16, 46, 16}) & 15; // 1 above the glow block
-        const int glowEdge = light.lightAt({16, 48, 19}) & 15;  // a few steps away
+        const int glowAbove = light.lightAt({16, 46, 16}) & 15;
+        const int glowEdge = light.lightAt({16, 48, 19}) & 15;
         const int surf = world.generator().surfaceHeight(16, 16);
-        const int skySurface = light.lightAt({16, surf + 5, 16}) >> 4; // open air
+        const int skySurface = light.lightAt({16, surf + 5, 16}) >> 4;
         bool ok = skyInRoom == 0 && glowAbove == 13 && glowEdge > 0 && glowEdge < 13 &&
                   skySurface == 15;
         VX_INFO("light: room sky %d (want 0), above-glow %d (want 13), edge %d, surface sky "
@@ -133,10 +196,8 @@ int runSmokeTest(vx::Renderer& renderer, vx::ChunkManager& world, vx::JobSystem&
         if (!ok)
             return 1;
 
-        // removal is the pass everyone gets wrong: delete the glow block, light must
-        // collapse to zero; put it back, light must return to the same values
         vx::Chunk* roomChunk = world.chunkDataMutable({0, 1, 0});
-        roomChunk->set(16, 13, 16, vx::blocks::Air); // world y 45
+        roomChunk->set(16, 13, 16, vx::blocks::Air);
         light.onBlockChanged({16, 45, 16}, vx::blocks::Glow, vx::blocks::Air);
         while (!light.idle())
             light.process(10.0);
@@ -151,23 +212,22 @@ int runSmokeTest(vx::Renderer& renderer, vx::ChunkManager& world, vx::JobSystem&
                 afterRestore, ok ? "PASS" : "FAIL");
         if (!ok)
             return 1;
-        drain(); // let the touched chunks remesh
+        drain();
     }
 
-    // hitch check: teleport 16 chunks east and re-stream the world, recording the worst
-    // single main-thread update() cost. workers absorb gen+mesh; the budget caps uploads.
+    // hitch check: teleport 16 chunks east and re-stream the world
     camera.position.x += 512.0;
     double worstMs = 0.0;
     int frames = 0;
     for (; frames < 20000; ++frames) {
-        renderer.beginFrame();
+        rc.renderer.beginFrame();
         const auto t0 = std::chrono::steady_clock::now();
-        world.update(jobs, renderer, light, camera.position);
+        world.update(jobs, rc.renderer, light, camera.position);
         worstMs = std::max(
             worstMs,
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
                 .count());
-        renderer.endFrame();
+        rc.renderer.endFrame();
         if (frames > 0 && !world.busy())
             break;
     }
@@ -181,39 +241,32 @@ int runSmokeTest(vx::Renderer& renderer, vx::ChunkManager& world, vx::JobSystem&
     window.framebufferSize(w, h);
 
     GLuint color = 0;
-    GLuint depth = 0;
     glCreateRenderbuffers(1, &color);
     glNamedRenderbufferStorage(color, GL_RGB8, w, h);
-    glCreateRenderbuffers(1, &depth);
-    glNamedRenderbufferStorage(depth, GL_DEPTH_COMPONENT32F, w, h);
     GLuint fbo = 0;
     glCreateFramebuffers(1, &fbo);
     glNamedFramebufferRenderbuffer(fbo, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, color);
-    glNamedFramebufferRenderbuffer(fbo, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
     if (glCheckNamedFramebufferStatus(fbo, GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
         VX_ERROR("smoke: framebuffer incomplete");
         return 1;
     }
 
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-
     std::vector<vx::ChunkDrawInfo> drawInfo;
     world.collectDrawInfo(drawInfo);
-    renderer.updateChunkMeta(drawInfo);
-    world.updateVisibilityIfNeeded(renderer, camera.position, true);
-    const CameraFrame cam = buildCameraFrame(camera, w, h);
+    rc.renderer.updateChunkMeta(drawInfo);
+    world.updateVisibilityIfNeeded(rc.renderer, camera.position, true);
 
+    vx::FxToggles fx;
     const vx::ChunkManager::Stats ws = world.stats();
-    const vx::Renderer::ArenaStats as = renderer.arenaStats();
+    const vx::Renderer::ArenaStats as = rc.renderer.arenaStats();
     bool vsyncDummy = false;
     bool caveCullDummy = true;
     int radiusDummy = world.radius;
     for (int i = 0; i < 5; ++i) {
         window.pollEvents();
-        renderer.beginFrame();
+        rc.renderer.beginFrame();
         hud.beginFrame();
-        beginFrameGl(w, h);
-        renderer.drawWorld(cam.viewProj, cam.frustum, cam.cameraChunk, cam.cameraFrac, true);
+        renderFrame(rc, camera, fx, true, w, h, fbo, nullptr);
         const vx::FrameStats stats{.frameMs = 1.0f,
                                    .gpuMs = 0.5f,
                                    .heapAllocs = 0,
@@ -228,65 +281,44 @@ int runSmokeTest(vx::Renderer& renderer, vx::ChunkManager& world, vx::JobSystem&
                                    .uploadMs = float(ws.uploadMsLast),
                                    .voxelBytes = ws.voxelBytes,
                                    .quadBytes = ws.quadBytes,
-                                   .gpuChunksDrawn = renderer.gpuVisibleChunks(),
+                                   .gpuChunksDrawn = rc.renderer.gpuVisibleChunks(),
                                    .arenaUsedQuads = as.usedQuads,
                                    .arenaCapQuads = as.capacityQuads,
                                    .arenaFreeBlocks = as.freeBlocks};
-        hud.buildUi(stats, camera, vsyncDummy, caveCullDummy, radiusDummy);
+        hud.buildUi(stats, camera, vsyncDummy, caveCullDummy, radiusDummy, fx);
         hud.render();
-        renderer.endFrame();
+        rc.renderer.endFrame();
     }
     VX_INFO("smoke: gpu culled %d of %d chunks (1 draw call, cave culling on)",
-            renderer.debugReadDrawCount(), int(drawInfo.size()));
+            rc.renderer.debugReadDrawCount(), int(drawInfo.size()));
 
     std::vector<std::uint8_t> pixels(std::size_t(w) * std::size_t(h) * 3u);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glNamedFramebufferReadBuffer(fbo, GL_COLOR_ATTACHMENT0);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
     glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, pixels.data());
 
-    const std::uint8_t clearBgr[3] = {
-        std::uint8_t(kClearColor[2] * 255.0f + 0.5f),
-        std::uint8_t(kClearColor[1] * 255.0f + 0.5f),
-        std::uint8_t(kClearColor[0] * 255.0f + 0.5f),
-    };
+    // post-processing owns the sky color now, so compare against an actual sky pixel
+    // (top-left corner; the camera pitches down so the top rows are always sky)
+    const std::size_t skyIdx = (std::size_t(h - 3) * std::size_t(w) + 4) * 3;
     std::size_t drawn = 0;
     for (std::size_t i = 0; i < pixels.size(); i += 3) {
-        if (std::abs(int(pixels[i + 0]) - int(clearBgr[0])) > 8 ||
-            std::abs(int(pixels[i + 1]) - int(clearBgr[1])) > 8 ||
-            std::abs(int(pixels[i + 2]) - int(clearBgr[2])) > 8)
+        if (std::abs(int(pixels[i + 0]) - int(pixels[skyIdx + 0])) > 10 ||
+            std::abs(int(pixels[i + 1]) - int(pixels[skyIdx + 1])) > 10 ||
+            std::abs(int(pixels[i + 2]) - int(pixels[skyIdx + 2])) > 10)
             ++drawn;
     }
 
     if (!vx::writeBmp24(outPath, w, h, pixels))
         return 1;
 
-    VX_INFO("smoke: %llu of %d pixels differ from clear color (%.1f%%), wrote %s",
+    VX_INFO("smoke: %llu of %d pixels differ from the sky (%.1f%%), wrote %s",
             static_cast<unsigned long long>(drawn), w * h,
             100.0 * double(drawn) / (double(w) * double(h)), outPath.string().c_str());
     if (drawn < 1000) {
         VX_ERROR("smoke: nothing rendered");
         return 1;
     }
-
-    // the M8 measurement: bury the camera in solid stone and count chunks drawn with
-    // and without cave culling. underground is where the algorithm earns its keep.
-    camera.position = {16.0, 16.0, 16.0};
-    const CameraFrame buried = buildCameraFrame(camera, w, h);
-    world.updateVisibilityIfNeeded(renderer, camera.position, true);
-    renderer.beginFrame();
-    beginFrameGl(w, h);
-    renderer.drawWorld(buried.viewProj, buried.frustum, buried.cameraChunk, buried.cameraFrac,
-                       true);
-    renderer.endFrame();
-    const int buriedOn = renderer.debugReadDrawCount();
-    renderer.beginFrame();
-    beginFrameGl(w, h);
-    renderer.drawWorld(buried.viewProj, buried.frustum, buried.cameraChunk, buried.cameraFrac,
-                       false);
-    renderer.endFrame();
-    const int buriedOff = renderer.debugReadDrawCount();
-    VX_INFO("smoke: buried in stone — %d chunks drawn with cave culling, %d without",
-            buriedOn, buriedOff);
 
     // physics: drop a player from the sky onto the surface, fixed deterministic ticks
     {
@@ -302,11 +334,10 @@ int runSmokeTest(vx::Renderer& renderer, vx::ChunkManager& world, vx::JobSystem&
         if (!ok)
             return 1;
 
-        // edits: place + break, synchronous remesh path
         const glm::ivec3 ep{18, surf + 3, 18};
-        world.setBlock(renderer, light, ep, vx::blocks::Stone);
+        world.setBlock(rc.renderer, light, ep, vx::blocks::Stone);
         const bool placed = world.blockAtWorld(ep) == vx::blocks::Stone;
-        world.setBlock(renderer, light, ep, vx::blocks::Air);
+        world.setBlock(rc.renderer, light, ep, vx::blocks::Air);
         const bool broken = world.blockAtWorld(ep) == vx::blocks::Air;
         VX_INFO("edits: place %s, break %s", placed ? "PASS" : "FAIL",
                 broken ? "PASS" : "FAIL");
@@ -314,22 +345,62 @@ int runSmokeTest(vx::Renderer& renderer, vx::ChunkManager& world, vx::JobSystem&
             return 1;
     }
 
-    // screenshot from inside the glow room: block light gradient, zero sky
+    // screenshot from inside the glow room
     camera.position = {16.5, 48.0, 16.5};
     camera.yawDeg = 40.0f;
     camera.pitchDeg = -20.0f;
-    world.updateVisibilityIfNeeded(renderer, camera.position, true);
-    const CameraFrame room = buildCameraFrame(camera, w, h);
-    renderer.beginFrame();
-    beginFrameGl(w, h);
-    renderer.drawWorld(room.viewProj, room.frustum, room.cameraChunk, room.cameraFrac, true);
-    renderer.endFrame();
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    world.updateVisibilityIfNeeded(rc.renderer, camera.position, true);
+    rc.renderer.beginFrame();
+    renderFrame(rc, camera, fx, true, w, h, fbo, nullptr);
+    rc.renderer.endFrame();
     glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, pixels.data());
     std::filesystem::path roomPath = outPath;
     roomPath.replace_filename(outPath.stem().string() + "_room.bmp");
     vx::writeBmp24(roomPath, w, h, pixels);
     VX_INFO("smoke: glow room screenshot -> %s", roomPath.string().c_str());
+
+    // per-effect GPU cost: back on the surface, time the shadow/scene/post stages with
+    // GPU queries, then toggle each effect and measure the delta on the post stage.
+    camera.position = {16.0, 110.0, 16.0};
+    camera.yawDeg = -35.0f;
+    camera.pitchDeg = -25.0f;
+    world.updateVisibilityIfNeeded(rc.renderer, camera.position, true);
+    FrameTimers ft;
+    ft.shadow.init();
+    ft.scene.init();
+    ft.post.init();
+    const auto timeConfig = [&](vx::FxToggles cfg) {
+        double s = 0, sc = 0, p = 0;
+        for (int i = 0; i < 40; ++i) {
+            rc.renderer.beginFrame();
+            renderFrame(rc, camera, cfg, true, w, h, fbo, &ft);
+            rc.renderer.endFrame();
+            glFinish();
+            if (i >= 8) { // let the query ring fill
+                s += ft.shadow.milliseconds();
+                sc += ft.scene.milliseconds();
+                p += ft.post.milliseconds();
+            }
+        }
+        return glm::dvec3(s, sc, p) / 32.0;
+    };
+    vx::FxToggles all;
+    const glm::dvec3 tAll = timeConfig(all);
+    vx::FxToggles noShadow = all; noShadow.shadows = false;
+    vx::FxToggles noSsao = all; noSsao.ssao = false;
+    vx::FxToggles noVol = all; noVol.volumetric = false;
+    vx::FxToggles noBloom = all; noBloom.bloom = false;
+    vx::FxToggles none{}; none.shadows = none.ssao = none.volumetric = none.bloom = false;
+    const glm::dvec3 tNoShadow = timeConfig(noShadow);
+    const glm::dvec3 tNoSsao = timeConfig(noSsao);
+    const glm::dvec3 tNoVol = timeConfig(noVol);
+    const glm::dvec3 tNoBloom = timeConfig(noBloom);
+    const glm::dvec3 tNone = timeConfig(none);
+    VX_INFO("gpu cost @ %dx%d, radius %d: base scene %.2f ms, full pipeline %.2f ms", w, h,
+            world.radius, tNone.y, tAll.x + tAll.y + tAll.z);
+    VX_INFO("  shadows +%.2f | ssao +%.2f | volumetric +%.2f | bloom +%.2f ms",
+            (tAll.x + tAll.y + tAll.z) - (tNoShadow.x + tNoShadow.y + tNoShadow.z),
+            (tAll.z - tNoSsao.z), (tAll.z - tNoVol.z), (tAll.z - tNoBloom.z));
     return 0;
 }
 
@@ -380,10 +451,12 @@ int main(int argc, char** argv) {
         VX_ERROR("could not locate assets/ directory");
         return 1;
     }
-    const GLuint drawProgram =
-        vx::loadProgram(assets / "shaders/chunk.vert", assets / "shaders/chunk.frag");
-    const GLuint cullProgram = vx::loadComputeProgram(assets / "shaders/cull.comp");
-    if (!drawProgram || !cullProgram)
+    const std::filesystem::path shaders = assets / "shaders";
+    const GLuint drawProgram = vx::loadProgram(shaders / "chunk.vert", shaders / "chunk.frag");
+    const GLuint cullProgram = vx::loadComputeProgram(shaders / "cull.comp");
+    const GLuint shadowProgram =
+        vx::loadProgram(shaders / "shadow.vert", shaders / "shadow.frag");
+    if (!drawProgram || !cullProgram || !shadowProgram)
         return 1;
 
     if (!runMesherOracle())
@@ -392,6 +465,13 @@ int main(int argc, char** argv) {
     vx::Renderer renderer;
     if (!renderer.init(drawProgram, cullProgram))
         return 1;
+    vx::ShadowMap shadowMap;
+    if (!shadowMap.init(shadowProgram))
+        return 1;
+    vx::PostFx postfx;
+    if (!postfx.init(shaders))
+        return 1;
+    RenderContext rc{renderer, shadowMap, postfx, drawProgram};
 
     // declaration order matters: jobs is destroyed first, joining all workers, so no
     // job can touch world's chunks or queues during teardown
@@ -411,18 +491,22 @@ int main(int argc, char** argv) {
     window->hookScroll();
 
     if (smoke) {
-        const int rc =
-            runSmokeTest(renderer, *world, *jobs, *light, camera, hud, *window, smokeOut);
+        const int rc2 = runSmokeTest(rc, *world, *jobs, *light, camera, hud, *window, smokeOut);
         hud.shutdown();
+        postfx.shutdown();
+        shadowMap.shutdown();
         renderer.shutdown();
-        return rc;
+        return rc2;
     }
 
-    vx::GpuTimer gpuTimer;
-    gpuTimer.init();
+    FrameTimers timers;
+    timers.shadow.init();
+    timers.scene.init();
+    timers.post.init();
 
     std::vector<vx::ChunkDrawInfo> drawInfo;
     vx::Player player;
+    vx::FxToggles fx;
     double prevTime = glfwGetTime();
     double physAccum = 0.0;
     bool f3Held = false;
@@ -469,7 +553,6 @@ int main(int argc, char** argv) {
         hud.beginFrame();
         if (walkMode) {
             camera.lookOnly(*window);
-            // fixed timestep: framerate never changes physics, per the house rule
             physAccum += double(dt);
             while (physAccum >= vx::Player::kTickDt) {
                 vx::PlayerInput in;
@@ -487,8 +570,6 @@ int main(int argc, char** argv) {
             camera.update(*window, dt, hud.wantsMouse(), hud.wantsKeyboard());
         }
 
-        // block edits: LMB breaks, MMB places, aim is the camera ray. only while the
-        // cursor is captured so UI clicks never punch holes in the world
         if (camera.flying()) {
             const bool lmb = window->mouseDown(GLFW_MOUSE_BUTTON_LEFT);
             const bool mmb = window->mouseDown(GLFW_MOUSE_BUTTON_MIDDLE);
@@ -522,20 +603,15 @@ int main(int argc, char** argv) {
         int fbW = 0;
         int fbH = 0;
         window->framebufferSize(fbW, fbH);
-        gpuTimer.begin();
-        if (fbW > 0 && fbH > 0) {
-            const CameraFrame cam = buildCameraFrame(camera, fbW, fbH);
-            beginFrameGl(fbW, fbH);
-            renderer.drawWorld(cam.viewProj, cam.frustum, cam.cameraChunk, cam.cameraFrac,
-                               caveCull);
-        }
+        if (fbW > 0 && fbH > 0)
+            renderFrame(rc, camera, fx, caveCull, fbW, fbH, 0, &timers);
 
         const vx::ChunkManager::Stats ws = world->stats();
         const vx::Renderer::ArenaStats as = renderer.arenaStats();
         const std::uint64_t allocsNow = vx::heapAllocCount();
         const vx::FrameStats stats{
             .frameMs = frameMs,
-            .gpuMs = gpuTimer.milliseconds(),
+            .gpuMs = timers.scene.milliseconds(),
             .heapAllocs = allocsNow - allocsPrevFrame,
             .drawCalls = 1,
             .quads = int(ws.totalQuads),
@@ -554,14 +630,16 @@ int main(int argc, char** argv) {
             .arenaFreeBlocks = as.freeBlocks,
             .walkMode = walkMode,
             .placeBlock = int(placeBlock),
+            .gpuShadowMs = timers.shadow.milliseconds(),
+            .gpuSceneMs = timers.scene.milliseconds(),
+            .gpuPostMs = timers.post.milliseconds(),
         };
         allocsPrevFrame = allocsNow;
         const bool vsyncBefore = vsync;
-        hud.buildUi(stats, camera, vsync, caveCull, world->radius);
+        hud.buildUi(stats, camera, vsync, caveCull, world->radius, fx);
         if (vsync != vsyncBefore)
             window->setVsync(vsync);
         hud.render();
-        gpuTimer.end();
         renderer.endFrame();
 
         window->swapBuffers();
@@ -569,6 +647,8 @@ int main(int argc, char** argv) {
 
     VX_INFO("window closed, shutting down");
     hud.shutdown();
+    postfx.shutdown();
+    shadowMap.shutdown();
     renderer.shutdown();
     return 0;
 }

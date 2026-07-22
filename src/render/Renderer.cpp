@@ -172,39 +172,48 @@ void Renderer::updateVisibility(std::span<const std::uint32_t> bits) {
     std::memcpy(m_visMap, bits.data(), words * sizeof(std::uint32_t));
 }
 
-void Renderer::drawWorld(const glm::mat4& viewProj, const Frustum& frustum,
-                         const glm::ivec3& cameraChunk, const glm::vec3& cameraFrac,
-                         bool caveCull) {
-    if (m_chunkCount == 0)
-        return;
-
+void Renderer::cullFrustum(const Frustum& frustum, const glm::ivec3& cameraChunk,
+                           const glm::vec3& cameraFrac, bool caveCull) {
     const GLuint zero = 0;
     glClearNamedBufferSubData(m_countBuf, GL_R32UI, 0, sizeof(GLuint), GL_RED_INTEGER,
                               GL_UNSIGNED_INT, &zero);
 
     glUseProgram(m_cullProgram);
-    glProgramUniform4fv(m_cullProgram, 0, 5, &frustum.planes[0].x);
-    glProgramUniform3iv(m_cullProgram, 5, 1, &cameraChunk.x);
-    glProgramUniform3fv(m_cullProgram, 6, 1, &cameraFrac.x);
-    glProgramUniform1ui(m_cullProgram, 7, m_chunkCount);
-    glProgramUniform1ui(m_cullProgram, 8, caveCull ? 1u : 0u);
+    glProgramUniform4fv(m_cullProgram, 0, frustum.count, &frustum.planes[0].x);
+    glProgramUniform3iv(m_cullProgram, 6, 1, &cameraChunk.x);
+    glProgramUniform3fv(m_cullProgram, 7, 1, &cameraFrac.x);
+    glProgramUniform1ui(m_cullProgram, 8, m_chunkCount);
+    glProgramUniform1ui(m_cullProgram, 9, caveCull ? 1u : 0u);
+    glProgramUniform1ui(m_cullProgram, 10, GLuint(frustum.count));
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_metaBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_cmdBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, m_countBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, m_offsetsBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, m_visBuf);
     glDispatchCompute((m_chunkCount + 63) / 64, 1, 1);
-
     glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+}
 
-    glUseProgram(m_drawProgram);
-    glProgramUniformMatrix4fv(m_drawProgram, 0, 1, GL_FALSE, glm::value_ptr(viewProj));
+void Renderer::drawIndirect(unsigned int program, const glm::mat4& viewProj) {
+    if (m_chunkCount == 0)
+        return;
+    glUseProgram(program);
+    glProgramUniformMatrix4fv(program, 0, 1, GL_FALSE, glm::value_ptr(viewProj));
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_arenaBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_offsetsBuf);
     glBindVertexArray(m_vao);
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, m_cmdBuf);
     glBindBuffer(GL_PARAMETER_BUFFER, m_countBuf);
     glMultiDrawArraysIndirectCount(GL_TRIANGLES, nullptr, 0, GLsizei(kMaxChunks), 0);
+}
+
+void Renderer::drawWorld(const glm::mat4& viewProj, const Frustum& frustum,
+                         const glm::ivec3& cameraChunk, const glm::vec3& cameraFrac,
+                         bool caveCull) {
+    if (m_chunkCount == 0)
+        return;
+    cullFrustum(frustum, cameraChunk, cameraFrac, caveCull);
+    drawIndirect(m_drawProgram, viewProj);
 
     // HUD visible-count: copied now, read kFrameRing frames later off the fence ring
     glCopyNamedBufferSubData(m_countBuf, m_readbackBuf, 0,

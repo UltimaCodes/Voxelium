@@ -48,7 +48,7 @@ bool DebugHud::wantsMouse() const { return ImGui::GetIO().WantCaptureMouse; }
 bool DebugHud::wantsKeyboard() const { return ImGui::GetIO().WantCaptureKeyboard; }
 
 void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera, bool& vsync,
-                       bool& caveCull, int& radius) {
+                       bool& caveCull, int& radius, FxToggles& fx) {
     m_frameMs[m_cursor] = stats.frameMs;
     m_cursor = (m_cursor + 1) % kSamples;
 
@@ -85,12 +85,26 @@ void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera, bool& v
                 double(stats.arenaUsedQuads) * 8.0 / (1024.0 * 1024.0),
                 double(stats.arenaCapQuads) * 8.0 / (1024.0 * 1024.0),
                 stats.arenaFreeBlocks);
+    ImGui::Text("gpu: shadow %.2f   scene %.2f   post %.2f ms", double(stats.gpuShadowMs),
+                double(stats.gpuSceneMs), double(stats.gpuPostMs));
     ImGui::Checkbox("vsync", &vsync);
     ImGui::SameLine();
     ImGui::Checkbox("cave cull", &caveCull);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(120.0f);
     ImGui::SliderInt("radius", &radius, 4, 16);
+    ImGui::Checkbox("shadows", &fx.shadows);
+    ImGui::SameLine();
+    ImGui::Checkbox("ssao", &fx.ssao);
+    ImGui::SameLine();
+    ImGui::Checkbox("volumetric", &fx.volumetric);
+    ImGui::SameLine();
+    ImGui::Checkbox("bloom", &fx.bloom);
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::SliderFloat("sun", &fx.sunAltitudeDeg, 8.0f, 85.0f, "%.0f deg");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::SliderFloat("exposure", &fx.exposure, 0.4f, 2.5f, "%.2f");
 
     ImGui::Separator();
     ImGui::Text("cam (%.1f, %.1f, %.1f)  yaw %.0f  pitch %.0f  speed %.1f%s",

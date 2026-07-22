@@ -1,5 +1,7 @@
 #pragma once
 
+#include "render/PostFx.hpp"
+
 #include <cstdint>
 
 struct GLFWwindow;
@@ -29,6 +31,9 @@ struct FrameStats {
     int arenaFreeBlocks = 0;
     bool walkMode = false;
     int placeBlock = 1;
+    float gpuShadowMs = 0.0f;
+    float gpuSceneMs = 0.0f;
+    float gpuPostMs = 0.0f;
 };
 
 // ImGui debug overlay: frame graph, timings, alloc counter, camera state, log view.
@@ -40,7 +45,7 @@ public:
 
     void beginFrame();
     void buildUi(const FrameStats& stats, const FlyCamera& camera, bool& vsync,
-                 bool& caveCull, int& radius);
+                 bool& caveCull, int& radius, FxToggles& fx);
     void render();
 
     void toggle() { m_visible = !m_visible; }

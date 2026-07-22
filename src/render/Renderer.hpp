@@ -58,6 +58,13 @@ public:
                    bool caveCull);
     void endFrame(); // fence this frame's GPU work
 
+    // For the shadow pass: cull chunks against an arbitrary frustum (a cascade's ortho
+    // box) into the command buffers, then draw with any depth program. Called once per
+    // cascade so far casters aren't drawn into tight near cascades.
+    void cullFrustum(const Frustum& frustum, const glm::ivec3& cameraChunk,
+                     const glm::vec3& cameraFrac, bool caveCull);
+    void drawIndirect(unsigned int program, const glm::mat4& viewProj);
+
     int gpuVisibleChunks() const { return m_visibleChunks; } // ~3 frames of latency
     int debugReadDrawCount() const;                          // syncs; smoke test only
     ArenaStats arenaStats() const;

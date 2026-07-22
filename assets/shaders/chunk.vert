@@ -4,19 +4,16 @@
 // the SSBO, gl_VertexID % 6 picks the corner. Bit layout must match
 // src/mesh/QuadFormat.hpp — that header is the source of truth.
 layout(std430, binding = 0) readonly buffer Quads { uvec2 quads[]; };
-
-// Per-draw chunk offsets, written by cull.comp in draw order; gl_DrawID picks ours.
 layout(std430, binding = 1) readonly buffer Offsets { vec4 uOffsets[]; };
 
 layout(location = 0) uniform mat4 uViewProj; // camera-relative: view is at the origin
 
-out vec3 vColor;
+out vec3 vWorldRel;
+flat out vec3 vAlbedo;
+flat out uint vDir;
+flat out vec2 vLight; // x = block light, y = sky light, 0..1
 
-// two triangles per quad: corners (0,1,2) and (0,2,3)
 const int kTri[6] = int[6](0, 1, 2, 0, 2, 3);
-
-// corner order per dir in plane (u,v) space, CCW seen from outside — same winding the
-// naive mesher used, so backface culling behaves identically
 const vec2 kCorner[6][4] = vec2[6][4](
     vec2[4](vec2(0, 0), vec2(0, 1), vec2(1, 1), vec2(1, 0)), // +X
     vec2[4](vec2(1, 0), vec2(1, 1), vec2(0, 1), vec2(0, 0)), // -X
@@ -26,21 +23,16 @@ const vec2 kCorner[6][4] = vec2[6][4](
     vec2[4](vec2(1, 0), vec2(0, 0), vec2(0, 1), vec2(1, 1))  // -Z
 );
 
-const float kShade[6] = float[6](0.80, 0.80, 1.00, 0.50, 0.65, 0.65);
-
-// placeholder until the texture array lands; matches the M3 vertex colors
+// placeholder until the texture array lands
 const vec3 kBlockColor[5] = vec3[5](
-    vec3(0.0),                    // air, never drawn
-    vec3(0.490, 0.490, 0.490),    // stone
-    vec3(0.525, 0.376, 0.263),    // dirt
-    vec3(0.416, 0.667, 0.251),    // grass
-    vec3(1.000, 0.850, 0.550)     // glow
+    vec3(0.0),
+    vec3(0.490, 0.490, 0.490), // stone
+    vec3(0.525, 0.376, 0.263), // dirt
+    vec3(0.416, 0.667, 0.251), // grass
+    vec3(1.000, 0.850, 0.550)  // glow
 );
 
-// Greedy meshing creates T-junctions (a quad corner in the middle of a neighbor's
-// edge); interpolation along the long edge doesn't exactly hit the transformed corner,
-// so single-pixel cracks open. Bloating every quad a hair in-plane makes neighbors
-// overlap by a sub-pixel strip — coplanar overlap is invisible, holes are not.
+// greedy T-junction pinhole fix — see docs/M4.md
 const float kBloat = 0.001;
 
 void main() {
@@ -63,14 +55,9 @@ void main() {
     else if (dir == 4u) pos += vec3(uv.x, uv.y, 1.0);
     else                pos += vec3(uv.x, uv.y, 0.0);
 
-    gl_Position = uViewProj * vec4(pos + uOffsets[gl_DrawID].xyz, 1.0);
-
-    // voxel light: low nibble block light, high nibble sky. smoothstep curve keeps
-    // full daylight at exactly 1.0 and leaves caves dark instead of muddy-grey
-    float blockL = float((q.y >> 20) & 15u) / 15.0;
-    float skyL = float((q.y >> 24) & 15u) / 15.0;
-    float bright = max(blockL, skyL);
-    bright = mix(0.04, 1.0, bright * bright * (3.0 - 2.0 * bright));
-
-    vColor = kBlockColor[min(block, 4u)] * kShade[dir] * bright;
+    vWorldRel = pos + uOffsets[gl_DrawID].xyz;
+    vAlbedo = kBlockColor[min(block, 4u)];
+    vDir = dir;
+    vLight = vec2(float((q.y >> 20) & 15u), float((q.y >> 24) & 15u)) / 15.0;
+    gl_Position = uViewProj * vec4(vWorldRel, 1.0);
 }

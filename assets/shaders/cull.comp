@@ -25,11 +25,12 @@ layout(std430, binding = 2) buffer DrawCount { uint drawCount; };
 layout(std430, binding = 3) writeonly buffer Offsets { vec4 offsets[]; };
 layout(std430, binding = 4) readonly buffer Vis { uint visBits[]; }; // cave-culling flood result
 
-layout(location = 0) uniform vec4 uPlanes[5]; // no far plane with infinite reversed-z
-layout(location = 5) uniform ivec3 uCameraChunk;
-layout(location = 6) uniform vec3 uCameraFrac;
-layout(location = 7) uniform uint uChunkCount;
-layout(location = 8) uniform uint uCaveCull;
+layout(location = 0) uniform vec4 uPlanes[6]; // 5 for the perspective view, 6 for ortho cascades
+layout(location = 6) uniform ivec3 uCameraChunk;
+layout(location = 7) uniform vec3 uCameraFrac;
+layout(location = 8) uniform uint uChunkCount;
+layout(location = 9) uniform uint uCaveCull;
+layout(location = 10) uniform uint uPlaneCount;
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
@@ -41,7 +42,7 @@ void main() {
     ChunkMeta m = meta[i];
     vec3 offset = vec3((m.posFirst.xyz - uCameraChunk) * 32) - uCameraFrac;
     vec3 center = offset + 16.0;
-    for (int p = 0; p < 5; ++p) {
+    for (uint p = 0u; p < uPlaneCount; ++p) {
         vec3 n = uPlanes[p].xyz;
         if (dot(n, center) + uPlanes[p].w + dot(abs(n), vec3(16.0)) < 0.0)
             return; // box entirely behind this plane
