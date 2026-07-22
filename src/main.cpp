@@ -92,9 +92,13 @@ struct CameraFrame {
     glm::vec3 cameraFrac;
 };
 
-CameraFrame buildCameraFrame(const vx::FlyCamera& camera, int fbWidth, int fbHeight) {
+CameraFrame buildCameraFrame(const vx::FlyCamera& camera, int fbWidth, int fbHeight,
+                             glm::vec2 jitterNdc = glm::vec2(0.0f)) {
     CameraFrame f;
-    f.viewProj = camera.projReversedZ(float(fbWidth) / float(fbHeight)) * camera.viewAtOrigin();
+    glm::mat4 proj = camera.projReversedZ(float(fbWidth) / float(fbHeight));
+    proj[2][0] += jitterNdc.x; // sub-pixel jitter for TAA (clip-space shift per unit w)
+    proj[2][1] += jitterNdc.y;
+    f.viewProj = proj * camera.viewAtOrigin();
     f.frustum = vx::Frustum::fromViewProj(f.viewProj);
     f.cameraChunk = glm::ivec3(glm::floor(camera.position / double(vx::kChunkSize)));
     f.cameraFrac = glm::vec3(camera.position - glm::dvec3(f.cameraChunk) * double(vx::kChunkSize));
@@ -105,6 +109,25 @@ glm::vec3 sunFromAltitude(float deg) {
     const float a = glm::radians(deg);
     return glm::normalize(glm::vec3(0.55f * std::cos(a), std::sin(a), 0.35f * std::cos(a)));
 }
+
+// low-discrepancy sub-pixel offset for the TAA jitter
+float halton(int i, int base) {
+    float f = 1.0f, r = 0.0f;
+    while (i > 0) {
+        f /= float(base);
+        r += f * float(i % base);
+        i /= base;
+    }
+    return r;
+}
+
+// carried across frames so the TAA resolve can reproject into the previous frame
+struct TaaState {
+    glm::mat4 prevViewProj{1.0f};
+    glm::dvec3 prevCamPos{0.0};
+    int frame = 0;
+    bool valid = false;
+};
 
 struct RenderContext {
     vx::Renderer& renderer;
@@ -124,10 +147,18 @@ struct FrameTimers {
 void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxToggles& fx,
                  bool caveCull, int fbW, int fbH, unsigned int targetFbo, float time,
                  FrameTimers* timers, bool hasSelection = false,
-                 const glm::vec3& selMinCamRel = glm::vec3(0.0f), bool underwater = false) {
-    const CameraFrame cam = buildCameraFrame(camera, fbW, fbH);
-    const glm::vec3 sunL = sunFromAltitude(fx.sunAltitudeDeg);
+                 const glm::vec3& selMinCamRel = glm::vec3(0.0f), bool underwater = false,
+                 TaaState* taa = nullptr) {
     const float aspect = float(fbW) / float(fbH);
+    const bool useTaa = fx.taa && taa != nullptr;
+    glm::vec2 jitter(0.0f);
+    if (useTaa) {
+        const int idx = taa->frame % 8 + 1; // halton is 1-indexed
+        jitter = {(halton(idx, 2) - 0.5f) * 2.0f / float(fbW),
+                  (halton(idx, 3) - 0.5f) * 2.0f / float(fbH)};
+    }
+    const CameraFrame cam = buildCameraFrame(camera, fbW, fbH, jitter);
+    const glm::vec3 sunL = sunFromAltitude(fx.sunAltitudeDeg);
 
     rc.postfx.resize(fbW, fbH);
 
@@ -193,12 +224,25 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     rp.sunL = sunL;
     rp.shadows = &rc.shadows;
     rp.toggles = fx;
+    rp.toggles.taa = useTaa; // only let PostFx run TAA when we actually have history state
     rp.underwater = underwater;
+    if (useTaa) {
+        rp.prevViewProj = taa->prevViewProj;
+        rp.camDelta = glm::vec3(camera.position - taa->prevCamPos);
+        rp.taaHistoryValid = taa->valid;
+    }
     rp.targetFbo = targetFbo;
     rp.targetWidth = fbW;
     rp.targetHeight = fbH;
     rc.postfx.run(rp);
     if (timers) timers->post.end();
+
+    if (useTaa) { // remember this frame (unjittered) for next frame's reprojection
+        taa->prevViewProj = camera.projReversedZ(aspect) * camera.viewAtOrigin();
+        taa->prevCamPos = camera.position;
+        ++taa->frame;
+        taa->valid = true;
+    }
 
     // gameplay HUD on top of the final tonemapped image
     glBindFramebuffer(GL_FRAMEBUFFER, targetFbo);
@@ -624,6 +668,8 @@ int main(int argc, char** argv) {
     std::vector<vx::ChunkDrawInfo> waterInfo;
     vx::Player player;
     vx::FxToggles fx;
+    fx.taa = true; // temporal AA on by default in the live app
+    TaaState taaState;
     double prevTime = glfwGetTime();
     double physAccum = 0.0;
     bool f3Held = false;
@@ -775,7 +821,7 @@ int main(int argc, char** argv) {
         window->framebufferSize(fbW, fbH);
         if (fbW > 0 && fbH > 0) {
             renderFrame(rc, camera, fx, caveCull, fbW, fbH, 0, float(now), &timers, hasSel,
-                        selMin, eyeUnderwater);
+                        selMin, eyeUnderwater, &taaState);
             if (hotbarOpen)
                 overlay.drawHotbar(fbW, fbH, kHotbar, kHotbarCount, hotbarSel, blockTex);
         }

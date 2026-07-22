@@ -13,6 +13,7 @@ struct FxToggles {
     bool ssao = true;
     bool volumetric = true;
     bool bloom = true;
+    bool taa = false; // enabled by the live app; off keeps offscreen/smoke renders exact
     float sunAltitudeDeg = 42.0f;
     float exposure = 1.0f;
 };
@@ -44,10 +45,17 @@ public:
         const ShadowMap* shadows;
         FxToggles toggles;
         bool underwater = false; // camera eye submerged -> composite adds depth fog + tint
-        unsigned int targetFbo;  // 0 = backbuffer
+        // TAA reprojection: last frame's unjittered view-proj and how far the camera moved
+        glm::mat4 prevViewProj{1.0f};
+        glm::vec3 camDelta{0.0f};
+        bool taaHistoryValid = false;
+        unsigned int targetFbo; // 0 = backbuffer
         int targetWidth, targetHeight;
     };
     void run(const RunParams& p);
+
+    // TAA history is stale after a resize or when TAA was off last frame.
+    void invalidateTaaHistory() { m_taaValid = false; }
 
 private:
     void createTargets(int width, int height);
@@ -55,11 +63,17 @@ private:
 
     unsigned int m_progSsao = 0, m_progBlur = 0, m_progComposite = 0;
     unsigned int m_progBloomDown = 0, m_progBloomUp = 0, m_progFinal = 0;
+    unsigned int m_progTaa = 0;
     unsigned int m_vao = 0;
 
     unsigned int m_hdrFbo = 0, m_hdrColor = 0, m_depth = 0;
     unsigned int m_sceneCopy = 0; // opaque snapshot for water SSR
     unsigned int m_hdr2Fbo = 0, m_hdr2 = 0;
+
+    // TAA history ping-pong: read prev, write cur, flip. m_taaValid gates the first frame.
+    unsigned int m_taa[2] = {0, 0}, m_taaFbo[2] = {0, 0};
+    int m_taaIndex = 0;
+    bool m_taaValid = false;
     unsigned int m_ssaoFbo = 0, m_ssaoTex = 0;
     unsigned int m_ssaoBlurFbo = 0, m_ssaoBlurTex = 0;
 

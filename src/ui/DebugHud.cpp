@@ -162,6 +162,7 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     ImGui::Checkbox("volumetric", &fx.volumetric);
     ImGui::SameLine();
     ImGui::Checkbox("bloom", &fx.bloom);
+    ImGui::Checkbox("taa (anti-aliasing)", &fx.taa);
 
     ImGui::Separator();
     if (ImGui::Button("resume", ImVec2(160.0f, 32.0f)))

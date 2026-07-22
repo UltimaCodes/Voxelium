@@ -44,8 +44,9 @@ bool PostFx::init(const std::filesystem::path& shaderDir) {
     m_progBloomDown = loadProgram(fs, shaderDir / "bloom_down.frag");
     m_progBloomUp = loadProgram(fs, shaderDir / "bloom_up.frag");
     m_progFinal = loadProgram(fs, shaderDir / "final.frag");
+    m_progTaa = loadProgram(fs, shaderDir / "taa.frag");
     if (!m_progSsao || !m_progBlur || !m_progComposite || !m_progBloomDown ||
-        !m_progBloomUp || !m_progFinal)
+        !m_progBloomUp || !m_progFinal || !m_progTaa)
         return false;
     glCreateVertexArrays(1, &m_vao);
     return true;
@@ -53,8 +54,8 @@ bool PostFx::init(const std::filesystem::path& shaderDir) {
 
 void PostFx::shutdown() {
     destroyTargets();
-    const GLuint progs[] = {m_progSsao, m_progBlur, m_progComposite,
-                            m_progBloomDown, m_progBloomUp, m_progFinal};
+    const GLuint progs[] = {m_progSsao, m_progBlur, m_progComposite, m_progBloomDown,
+                            m_progBloomUp, m_progFinal, m_progTaa};
     for (const GLuint p : progs)
         glDeleteProgram(p);
     glDeleteVertexArrays(1, &m_vao);
@@ -63,12 +64,13 @@ void PostFx::shutdown() {
 void PostFx::destroyTargets() {
     if (m_width == 0)
         return;
-    const GLuint fbos[] = {m_hdrFbo, m_hdr2Fbo, m_ssaoFbo, m_ssaoBlurFbo};
-    glDeleteFramebuffers(4, fbos);
+    const GLuint fbos[] = {m_hdrFbo, m_hdr2Fbo, m_ssaoFbo, m_ssaoBlurFbo, m_taaFbo[0],
+                           m_taaFbo[1]};
+    glDeleteFramebuffers(6, fbos);
     glDeleteFramebuffers(kBloomMips, m_bloomFbo);
-    const GLuint texes[] = {m_hdrColor, m_depth,   m_hdr2,
-                            m_ssaoTex,  m_ssaoBlurTex, m_sceneCopy};
-    glDeleteTextures(6, texes);
+    const GLuint texes[] = {m_hdrColor, m_depth, m_hdr2,      m_ssaoTex,
+                            m_ssaoBlurTex, m_sceneCopy, m_taa[0], m_taa[1]};
+    glDeleteTextures(8, texes);
     glDeleteTextures(kBloomMips, m_bloomTex);
     m_width = 0;
 }
@@ -84,6 +86,12 @@ void PostFx::createTargets(int width, int height) {
 
     m_hdr2 = makeTex2D(GL_RGBA16F, width, height);
     m_hdr2Fbo = makeFbo(m_hdr2);
+
+    for (int i = 0; i < 2; ++i) {
+        m_taa[i] = makeTex2D(GL_RGBA16F, width, height);
+        m_taaFbo[i] = makeFbo(m_taa[i]);
+    }
+    m_taaValid = false; // new targets: no history to reproject from yet
 
     const int hw = std::max(width / 2, 1);
     const int hh = std::max(height / 2, 1);
@@ -169,10 +177,38 @@ void PostFx::run(const RunParams& p) {
     glBindTextureUnit(3, m_depth);
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
+    // temporal AA: reproject + blend last frame's resolve into this one. everything
+    // downstream (bloom, tonemap) reads the resolved image instead of the raw composite.
+    GLuint resolved = m_hdr2;
+    if (p.toggles.taa) {
+        const int cur = m_taaIndex, prev = cur ^ 1;
+        glBindFramebuffer(GL_FRAMEBUFFER, m_taaFbo[cur]);
+        glViewport(0, 0, m_width, m_height);
+        glUseProgram(m_progTaa);
+        glProgramUniform2fv(m_progTaa, 0, 1, &p.projScale.x);
+        glProgramUniform1f(m_progTaa, 1, p.nearPlane);
+        glProgramUniformMatrix3fv(m_progTaa, 2, 1, GL_FALSE, &p.invViewRot[0][0]);
+        glProgramUniformMatrix4fv(m_progTaa, 5, 1, GL_FALSE, &p.prevViewProj[0][0]);
+        glProgramUniform3fv(m_progTaa, 9, 1, &p.camDelta.x);
+        glProgramUniform1f(m_progTaa, 10,
+                           (m_taaValid && p.taaHistoryValid) ? 1.0f : 0.0f);
+        const glm::vec2 texel(1.0f / float(m_width), 1.0f / float(m_height));
+        glProgramUniform2fv(m_progTaa, 11, 1, &texel.x);
+        glBindTextureUnit(0, m_hdr2);
+        glBindTextureUnit(1, m_taa[prev]);
+        glBindTextureUnit(2, m_depth);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        resolved = m_taa[cur];
+        m_taaIndex = prev; // next frame reads what we just wrote
+        m_taaValid = true;
+    } else {
+        m_taaValid = false; // stale while off; the next on-frame reprojects from scratch
+    }
+
     // bloom: 13-tap down chain, tent up chain with additive blending
     if (p.toggles.bloom) {
         glUseProgram(m_progBloomDown);
-        GLuint src = m_hdr2;
+        GLuint src = resolved;
         for (int i = 0; i < kBloomMips; ++i) {
             // threshold only the first tap so bloom picks up bright highlights, not haze
             glProgramUniform1f(m_progBloomDown, 0, i == 0 ? 1.15f : 0.0f);
@@ -201,7 +237,7 @@ void PostFx::run(const RunParams& p) {
     glUseProgram(m_progFinal);
     glProgramUniform1f(m_progFinal, 0, p.toggles.bloom ? 0.55f : 0.0f);
     glProgramUniform1f(m_progFinal, 1, p.toggles.exposure);
-    glBindTextureUnit(0, m_hdr2);
+    glBindTextureUnit(0, resolved);
     glBindTextureUnit(2, m_bloomTex[0]);
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
