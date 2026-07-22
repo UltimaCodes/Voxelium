@@ -2,6 +2,7 @@
 
 #include "mesh/QuadFormat.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cstring>
 
@@ -34,81 +35,122 @@ void GreedyMesher::addFace(int dir, int slice, int u, int v, BlockId block,
     m_planes.push_back(p);
 }
 
-void GreedyMesher::buildColumns(const Chunk& chunk, const Chunk* const* neighbors) {
+void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, int lod) {
+    // default: air voxels lit as open sky (border faces at the world edge look right)
+    std::fill(std::begin(m_grid), std::end(m_grid), blocks::Air);
+    std::fill(std::begin(m_gridLight), std::end(m_gridLight), std::uint8_t(0xF0));
+    m_hasWater = false;
+
+    if (lod == 0) {
+        for (int z = 0; z < kChunkSize; ++z)
+            for (int y = 0; y < kChunkSize; ++y)
+                for (int x = 0; x < kChunkSize; ++x) {
+                    const BlockId b = chunk.get(x, y, z);
+                    m_grid[gi(x, y, z)] = b;
+                    m_gridLight[gi(x, y, z)] = chunk.lightAt(x, y, z);
+                    m_hasWater = m_hasWater || blocks::isWater(b);
+                }
+        // copy the six neighbour border planes into the pad so seam faces cull correctly
+        const auto pad = [&](int face, int px, int py, int pz, int nx, int ny, int nz) {
+            const Chunk* n = neighbors ? neighbors[face] : nullptr;
+            if (!n)
+                return;
+            m_grid[gi(px, py, pz)] = n->get(nx, ny, nz);
+            m_gridLight[gi(px, py, pz)] = n->lightAt(nx, ny, nz);
+        };
+        for (int b = 0; b < kChunkSize; ++b)
+            for (int a = 0; a < kChunkSize; ++a) {
+                pad(0, kChunkSize, a, b, 0, a, b);              // +X
+                pad(1, -1, a, b, kChunkSize - 1, a, b);          // -X
+                pad(2, a, kChunkSize, b, a, 0, b);               // +Y
+                pad(3, a, -1, b, a, kChunkSize - 1, b);          // -Y
+                pad(4, a, b, kChunkSize, a, b, 0);               // +Z
+                pad(5, a, b, -1, a, b, kChunkSize - 1);          // -Z
+            }
+        // no -Y neighbour = the void below the world: unlit, so the bottom face darkens
+        if (!(neighbors && neighbors[3]))
+            for (int z = 0; z < kChunkSize; ++z)
+                for (int x = 0; x < kChunkSize; ++x)
+                    m_gridLight[gi(x, -1, z)] = 0;
+        return;
+    }
+
+    // LOD: dominant block per 2^lod cube, replicated back to full resolution. cubes are
+    // chunk-local but chunk size is a power of two, so they align globally -> adjacent
+    // same-LOD chunks share border surfaces (coincident faces, no cracks). pads stay air
+    // (isolated); cross-LOD boundaries can seam, which is acceptable at distance.
+    const int f = 1 << lod;
+    const int n = kChunkSize / f;
+    const int cube = f * f * f;
+    for (int sz = 0; sz < n; ++sz)
+        for (int sy = 0; sy < n; ++sy)
+            for (int sx = 0; sx < n; ++sx) {
+                int counts[blocks::kBlockCount] = {0};
+                int maxSky = 0, maxBlk = 0;
+                for (int dz = 0; dz < f; ++dz)
+                    for (int dy = 0; dy < f; ++dy)
+                        for (int dx = 0; dx < f; ++dx) {
+                            const BlockId b = chunk.get(sx * f + dx, sy * f + dy, sz * f + dz);
+                            if (b < blocks::kBlockCount)
+                                ++counts[b];
+                            const std::uint8_t l = chunk.lightAt(sx * f + dx, sy * f + dy,
+                                                                 sz * f + dz);
+                            maxSky = std::max(maxSky, l >> 4);
+                            maxBlk = std::max(maxBlk, l & 15);
+                        }
+                const int solid = cube - counts[blocks::Air];
+                BlockId dom = blocks::Air;
+                if (solid * 2 >= cube) { // majority solid -> keep it solid (no thin holes)
+                    int best = 0;
+                    for (int b = 1; b < blocks::kBlockCount; ++b)
+                        if (counts[b] > best) {
+                            best = counts[b];
+                            dom = BlockId(b);
+                        }
+                }
+                if (blocks::isWater(dom))
+                    m_hasWater = true;
+                const std::uint8_t light = std::uint8_t((maxSky << 4) | maxBlk);
+                for (int dz = 0; dz < f; ++dz)
+                    for (int dy = 0; dy < f; ++dy)
+                        for (int dx = 0; dx < f; ++dx) {
+                            m_grid[gi(sx * f + dx, sy * f + dy, sz * f + dz)] = dom;
+                            m_gridLight[gi(sx * f + dx, sy * f + dy, sz * f + dz)] = light;
+                        }
+            }
+}
+
+void GreedyMesher::buildColumns() {
     std::memset(m_opaqueX, 0, sizeof(m_opaqueX));
     std::memset(m_opaqueY, 0, sizeof(m_opaqueY));
     std::memset(m_opaqueZ, 0, sizeof(m_opaqueZ));
     std::memset(m_waterX, 0, sizeof(m_waterX));
     std::memset(m_waterY, 0, sizeof(m_waterY));
     std::memset(m_waterZ, 0, sizeof(m_waterZ));
-    m_hasWater = false;
 
-    if (chunk.uniform()) {
-        const BlockId id = chunk.uniformId();
-        if (blocks::opaque(id)) {
-            constexpr std::uint64_t kAll = 0x1FFFFFFFEull; // bits 1..32
-            for (int a = 0; a < kChunkSize; ++a)
-                for (int b = 0; b < kChunkSize; ++b)
-                    m_opaqueX[a][b] = m_opaqueY[a][b] = m_opaqueZ[a][b] = kAll;
-        } else if (blocks::isWater(id)) {
-            constexpr std::uint64_t kAll = 0x1FFFFFFFEull;
-            for (int a = 0; a < kChunkSize; ++a)
-                for (int b = 0; b < kChunkSize; ++b)
-                    m_waterX[a][b] = m_waterY[a][b] = m_waterZ[a][b] = kAll;
-            m_hasWater = true;
-        }
-    } else {
-        for (int y = 0; y < kChunkSize; ++y)
-            for (int z = 0; z < kChunkSize; ++z)
-                for (int x = 0; x < kChunkSize; ++x) {
-                    const BlockId id = chunk.get(x, y, z);
-                    if (blocks::opaque(id)) {
-                        m_opaqueX[y][z] |= 1ull << (x + 1);
-                        m_opaqueY[z][x] |= 1ull << (y + 1);
-                        m_opaqueZ[y][x] |= 1ull << (z + 1);
-                    } else if (blocks::isWater(id)) {
-                        m_waterX[y][z] |= 1ull << (x + 1);
-                        m_waterY[z][x] |= 1ull << (y + 1);
-                        m_waterZ[y][x] |= 1ull << (z + 1);
-                        m_hasWater = true;
-                    }
-                }
-    }
-
-    if (!neighbors)
-        return;
-
-    // neighbor pads at bit 0 (voxel -1) and bit 33 (voxel 32), for both masks
-    const auto pad = [&](int face, int padBit) {
-        const Chunk* n = neighbors[face];
-        if (!n)
-            return;
-        const int fixed = padBit == 0 ? kChunkSize - 1 : 0; // sample slice of the neighbor
-        for (int a = 0; a < kChunkSize; ++a)
+    // bit (i+1) = voxel i; bits 0 and 33 are the neighbour pad. read the padded range.
+    for (int a = 0; a < kChunkSize; ++a)
+        for (int i = -1; i <= kChunkSize; ++i) {
+            const std::uint64_t bit = 1ull << (i + 1);
             for (int b = 0; b < kChunkSize; ++b) {
-                int x, y, z;
-                switch (face >> 1) {
-                    case 0: x = fixed, y = a, z = b; break; // +/-X: a=y,b=z
-                    case 1: x = b, y = fixed, z = a; break; // +/-Y: a=z,b=x
-                    default: x = b, y = a, z = fixed; break; // +/-Z: a=y,b=x
-                }
-                const BlockId id = n->get(x, y, z);
-                const int axis = face >> 1;
-                std::uint64_t(&opq)[kChunkSize][kChunkSize] =
-                    axis == 0 ? m_opaqueX : (axis == 1 ? m_opaqueY : m_opaqueZ);
-                std::uint64_t(&wat)[kChunkSize][kChunkSize] =
-                    axis == 0 ? m_waterX : (axis == 1 ? m_waterY : m_waterZ);
-                if (blocks::opaque(id))
-                    opq[a][b] |= 1ull << padBit;
-                else if (blocks::isWater(id))
-                    wat[a][b] |= 1ull << padBit;
+                const BlockId bx = m_grid[gi(i, a, b)]; // column along x, (y=a,z=b)
+                if (blocks::opaque(bx)) m_opaqueX[a][b] |= bit;
+                else if (blocks::isWater(bx)) m_waterX[a][b] |= bit;
             }
-    };
-    pad(0, 33); pad(1, 0); pad(2, 33); pad(3, 0); pad(4, 33); pad(5, 0);
+            for (int b = 0; b < kChunkSize; ++b) {
+                const BlockId by = m_grid[gi(b, i, a)]; // along y, (z=a,x=b)
+                if (blocks::opaque(by)) m_opaqueY[a][b] |= bit;
+                else if (blocks::isWater(by)) m_waterY[a][b] |= bit;
+            }
+            for (int b = 0; b < kChunkSize; ++b) {
+                const BlockId bz = m_grid[gi(b, a, i)]; // along z, (y=a,x=b)
+                if (blocks::opaque(bz)) m_opaqueZ[a][b] |= bit;
+                else if (blocks::isWater(bz)) m_waterZ[a][b] |= bit;
+            }
+        }
 }
 
-void GreedyMesher::meshLayer(const Chunk& chunk, const Chunk* const* neighbors, bool water,
-                             std::vector<std::uint64_t>& out, GreedyStats& stats) {
+void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, GreedyStats& stats) {
     m_planes.clear();
     std::memset(m_heads, 0xFF, sizeof(m_heads));
 
@@ -118,11 +160,10 @@ void GreedyMesher::meshLayer(const Chunk& chunk, const Chunk* const* neighbors, 
 
     for (int a = 0; a < kChunkSize; ++a) {
         for (int b = 0; b < kChunkSize; ++b) {
-            // self column, and the blocker column that suppresses a face. opaque faces
-            // are blocked only by opaque; water faces are blocked by opaque OR water.
             const std::uint64_t colX = sx[a][b];
             const std::uint64_t colY = sy[a][b];
             const std::uint64_t colZ = sz[a][b];
+            // opaque faces are blocked only by opaque; water faces by opaque OR water
             const std::uint64_t blkX = water ? (colX | m_opaqueX[a][b]) : colX;
             const std::uint64_t blkY = water ? (colY | m_opaqueY[a][b]) : colY;
             const std::uint64_t blkZ = water ? (colZ | m_opaqueZ[a][b]) : colZ;
@@ -141,16 +182,7 @@ void GreedyMesher::meshLayer(const Chunk& chunk, const Chunk* const* neighbors, 
                     const int ax = x + kStep[dir][0];
                     const int ay = y + kStep[dir][1];
                     const int az = z + kStep[dir][2];
-                    std::uint8_t light;
-                    if (ax >= 0 && ax < kChunkSize && ay >= 0 && ay < kChunkSize &&
-                        az >= 0 && az < kChunkSize) {
-                        light = chunk.lightAt(ax, ay, az);
-                    } else {
-                        const Chunk* n = neighbors ? neighbors[dir] : nullptr;
-                        light = n ? n->lightAt(ax & 31, ay & 31, az & 31)
-                                  : (dir == 3 ? std::uint8_t(0x00) : std::uint8_t(0xF0));
-                    }
-                    addFace(dir, s, b, a, chunk.get(x, y, z), light);
+                    addFace(dir, s, b, a, m_grid[gi(x, y, z)], m_gridLight[gi(ax, ay, az)]);
                 }
             };
             scatter(0, colX & ~(blkX >> 1));
@@ -196,17 +228,18 @@ void GreedyMesher::meshLayer(const Chunk& chunk, const Chunk* const* neighbors, 
 
 GreedyStats GreedyMesher::mesh(const Chunk& chunk, const Chunk* const* neighbors,
                                std::vector<std::uint64_t>& outOpaque,
-                               std::vector<std::uint64_t>& outWater) {
+                               std::vector<std::uint64_t>& outWater, int lod) {
     outOpaque.clear();
     outWater.clear();
     GreedyStats stats;
     if (chunk.uniform() && chunk.uniformId() == blocks::Air)
-        return stats; // nothing to mesh
+        return stats;
 
-    buildColumns(chunk, neighbors);
-    meshLayer(chunk, neighbors, /*water=*/false, outOpaque, stats);
+    fillGrid(chunk, neighbors, lod);
+    buildColumns();
+    meshLayer(/*water=*/false, outOpaque, stats);
     if (m_hasWater)
-        meshLayer(chunk, neighbors, /*water=*/true, outWater, stats);
+        meshLayer(/*water=*/true, outWater, stats);
     stats.triangles = (stats.quads + stats.waterQuads) * 2;
     return stats;
 }

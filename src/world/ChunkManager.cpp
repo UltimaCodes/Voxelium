@@ -36,6 +36,15 @@ std::int64_t horizontalDist2(ChunkPos p, ChunkPos center) {
     return dx * dx + dz * dz;
 }
 
+// detail level from squared chunk distance. near chunks full res; far chunks downsample
+// so their meshes collapse to a fraction of the triangles (main pass + shadows).
+int lodForDist2(std::int64_t d2) {
+    if (d2 <= 8 * 8) return 0;
+    if (d2 <= 14 * 14) return 1;
+    if (d2 <= 22 * 22) return 2;
+    return 3;
+}
+
 } // namespace
 
 const Chunk* ChunkManager::voxelsAt(ChunkPos pos) const {
@@ -229,13 +238,21 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     }
 
     // schedule meshing for chunks whose whole neighborhood has data AND light, nearest
-    // first — meshes bake light values into quads, so lighting has to land first
+    // first — meshes bake light values into quads, so lighting has to land first. also
+    // re-mesh already-meshed chunks whose LOD should change as the camera moves (they
+    // stay drawn at the old LOD until the new mesh swaps in, so no flicker).
     m_meshScratch.clear();
     for (const auto& item : m_chunks) {
-        if (item.second.state != ChunkState::Ready || !item.second.lit)
+        const Entry& e = item.second;
+        if (!e.lit)
             continue;
         if (std::abs(item.first.x - center.x) > radius ||
             std::abs(item.first.z - center.z) > radius)
+            continue;
+        const int desired = lodForDist2(horizontalDist2(item.first, center));
+        const bool firstMesh = e.state == ChunkState::Ready;
+        const bool reLod = e.state == ChunkState::Meshed && e.lod != desired;
+        if (!(firstMesh || reLod) || e.meshingLod == desired)
             continue;
         bool ready = true;
         static constexpr int kOffsets[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
@@ -264,7 +281,11 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             break;
         const auto it = m_chunks.find(pos);
         Entry& e = it->second;
-        e.state = ChunkState::Meshing;
+        const int lod = lodForDist2(horizontalDist2(pos, center));
+        if (e.state == ChunkState::Ready)
+            e.state = ChunkState::Meshing; // first mesh: not drawn until it lands
+        // (a re-LOD keeps state Meshed so the old mesh stays drawn meanwhile)
+        e.meshingLod = std::int8_t(lod);
 
         std::array<const Chunk*, 6> nb{
             voxelsAt({pos.x + 1, pos.y, pos.z}), voxelsAt({pos.x - 1, pos.y, pos.z}),
@@ -279,14 +300,14 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         ++m_jobsInFlight;
         --m_pendingMesh;
         Chunk* voxels = e.voxels;
-        jobs.submit([this, voxels, nb, pos] {
+        jobs.submit([this, voxels, nb, pos, lod] {
             // one mesher + scratch per worker thread, reused across jobs
             thread_local GreedyMesher mesher;
             thread_local std::vector<std::uint64_t> quadScratch;
             thread_local std::vector<std::uint64_t> waterScratch;
             const auto t0 = Clock::now();
             const GreedyStats stats =
-                mesher.mesh(*voxels, nb.data(), quadScratch, waterScratch);
+                mesher.mesh(*voxels, nb.data(), quadScratch, waterScratch, lod);
             const std::uint16_t connectivity = computeConnectivity(*voxels);
             m_meshNanos.fetch_add(nsSince(t0), std::memory_order_relaxed);
             m_meshCount.fetch_add(1, std::memory_order_relaxed);
@@ -295,7 +316,8 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                               {quadScratch.begin(), quadScratch.end()},
                               {waterScratch.begin(), waterScratch.end()},
                               stats,
-                              connectivity};
+                              connectivity,
+                              std::int8_t(lod)};
             voxels->releaseJob();
             for (const Chunk* n : nb)
                 if (n)
@@ -318,7 +340,16 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         if (uploaded > 0 && msSince(uploadStart) > kUploadBudgetMs)
             break; // rest carries over to next frame; always at least one per frame
         const auto it = m_chunks.find(r.pos);
-        if (it != m_chunks.end() && it->second.state == ChunkState::Meshing) {
+        // accept a first mesh (Meshing) or a re-LOD whose result still matches what we
+        // asked for (Meshed, meshingLod == r.lod); a stale re-LOD result is dropped and
+        // the next scan re-submits at the current desired LOD
+        const bool accept =
+            it != m_chunks.end() &&
+            (it->second.state == ChunkState::Meshing ||
+             (it->second.state == ChunkState::Meshed && it->second.meshingLod == r.lod));
+        if (it != m_chunks.end())
+            it->second.meshingLod = -1;
+        if (accept) {
             Entry& e = it->second;
             if (e.range.count != 0) { // remesh: old ranges go back to the arena
                 renderer.free(e.range);
@@ -351,6 +382,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                 e.waterQuadsCpu.clear();
             }
             e.connectivity = r.connectivity;
+            e.lod = r.lod;
             e.state = ChunkState::Meshed;
             m_dirty = true;
             m_visDirty = true;
@@ -524,6 +556,8 @@ void ChunkManager::remeshNow(Renderer& renderer, ChunkPos pos) {
     } else {
         e.waterQuadsCpu.clear();
     }
+    e.lod = 0;         // edits are always on near (full-detail) chunks
+    e.meshingLod = -1; // drop any in-flight async re-LOD result for this chunk
     e.state = ChunkState::Meshed; // a stale worker result for this chunk now gets dropped
     m_dirty = true;
     m_visDirty = true;

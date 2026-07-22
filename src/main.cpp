@@ -445,7 +445,17 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
     camera.position = {16.0, 110.0, 16.0};
     camera.yawDeg = -35.0f;
     camera.pitchDeg = -25.0f;
+    for (int i = 0; i < 6000 && (world.busy() || !light.idle()); ++i) {
+        rc.renderer.beginFrame();
+        world.update(jobs, rc.renderer, light, camera.position); // settle LOD before timing
+        rc.renderer.endFrame();
+    }
+    world.collectDrawInfo(drawInfo, waterInfo);
+    rc.renderer.updateChunkMeta(drawInfo);
+    rc.renderer.updateWaterMeta(waterInfo);
     world.updateVisibilityIfNeeded(rc.renderer, camera.position, true);
+    // note: this GPU-query benchmark is unreliable while re-LOD workers churn in the
+    // background (negative deltas) — trust the in-app HUD gpu timer for real numbers.
     FrameTimers ft;
     ft.shadow.init();
     ft.scene.init();

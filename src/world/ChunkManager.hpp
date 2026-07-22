@@ -119,6 +119,8 @@ private:
         ChunkState state = ChunkState::Generating;
         bool lit = false;   // sky/emissive seeding done; meshing waits for it
         bool dirty = false; // player-edited since load; needs saving before eviction
+        std::int8_t lod = 0;         // detail level of the current drawn mesh
+        std::int8_t meshingLod = -1; // LOD of an in-flight (re)mesh job, -1 = none
         // all faces connected until meshed: never cave-cull what isn't known yet
         std::uint16_t connectivity = 0x7FFF;
         std::int32_t metaIndex = -1;   // slot in the cull meta buffer, -1 = not drawn
@@ -133,6 +135,7 @@ private:
         std::vector<std::uint64_t> water;
         GreedyStats stats;
         std::uint16_t connectivity = 0;
+        std::int8_t lod = 0;
     };
 
     struct FloodNode {
