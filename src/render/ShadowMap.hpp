@@ -13,9 +13,12 @@ class Renderer;
 class ShadowMap {
 public:
     static constexpr int kCascades = 3;
-    static constexpr int kResolution = 1536; // depth-fill dominates; 1536 holds quality here
-    // radial split distances, also used by the shaders to pick a cascade
-    static constexpr float kSplits[kCascades] = {26.0f, 80.0f, 240.0f};
+    static constexpr int kResolution = 1536;
+    // radial split distances, also the shaders' cascade selector. the shadow pass is
+    // vertex-bound (every quad drawn per cascade), so the far split is the main cost
+    // lever — 150 keeps crisp shadows out to ~5 chunks and roughly halves the far
+    // cascade's geometry vs 240. beyond it terrain is sky-lit but unshadowed.
+    static constexpr float kSplits[kCascades] = {22.0f, 60.0f, 150.0f};
 
     bool init(unsigned int shadowProgram);
     void shutdown();

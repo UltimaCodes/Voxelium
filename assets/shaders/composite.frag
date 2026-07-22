@@ -1,7 +1,9 @@
 #version 460 core
 
-// applies SSAO to the scene and adds volumetric sun scattering raymarched through the
-// shadow cascades. output stays HDR; bloom and tonemapping come after.
+// applies SSAO to the scene, paints a real sky for pixels with no geometry (gradient +
+// sun disc + horizon glow — no extra pass), and adds volumetric sun scattering
+// raymarched through the shadow cascades for geometry pixels. output stays HDR; bloom
+// and tonemapping come after.
 
 in vec2 vUv;
 layout(location = 0) out vec4 outColor;
@@ -20,6 +22,24 @@ layout(location = 5) uniform vec3 uSunL;
 layout(location = 6) uniform mat4 uCascadeVp[3];
 layout(location = 18) uniform vec3 uCascadeSplit;
 
+vec3 viewRay() {
+    vec2 ndc = vUv * 2.0 - 1.0;
+    return normalize(uInvViewRot * vec3(ndc.x * uProjScale.x, ndc.y * uProjScale.y, -1.0));
+}
+
+vec3 skyColor(vec3 dir) {
+    float up = clamp(dir.y, 0.0, 1.0);
+    vec3 zenith = vec3(0.14, 0.34, 0.80);
+    vec3 horizon = vec3(0.66, 0.78, 0.92);
+    vec3 col = mix(horizon, zenith, pow(up, 0.5));
+    if (dir.y < 0.0) // below the horizon: fade to a hazy ground tone
+        col = mix(horizon, vec3(0.34, 0.38, 0.44), clamp(-dir.y * 3.0, 0.0, 1.0));
+    float sd = max(dot(dir, uSunL), 0.0);
+    col += vec3(1.0, 0.55, 0.28) * pow(sd, 8.0) * 0.6;        // warm glow around the sun
+    col += vec3(1.0, 0.95, 0.85) * smoothstep(0.9975, 0.9990, sd) * 14.0; // the disc
+    return col;
+}
+
 float shadowSingle(vec3 pos) {
     float d = length(pos);
     int c = d < uCascadeSplit.x ? 0 : (d < uCascadeSplit.y ? 1 : 2);
@@ -32,30 +52,37 @@ float shadowSingle(vec3 pos) {
 float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 
 void main() {
+    float rawD = texture(uDepth, vUv).r;
+    vec3 dir = viewRay();
+
+    // sky pixel (reversed-z far = 0): paint the sky instead of the flat clear colour
+    if (rawD <= 0.0) {
+        outColor = vec4(skyColor(dir), 1.0);
+        return;
+    }
+
     vec3 color = texture(uScene, vUv).rgb;
     if (uAoOn > 0.5)
         color *= texture(uAo, vUv).r;
 
     if (uVolumetricOn > 0.5) {
-        float rawD = texture(uDepth, vUv).r;
         float viewZ = -uNear / max(rawD, 1e-7);
         vec2 ndc = vUv * 2.0 - 1.0;
         vec3 vpos = vec3(ndc.x * uProjScale.x * -viewZ, ndc.y * uProjScale.y * -viewZ, viewZ);
         vec3 world = uInvViewRot * vpos;
         float len = min(length(world), 140.0);
-        vec3 dir = normalize(world);
+        vec3 rd = normalize(world);
 
         const int kSteps = 12;
         float stepLen = len / float(kSteps);
         float t = stepLen * hash(gl_FragCoord.xy); // jitter hides banding
         float scatter = 0.0;
         for (int i = 0; i < kSteps; ++i) {
-            scatter += shadowSingle(dir * t);
+            scatter += shadowSingle(rd * t);
             t += stepLen;
         }
         scatter /= float(kSteps);
-        // forward-scattering phase: subtle everywhere, strong looking into the sun
-        float phase = 0.10 + 0.90 * pow(max(dot(dir, uSunL), 0.0), 8.0);
+        float phase = 0.10 + 0.90 * pow(max(dot(rd, uSunL), 0.0), 8.0);
         color += vec3(1.15, 1.05, 0.88) * (scatter * phase * len * 0.0007);
     }
 

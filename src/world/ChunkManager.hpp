@@ -103,6 +103,8 @@ public:
     }
     Stats stats() const;
     void logSummary() const;
+    // force the next stats() to do the full-chunk scan (used before logSummary)
+    void refreshStats() const { m_scanAge = 999; }
 
     int radius = 10; // render radius in chunks, horizontal
 
@@ -171,6 +173,17 @@ private:
     ChunkPos m_center{INT32_MIN, 0, INT32_MIN};
     int m_lastRadius = -1;
     bool m_dirty = false;
+
+    // cached full-chunk scan for the HUD, refreshed a few times a second
+    struct Scan {
+        int meshed = 0;
+        int uniformChunks = 0;
+        std::int64_t totalQuads = 0;
+        std::size_t voxelBytes = 0;
+        std::size_t quadBytes = 0;
+    };
+    mutable Scan m_scanCache;
+    mutable int m_scanAge = 999;
 
     // visibility flood state
     std::vector<std::uint32_t> m_visBits;

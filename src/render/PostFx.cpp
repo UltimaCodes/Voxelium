@@ -85,9 +85,10 @@ void PostFx::createTargets(int width, int height) {
 
     const int hw = std::max(width / 2, 1);
     const int hh = std::max(height / 2, 1);
-    m_ssaoTex = makeTex2D(GL_R8, hw, hh);
+    // RG16F: .r = AO, .g = linear view depth for the bilateral blur + composite
+    m_ssaoTex = makeTex2D(GL_RG16F, hw, hh);
     m_ssaoFbo = makeFbo(m_ssaoTex);
-    m_ssaoBlurTex = makeTex2D(GL_R8, hw, hh);
+    m_ssaoBlurTex = makeTex2D(GL_RG16F, hw, hh);
     m_ssaoBlurFbo = makeFbo(m_ssaoBlurTex);
 
     int bw = width;

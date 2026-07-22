@@ -536,20 +536,35 @@ ChunkManager::Stats ChunkManager::stats() const {
     const int mc = m_meshCount.load(std::memory_order_relaxed);
     s.genMsAvg = gc > 0 ? double(m_genNanos.load(std::memory_order_relaxed)) * 1e-6 / gc : 0.0;
     s.meshMsAvg = mc > 0 ? double(m_meshNanos.load(std::memory_order_relaxed)) * 1e-6 / mc : 0.0;
-    for (const auto& item : m_chunks) {
-        const Entry& e = item.second;
-        if (e.state == ChunkState::Meshed)
-            ++s.meshed;
-        if (e.voxels->uniform())
-            ++s.uniformChunks;
-        s.totalQuads += e.quads;
-        s.voxelBytes += e.voxels->storageBytes();
-        s.quadBytes += std::size_t(e.quads) * sizeof(std::uint64_t);
+
+    // The full-chunk scan (meshed/uniform/byte counts) is O(loaded) — at radius 16 that
+    // is ~5000 chunks. It only feeds HUD numbers that don't need per-frame precision, so
+    // recompute it a few times a second and cache the rest.
+    if (m_scanAge++ >= 20) {
+        m_scanAge = 0;
+        Scan sc;
+        for (const auto& item : m_chunks) {
+            const Entry& e = item.second;
+            if (e.state == ChunkState::Meshed)
+                ++sc.meshed;
+            if (e.voxels->uniform())
+                ++sc.uniformChunks;
+            sc.totalQuads += e.quads;
+            sc.voxelBytes += e.voxels->storageBytes();
+            sc.quadBytes += std::size_t(e.quads) * sizeof(std::uint64_t);
+        }
+        m_scanCache = sc;
     }
+    s.meshed = m_scanCache.meshed;
+    s.uniformChunks = m_scanCache.uniformChunks;
+    s.totalQuads = m_scanCache.totalQuads;
+    s.voxelBytes = m_scanCache.voxelBytes;
+    s.quadBytes = m_scanCache.quadBytes;
     return s;
 }
 
 void ChunkManager::logSummary() const {
+    refreshStats();
     const Stats s = stats();
     VX_INFO("world: %d chunks (%d uniform), %d meshed, %lld quads", s.loaded,
             s.uniformChunks, s.meshed, static_cast<long long>(s.totalQuads));
