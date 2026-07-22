@@ -72,7 +72,10 @@ public:
 private:
     void recycle(Range range);
 
-    static constexpr std::uint32_t kArenaQuads = 8u << 20; // 8M quads = 64 MB
+    // 16M quads = 128 MB. radius 16 with caves needs ~7.7M live + free-list headroom;
+    // 8M overflowed and thrashed hardReset every frame (glFinish stalls = the "glitchy
+    // lag"). 128 MB is nothing on the target GPUs and leaves 2x room for fragmentation.
+    static constexpr std::uint32_t kArenaQuads = 16u << 20;
     static constexpr std::uint32_t kMaxChunks = 8192;
     static constexpr int kFrameRing = 3;
 
