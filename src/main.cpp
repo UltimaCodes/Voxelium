@@ -64,9 +64,10 @@ bool runMesherOracle() {
 
     auto mesher = std::make_unique<vx::GreedyMesher>();
     std::vector<std::uint64_t> quads;
+    std::vector<std::uint64_t> water;
     vx::GreedyStats greedy;
     const double greedyBest =
-        benchBestMs(50, [&] { greedy = mesher->mesh(*chunk, nullptr, quads); });
+        benchBestMs(50, [&] { greedy = mesher->mesh(*chunk, nullptr, quads, water); });
 
     bool ok = true;
     for (int d = 0; d < 6; ++d)
@@ -108,15 +109,16 @@ struct RenderContext {
     vx::ShadowMap& shadows;
     vx::PostFx& postfx;
     unsigned int drawProgram;
+    unsigned int waterProgram;
 };
 
 struct FrameTimers {
     vx::GpuTimer shadow, scene, post;
 };
 
-// One full frame: cascades -> HDR scene -> post stack into targetFbo.
+// One full frame: cascades -> HDR scene (opaque + transparent water) -> post into target.
 void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxToggles& fx,
-                 bool caveCull, int fbW, int fbH, unsigned int targetFbo,
+                 bool caveCull, int fbW, int fbH, unsigned int targetFbo, float time,
                  FrameTimers* timers) {
     const CameraFrame cam = buildCameraFrame(camera, fbW, fbH);
     const glm::vec3 sunL = sunFromAltitude(fx.sunAltitudeDeg);
@@ -150,6 +152,17 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
 
     rc.renderer.drawWorld(cam.viewProj, cam.frustum, cam.cameraChunk, cam.cameraFrac,
                           caveCull);
+
+    // transparent water over the opaque scene: alpha blend, depth test but no write
+    glProgramUniform1f(rc.waterProgram, 1, time);
+    glProgramUniform3fv(rc.waterProgram, 4, 1, &sunL.x);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE);
+    rc.renderer.drawWater(rc.waterProgram, cam.viewProj, cam.frustum, cam.cameraChunk,
+                          cam.cameraFrac);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
     if (timers) timers->scene.end();
 
     if (timers) timers->post.begin();
@@ -187,8 +200,8 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         const int skyInRoom = light.lightAt({16, 48, 16}) >> 4;
         const int glowAbove = light.lightAt({16, 46, 16}) & 15;
         const int glowEdge = light.lightAt({16, 48, 19}) & 15;
-        const int surf = world.generator().surfaceHeight(16, 16);
-        const int skySurface = light.lightAt({16, surf + 5, 16}) >> 4;
+        // open air near the top of the world — always full sky (trees/terrain can't reach)
+        const int skySurface = light.lightAt({16, vx::kWorldHeight - 4, 16}) >> 4;
         bool ok = skyInRoom == 0 && glowAbove == 13 && glowEdge > 0 && glowEdge < 13 &&
                   skySurface == 15;
         VX_INFO("light: room sky %d (want 0), above-glow %d (want 13), edge %d, surface sky "
@@ -253,8 +266,10 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
     }
 
     std::vector<vx::ChunkDrawInfo> drawInfo;
-    world.collectDrawInfo(drawInfo);
+    std::vector<vx::ChunkDrawInfo> waterInfo;
+    world.collectDrawInfo(drawInfo, waterInfo);
     rc.renderer.updateChunkMeta(drawInfo);
+    rc.renderer.updateWaterMeta(waterInfo);
     world.updateVisibilityIfNeeded(rc.renderer, camera.position, true);
 
     vx::FxToggles fx;
@@ -267,7 +282,7 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         window.pollEvents();
         rc.renderer.beginFrame();
         hud.beginFrame();
-        renderFrame(rc, camera, fx, true, w, h, fbo, nullptr);
+        renderFrame(rc, camera, fx, true, w, h, fbo, 0.6f, nullptr);
         const vx::FrameStats stats{.frameMs = 1.0f,
                                    .gpuMs = 0.5f,
                                    .heapAllocs = 0,
@@ -324,18 +339,19 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
     // physics: drop a player from the sky onto the surface, fixed deterministic ticks
     {
         vx::Player testPlayer;
-        testPlayer.position = {16.0, 120.0, 16.0};
-        for (int i = 0; i < 900; ++i)
+        testPlayer.position = {16.0, 125.0, 16.0};
+        for (int i = 0; i < 1200; ++i)
             testPlayer.step(world, {});
-        const int surf = world.generator().surfaceHeight(16, 16);
-        const bool ok = testPlayer.onGround &&
-                        std::abs(testPlayer.position.y - double(surf + 1)) < 0.01;
-        VX_INFO("physics: landed at y=%.4f, surface %d -> %s", testPlayer.position.y, surf,
-                ok ? "PASS" : "FAIL");
+        // tree-agnostic: it must come to rest on the ground (or a tree/leaf) — on solid
+        // footing, not still falling
+        const glm::ivec3 below{16, int(std::floor(testPlayer.position.y)) - 1, 16};
+        const bool ok = testPlayer.onGround && vx::blocks::solid(world.blockAtWorld(below));
+        VX_INFO("physics: landed at y=%.4f resting on block %d -> %s", testPlayer.position.y,
+                int(world.blockAtWorld(below)), ok ? "PASS" : "FAIL");
         if (!ok)
             return 1;
 
-        const glm::ivec3 ep{18, surf + 3, 18};
+        const glm::ivec3 ep{18, world.generator().surfaceHeight(18, 18) + 6, 18};
         world.setBlock(rc.renderer, light, ep, vx::blocks::Stone);
         const bool placed = world.blockAtWorld(ep) == vx::blocks::Stone;
         world.setBlock(rc.renderer, light, ep, vx::blocks::Air);
@@ -404,7 +420,7 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
     camera.pitchDeg = -20.0f;
     world.updateVisibilityIfNeeded(rc.renderer, camera.position, true);
     rc.renderer.beginFrame();
-    renderFrame(rc, camera, fx, true, w, h, fbo, nullptr);
+    renderFrame(rc, camera, fx, true, w, h, fbo, 0.6f, nullptr);
     rc.renderer.endFrame();
     glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, pixels.data());
     std::filesystem::path roomPath = outPath;
@@ -426,7 +442,7 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         double s = 0, sc = 0, p = 0;
         for (int i = 0; i < 40; ++i) {
             rc.renderer.beginFrame();
-            renderFrame(rc, camera, cfg, true, w, h, fbo, &ft);
+            renderFrame(rc, camera, cfg, true, w, h, fbo, 0.6f, &ft);
             rc.renderer.endFrame();
             glFinish();
             if (i >= 8) { // let the query ring fill
@@ -509,7 +525,8 @@ int main(int argc, char** argv) {
     const GLuint cullProgram = vx::loadComputeProgram(shaders / "cull.comp");
     const GLuint shadowProgram =
         vx::loadProgram(shaders / "shadow.vert", shaders / "shadow.frag");
-    if (!drawProgram || !cullProgram || !shadowProgram)
+    const GLuint waterProgram = vx::loadProgram(shaders / "water.vert", shaders / "water.frag");
+    if (!drawProgram || !cullProgram || !shadowProgram || !waterProgram)
         return 1;
 
     if (!runMesherOracle())
@@ -524,7 +541,7 @@ int main(int argc, char** argv) {
     vx::PostFx postfx;
     if (!postfx.init(shaders))
         return 1;
-    RenderContext rc{renderer, shadowMap, postfx, drawProgram};
+    RenderContext rc{renderer, shadowMap, postfx, drawProgram, waterProgram};
 
     // isolate the smoke test's save data so repeated runs start clean and can't touch a
     // real world save
@@ -567,6 +584,7 @@ int main(int argc, char** argv) {
     timers.post.init();
 
     std::vector<vx::ChunkDrawInfo> drawInfo;
+    std::vector<vx::ChunkDrawInfo> waterInfo;
     vx::Player player;
     vx::FxToggles fx;
     double prevTime = glfwGetTime();
@@ -658,8 +676,9 @@ int main(int argc, char** argv) {
 
         world->update(*jobs, renderer, *light, camera.position);
         if (world->consumeDirty()) {
-            world->collectDrawInfo(drawInfo);
+            world->collectDrawInfo(drawInfo, waterInfo);
             renderer.updateChunkMeta(drawInfo);
+            renderer.updateWaterMeta(waterInfo);
         }
         world->updateVisibilityIfNeeded(renderer, camera.position, caveCull);
         if (!loadLogged && !world->busy()) {
@@ -671,7 +690,7 @@ int main(int argc, char** argv) {
         int fbH = 0;
         window->framebufferSize(fbW, fbH);
         if (fbW > 0 && fbH > 0)
-            renderFrame(rc, camera, fx, caveCull, fbW, fbH, 0, &timers);
+            renderFrame(rc, camera, fx, caveCull, fbW, fbH, 0, float(now), &timers);
 
         const vx::ChunkManager::Stats ws = world->stats();
         const vx::Renderer::ArenaStats as = renderer.arenaStats();

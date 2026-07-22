@@ -34,6 +34,25 @@ std::uint32_t voxelHash(int x, int y, int z) {
     return h;
 }
 
+std::uint32_t cellHash(int x, int z) {
+    std::uint32_t h = std::uint32_t(x) * 0x27D4EB2Fu ^ std::uint32_t(z) * 0x165667B1u;
+    h ^= h >> 15;
+    h *= 0x2C1B3C6Du;
+    h ^= h >> 12;
+    h *= 0x297A2D39u;
+    h ^= h >> 15;
+    return h;
+}
+
+std::int32_t floorDivI(std::int32_t a, std::int32_t b) {
+    const std::int32_t q = a / b;
+    return (a % b != 0 && (a < 0) != (b < 0)) ? q - 1 : q;
+}
+
+constexpr int kSeaLevel = 62;   // air at or below this over the seafloor becomes water
+constexpr int kTreeCell = 7;    // one tree candidate per 7x7 column cell
+constexpr int kTreeCanopyR = 3; // horizontal reach — how far trees bleed across chunks
+
 // glow-lit test room kept from M9 as the lighting regression anchor; a 1-block stone
 // shell is re-solidified around it so no cave can crack it open
 constexpr glm::ivec3 kRoomCenter{16, 48, 16};
@@ -139,8 +158,10 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos) const {
             hMax = std::max(hMax, h);
         }
 
-    if (baseY > hMax) {
+    // wholly above both terrain and sea: air, except trees can still reach up into it
+    if (baseY > hMax && baseY > kSeaLevel) {
         chunk.makeUniform(blocks::Air);
+        placeTrees(chunk, pos);
         carveTestRoom(chunk, pos); // no-op unless the room overlaps
         return;
     }
@@ -149,14 +170,13 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos) const {
     for (int z = 0; z < kChunkSize; ++z)
         for (int x = 0; x < kChunkSize; ++x) {
             const int h = heights[z][x];
+            const bool coastal = h <= kSeaLevel + 1; // beaches and seabed are sand
             const int top = std::min(h - baseY, kChunkSize - 1);
             for (int y = 0; y <= top; ++y) {
                 const int wy = baseY + y;
                 BlockId id = blocks::Stone;
-                if (wy == h)
-                    id = blocks::Grass;
-                else if (wy >= h - 3)
-                    id = blocks::Dirt;
+                if (wy >= h - 3)
+                    id = coastal ? blocks::Sand : (wy == h ? blocks::Grass : blocks::Dirt);
                 chunk.set(x, y, z, id);
             }
         }
@@ -197,7 +217,74 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos) const {
                         chunk.set(x, y, z, blocks::Glow);
     }
 
+    // flood air that sits over the seafloor and at/below sea level (oceans + lakes).
+    // caves stay dry because they're below the surface height, never above it.
+    for (int z = 0; z < kChunkSize; ++z)
+        for (int x = 0; x < kChunkSize; ++x) {
+            const int h = heights[z][x];
+            if (h >= kSeaLevel)
+                continue;
+            const int yLo = std::max(h + 1 - baseY, 0);
+            const int yHi = std::min(kSeaLevel - baseY, kChunkSize - 1);
+            for (int y = yLo; y <= yHi; ++y)
+                if (chunk.get(x, y, z) == blocks::Air)
+                    chunk.set(x, y, z, blocks::Water);
+        }
+
+    placeTrees(chunk, pos);
     carveTestRoom(chunk, pos);
+}
+
+// Deferred structure placement: scans every tree candidate cell that could reach into
+// this chunk (including neighbors, hence kTreeCanopyR of overlap) and places the parts
+// that fall inside it. Fully deterministic from the seed — the same tree is computed
+// identically by every chunk it touches, so trunks/canopies cross borders seamlessly
+// without any neighbor lookups.
+void TerrainGenerator::placeTrees(Chunk& chunk, ChunkPos pos) const {
+    const int baseX = pos.x * kChunkSize;
+    const int baseY = pos.y * kChunkSize;
+    const int baseZ = pos.z * kChunkSize;
+
+    const auto put = [&](int wx, int wy, int wz, BlockId id) {
+        const int lx = wx - baseX, ly = wy - baseY, lz = wz - baseZ;
+        if (lx < 0 || lx >= kChunkSize || ly < 0 || ly >= kChunkSize || lz < 0 ||
+            lz >= kChunkSize)
+            return;
+        const BlockId cur = chunk.get(lx, ly, lz);
+        // wood overwrites air/leaves; leaves only fill air (so trunks stay solid)
+        if (cur == blocks::Air || (id == blocks::Wood && cur == blocks::Leaves))
+            chunk.set(lx, ly, lz, id);
+    };
+
+    const int cx0 = floorDivI(baseX - kTreeCanopyR, kTreeCell);
+    const int cx1 = floorDivI(baseX + kChunkSize - 1 + kTreeCanopyR, kTreeCell);
+    const int cz0 = floorDivI(baseZ - kTreeCanopyR, kTreeCell);
+    const int cz1 = floorDivI(baseZ + kChunkSize - 1 + kTreeCanopyR, kTreeCell);
+
+    for (int cz = cz0; cz <= cz1; ++cz)
+        for (int cx = cx0; cx <= cx1; ++cx) {
+            const std::uint32_t hsh = cellHash(cx * 1013 + m_seed, cz * 79 + m_seed);
+            if ((hsh & 255u) > 110u)
+                continue; // ~43% of cells grow a tree
+            const int tx = cx * kTreeCell + int((hsh >> 8) % kTreeCell);
+            const int tz = cz * kTreeCell + int((hsh >> 13) % kTreeCell);
+            const int surf = surfaceHeight(tx, tz);
+            if (surf < kSeaLevel + 2)
+                continue; // no trees on beaches or underwater
+
+            const int trunk = 4 + int((hsh >> 18) % 3u); // 4..6 tall
+            const int topY = surf + trunk;
+            for (int i = 1; i <= trunk; ++i)
+                put(tx, surf + i, tz, blocks::Wood);
+            // rounded canopy blob around the top
+            for (int dy = -2; dy <= 1; ++dy)
+                for (int dz = -kTreeCanopyR; dz <= kTreeCanopyR; ++dz)
+                    for (int dx = -kTreeCanopyR; dx <= kTreeCanopyR; ++dx) {
+                        const int r2 = dx * dx + dz * dz + dy * dy * 2;
+                        if (r2 <= kTreeCanopyR * kTreeCanopyR + 1)
+                            put(tx + dx, topY + dy, tz + dz, blocks::Leaves);
+                    }
+        }
 }
 
 } // namespace vx

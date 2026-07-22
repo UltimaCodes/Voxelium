@@ -24,12 +24,16 @@ const vec2 kCorner[6][4] = vec2[6][4](
 );
 
 // placeholder until the texture array lands
-const vec3 kBlockColor[5] = vec3[5](
+const vec3 kBlockColor[9] = vec3[9](
     vec3(0.0),
     vec3(0.490, 0.490, 0.490), // stone
     vec3(0.525, 0.376, 0.263), // dirt
     vec3(0.416, 0.667, 0.251), // grass
-    vec3(1.000, 0.850, 0.550)  // glow
+    vec3(1.000, 0.850, 0.550), // glow
+    vec3(0.180, 0.360, 0.620), // water (opaque path never uses this)
+    vec3(0.420, 0.300, 0.180), // wood
+    vec3(0.240, 0.470, 0.190), // leaves
+    vec3(0.855, 0.800, 0.590)  // sand
 );
 
 // greedy T-junction pinhole fix — see docs/M4.md
@@ -56,7 +60,7 @@ void main() {
     else                pos += vec3(uv.x, uv.y, 0.0);
 
     vWorldRel = pos + uOffsets[gl_DrawID].xyz;
-    vAlbedo = kBlockColor[min(block, 4u)];
+    vAlbedo = kBlockColor[min(block, 8u)];
     vDir = dir;
     vLight = vec2(float((q.y >> 20) & 15u), float((q.y >> 24) & 15u)) / 15.0;
     gl_Position = uViewProj * vec4(vWorldRel, 1.0);

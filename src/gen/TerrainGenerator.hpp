@@ -20,6 +20,8 @@ public:
     int surfaceHeight(int wx, int wz) const; // for spawn placement
 
 private:
+    void placeTrees(Chunk& chunk, ChunkPos pos) const;
+
     int m_seed;
     FastNoise::SmartNode<> m_height;    // domain-warped fbm, [-1,1]
     FastNoise::SmartNode<> m_continent; // very low frequency, drives the spline

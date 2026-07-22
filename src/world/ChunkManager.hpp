@@ -83,8 +83,9 @@ public:
 
     // For the cull compute pass; call when consumeDirty() says the chunk set changed.
     // Assigns each drawable chunk its meta index (the visibility bitset uses the same
-    // indexing), so the two must always be rebuilt together.
-    void collectDrawInfo(std::vector<ChunkDrawInfo>& out);
+    // indexing), so the two must always be rebuilt together. Also fills the separate
+    // water draw list for the transparent pass.
+    void collectDrawInfo(std::vector<ChunkDrawInfo>& out, std::vector<ChunkDrawInfo>& water);
     bool consumeDirty() {
         const bool was = m_dirty;
         m_dirty = false;
@@ -111,8 +112,10 @@ public:
 private:
     struct Entry {
         Chunk* voxels = nullptr;
-        Renderer::Range range; // quads in the arena
+        Renderer::Range range;      // opaque quads in the arena
+        Renderer::Range waterRange; // transparent quads in the arena
         int quads = 0;
+        int waterQuads = 0;
         ChunkState state = ChunkState::Generating;
         bool lit = false;   // sky/emissive seeding done; meshing waits for it
         bool dirty = false; // player-edited since load; needs saving before eviction
@@ -120,12 +123,14 @@ private:
         std::uint16_t connectivity = 0x7FFF;
         std::int32_t metaIndex = -1;   // slot in the cull meta buffer, -1 = not drawn
         std::uint32_t floodStamp = 0;  // visited marker for the visibility flood
-        std::vector<std::uint64_t> quadsCpu; // kept for arena rebuilds
+        std::vector<std::uint64_t> quadsCpu;      // opaque, kept for arena rebuilds
+        std::vector<std::uint64_t> waterQuadsCpu; // transparent
     };
 
     struct MeshResult {
         ChunkPos pos;
         std::vector<std::uint64_t> quads;
+        std::vector<std::uint64_t> water;
         GreedyStats stats;
         std::uint16_t connectivity = 0;
     };
@@ -154,6 +159,7 @@ private:
     RegionStore m_regions;
     GreedyMesher m_mesher; // main-thread instance for the synchronous edit remesh path
     std::vector<std::uint64_t> m_quadScratch;
+    std::vector<std::uint64_t> m_waterScratch;
     std::vector<std::uint8_t> m_saveScratch;
 
     std::vector<ChunkPos> m_genQueue; // farthest-first, pop_back serves nearest

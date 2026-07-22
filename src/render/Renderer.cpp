@@ -44,6 +44,12 @@ bool Renderer::init(unsigned int drawProgram, unsigned int cullProgram) {
                                       GLsizeiptr(kMaxChunks) * sizeof(GpuChunkMeta),
                                       kWriteMapFlags);
 
+    glCreateBuffers(1, &m_waterMetaBuf);
+    glNamedBufferStorage(m_waterMetaBuf, GLsizeiptr(kMaxChunks) * sizeof(GpuChunkMeta),
+                         nullptr, kWriteMapFlags);
+    m_waterMetaMap = glMapNamedBufferRange(
+        m_waterMetaBuf, 0, GLsizeiptr(kMaxChunks) * sizeof(GpuChunkMeta), kWriteMapFlags);
+
     glCreateBuffers(1, &m_cmdBuf);
     glNamedBufferStorage(m_cmdBuf, GLsizeiptr(kMaxChunks) * 16, nullptr, 0);
     glCreateBuffers(1, &m_countBuf);
@@ -63,7 +69,7 @@ bool Renderer::init(unsigned int drawProgram, unsigned int cullProgram) {
     if (m_visMap)
         std::memset(m_visMap, 0xFF, kMaxChunks / 8); // everything visible until a flood runs
 
-    if (!m_arenaMap || !m_metaMap || !m_readbackMap || !m_visMap) {
+    if (!m_arenaMap || !m_metaMap || !m_waterMetaMap || !m_readbackMap || !m_visMap) {
         VX_ERROR("renderer: persistent mapping failed");
         return false;
     }
@@ -79,8 +85,8 @@ void Renderer::shutdown() {
             m_fence[i] = nullptr;
         }
     const GLuint buffers[] = {m_arenaBuf,   m_metaBuf,     m_cmdBuf, m_countBuf,
-                              m_offsetsBuf, m_readbackBuf, m_visBuf};
-    glDeleteBuffers(7, buffers);
+                              m_offsetsBuf, m_readbackBuf, m_visBuf, m_waterMetaBuf};
+    glDeleteBuffers(8, buffers);
     glDeleteVertexArrays(1, &m_vao);
 }
 
@@ -172,8 +178,19 @@ void Renderer::updateVisibility(std::span<const std::uint32_t> bits) {
     std::memcpy(m_visMap, bits.data(), words * sizeof(std::uint32_t));
 }
 
-void Renderer::cullFrustum(const Frustum& frustum, const glm::ivec3& cameraChunk,
-                           const glm::vec3& cameraFrac, bool caveCull) {
+void Renderer::updateWaterMeta(std::span<const ChunkDrawInfo> chunks) {
+    m_waterChunkCount = std::min(std::uint32_t(chunks.size()), kMaxChunks);
+    auto* meta = static_cast<GpuChunkMeta*>(m_waterMetaMap);
+    for (std::uint32_t i = 0; i < m_waterChunkCount; ++i) {
+        const ChunkDrawInfo& c = chunks[i];
+        meta[i] = {c.chunkPos.x, c.chunkPos.y, c.chunkPos.z, std::int32_t(c.firstQuad),
+                   c.quadCount, 0, 0, 0};
+    }
+}
+
+void Renderer::cullInto(unsigned int metaBuf, unsigned int chunkCount, const Frustum& frustum,
+                        const glm::ivec3& cameraChunk, const glm::vec3& cameraFrac,
+                        bool caveCull) {
     const GLuint zero = 0;
     glClearNamedBufferSubData(m_countBuf, GL_R32UI, 0, sizeof(GLuint), GL_RED_INTEGER,
                               GL_UNSIGNED_INT, &zero);
@@ -182,16 +199,21 @@ void Renderer::cullFrustum(const Frustum& frustum, const glm::ivec3& cameraChunk
     glProgramUniform4fv(m_cullProgram, 0, frustum.count, &frustum.planes[0].x);
     glProgramUniform3iv(m_cullProgram, 6, 1, &cameraChunk.x);
     glProgramUniform3fv(m_cullProgram, 7, 1, &cameraFrac.x);
-    glProgramUniform1ui(m_cullProgram, 8, m_chunkCount);
+    glProgramUniform1ui(m_cullProgram, 8, chunkCount);
     glProgramUniform1ui(m_cullProgram, 9, caveCull ? 1u : 0u);
     glProgramUniform1ui(m_cullProgram, 10, GLuint(frustum.count));
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_metaBuf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, metaBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_cmdBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, m_countBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, m_offsetsBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, m_visBuf);
-    glDispatchCompute((m_chunkCount + 63) / 64, 1, 1);
+    glDispatchCompute((chunkCount + 63) / 64, 1, 1);
     glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+}
+
+void Renderer::cullFrustum(const Frustum& frustum, const glm::ivec3& cameraChunk,
+                           const glm::vec3& cameraFrac, bool caveCull) {
+    cullInto(m_metaBuf, m_chunkCount, frustum, cameraChunk, cameraFrac, caveCull);
 }
 
 void Renderer::drawIndirect(unsigned int program, const glm::mat4& viewProj) {
@@ -212,12 +234,28 @@ void Renderer::drawWorld(const glm::mat4& viewProj, const Frustum& frustum,
                          bool caveCull) {
     if (m_chunkCount == 0)
         return;
-    cullFrustum(frustum, cameraChunk, cameraFrac, caveCull);
+    cullInto(m_metaBuf, m_chunkCount, frustum, cameraChunk, cameraFrac, caveCull);
     drawIndirect(m_drawProgram, viewProj);
 
     // HUD visible-count: copied now, read kFrameRing frames later off the fence ring
     glCopyNamedBufferSubData(m_countBuf, m_readbackBuf, 0,
                              GLintptr(m_slot) * GLintptr(sizeof(GLuint)), sizeof(GLuint));
+}
+
+void Renderer::drawWater(unsigned int program, const glm::mat4& viewProj,
+                         const Frustum& frustum, const glm::ivec3& cameraChunk,
+                         const glm::vec3& cameraFrac) {
+    if (m_waterChunkCount == 0)
+        return;
+    cullInto(m_waterMetaBuf, m_waterChunkCount, frustum, cameraChunk, cameraFrac, false);
+    glUseProgram(program);
+    glProgramUniformMatrix4fv(program, 0, 1, GL_FALSE, glm::value_ptr(viewProj));
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_arenaBuf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_offsetsBuf);
+    glBindVertexArray(m_vao);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, m_cmdBuf);
+    glBindBuffer(GL_PARAMETER_BUFFER, m_countBuf);
+    glMultiDrawArraysIndirectCount(GL_TRIANGLES, nullptr, 0, GLsizei(kMaxChunks), 0);
 }
 
 void Renderer::endFrame() {

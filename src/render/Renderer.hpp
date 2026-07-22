@@ -52,10 +52,16 @@ public:
 
     void beginFrame(); // recycle fence-cleared frees, poll the visible-count readback
     void updateChunkMeta(std::span<const ChunkDrawInfo> chunks);
-    void updateVisibility(std::span<const std::uint32_t> bits); // indexed by meta order
+    void updateWaterMeta(std::span<const ChunkDrawInfo> chunks); // transparent pass
+    void updateVisibility(std::span<const std::uint32_t> bits);  // indexed by meta order
     void drawWorld(const glm::mat4& viewProj, const Frustum& frustum,
                    const glm::ivec3& cameraChunk, const glm::vec3& cameraFrac,
                    bool caveCull);
+    // Transparent pass: frustum-cull the water meta and draw with `program` (the caller
+    // sets blending + depth-write-off). No cave culling — water shares its chunk's
+    // visibility but uses a separate meta list.
+    void drawWater(unsigned int program, const glm::mat4& viewProj, const Frustum& frustum,
+                   const glm::ivec3& cameraChunk, const glm::vec3& cameraFrac);
     void endFrame(); // fence this frame's GPU work
 
     // For the shadow pass: cull chunks against an arbitrary frustum (a cascade's ortho
@@ -64,6 +70,8 @@ public:
     void cullFrustum(const Frustum& frustum, const glm::ivec3& cameraChunk,
                      const glm::vec3& cameraFrac, bool caveCull);
     void drawIndirect(unsigned int program, const glm::mat4& viewProj);
+    void cullInto(unsigned int metaBuf, unsigned int chunkCount, const Frustum& frustum,
+                  const glm::ivec3& cameraChunk, const glm::vec3& cameraFrac, bool caveCull);
 
     int gpuVisibleChunks() const { return m_visibleChunks; } // ~3 frames of latency
     int debugReadDrawCount() const;                          // syncs; smoke test only
@@ -84,6 +92,7 @@ private:
     unsigned int m_vao = 0;
     unsigned int m_arenaBuf = 0;
     unsigned int m_metaBuf = 0;
+    unsigned int m_waterMetaBuf = 0;
     unsigned int m_cmdBuf = 0;
     unsigned int m_countBuf = 0;
     unsigned int m_offsetsBuf = 0;
@@ -92,6 +101,7 @@ private:
 
     std::uint64_t* m_arenaMap = nullptr;
     void* m_metaMap = nullptr;
+    void* m_waterMetaMap = nullptr;
     const std::uint32_t* m_readbackMap = nullptr;
     std::uint32_t* m_visMap = nullptr;
 
@@ -102,6 +112,7 @@ private:
 
     std::uint32_t m_usedQuads = 0;
     std::uint32_t m_chunkCount = 0;
+    std::uint32_t m_waterChunkCount = 0;
     int m_visibleChunks = 0;
 };
 

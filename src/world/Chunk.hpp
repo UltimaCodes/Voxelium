@@ -22,9 +22,20 @@ inline constexpr BlockId Stone = 1;
 inline constexpr BlockId Dirt = 2;
 inline constexpr BlockId Grass = 3;
 inline constexpr BlockId Glow = 4;
+inline constexpr BlockId Water = 5;
+inline constexpr BlockId Wood = 6;
+inline constexpr BlockId Leaves = 7;
+inline constexpr BlockId Sand = 8;
+inline constexpr int kBlockCount = 9;
 
 inline constexpr int luminance(BlockId id) { return id == Glow ? 14 : 0; }
-inline constexpr bool opaque(BlockId id) { return id != Air; }
+
+// opaque = blocks light and hides faces behind it. water is see-through (renders in the
+// transparent pass, lets light through); leaves are opaque for cheap "fast" foliage.
+inline constexpr bool opaque(BlockId id) { return id != Air && id != Water; }
+inline constexpr bool isWater(BlockId id) { return id == Water; }
+// solid = collides with the player. water is swim-through (no collision).
+inline constexpr bool solid(BlockId id) { return opaque(id); }
 } // namespace blocks
 
 // Palette-compressed voxel storage. A uniform chunk (bits == 0) stores one id and no

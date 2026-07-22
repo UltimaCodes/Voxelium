@@ -90,6 +90,10 @@ void ChunkManager::processEvictions(Renderer& renderer) {
             renderer.free(e.range);
             m_dirty = true;
         }
+        if (e.waterRange.count != 0) {
+            renderer.free(e.waterRange);
+            m_dirty = true;
+        }
         m_pool.release(e.voxels);
         m_seededColumns.erase(ChunkPos{m_evictList[i].x, 0, m_evictList[i].z});
         m_chunks.erase(it);
@@ -102,11 +106,15 @@ void ChunkManager::rebuildArena(Renderer& renderer) {
     renderer.hardReset();
     for (auto& item : m_chunks) {
         Entry& e = item.second;
-        if (e.state != ChunkState::Meshed || e.quadsCpu.empty())
+        if (e.state != ChunkState::Meshed)
             continue;
-        e.range = renderer.alloc(e.quadsCpu);
-        if (e.range.count == 0)
-            VX_ERROR("arena rebuild: chunk still does not fit — arena too small");
+        if (!e.quadsCpu.empty()) {
+            e.range = renderer.alloc(e.quadsCpu);
+            if (e.range.count == 0)
+                VX_ERROR("arena rebuild: chunk still does not fit — arena too small");
+        }
+        if (!e.waterQuadsCpu.empty())
+            e.waterRange = renderer.alloc(e.waterQuadsCpu);
     }
     m_dirty = true;
 }
@@ -275,13 +283,18 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             // one mesher + scratch per worker thread, reused across jobs
             thread_local GreedyMesher mesher;
             thread_local std::vector<std::uint64_t> quadScratch;
+            thread_local std::vector<std::uint64_t> waterScratch;
             const auto t0 = Clock::now();
-            const GreedyStats stats = mesher.mesh(*voxels, nb.data(), quadScratch);
+            const GreedyStats stats =
+                mesher.mesh(*voxels, nb.data(), quadScratch, waterScratch);
             const std::uint16_t connectivity = computeConnectivity(*voxels);
             m_meshNanos.fetch_add(nsSince(t0), std::memory_order_relaxed);
             m_meshCount.fetch_add(1, std::memory_order_relaxed);
 
-            MeshResult result{pos, {quadScratch.begin(), quadScratch.end()}, stats,
+            MeshResult result{pos,
+                              {quadScratch.begin(), quadScratch.end()},
+                              {waterScratch.begin(), waterScratch.end()},
+                              stats,
                               connectivity};
             voxels->releaseJob();
             for (const Chunk* n : nb)
@@ -307,11 +320,16 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         const auto it = m_chunks.find(r.pos);
         if (it != m_chunks.end() && it->second.state == ChunkState::Meshing) {
             Entry& e = it->second;
-            if (e.range.count != 0) { // remesh: the old quads' range goes back to the arena
+            if (e.range.count != 0) { // remesh: old ranges go back to the arena
                 renderer.free(e.range);
                 e.range = {};
             }
+            if (e.waterRange.count != 0) {
+                renderer.free(e.waterRange);
+                e.waterRange = {};
+            }
             e.quads = int(r.quads.size());
+            e.waterQuads = int(r.water.size());
             if (!r.quads.empty()) {
                 e.range = renderer.alloc(r.quads);
                 if (e.range.count == 0) { // arena full — defrag and retry once
@@ -319,6 +337,18 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                     e.range = renderer.alloc(r.quads);
                 }
                 e.quadsCpu = std::move(r.quads);
+            } else {
+                e.quadsCpu.clear();
+            }
+            if (!r.water.empty()) {
+                e.waterRange = renderer.alloc(r.water);
+                if (e.waterRange.count == 0) {
+                    rebuildArena(renderer);
+                    e.waterRange = renderer.alloc(r.water);
+                }
+                e.waterQuadsCpu = std::move(r.water);
+            } else {
+                e.waterQuadsCpu.clear();
             }
             e.connectivity = r.connectivity;
             e.state = ChunkState::Meshed;
@@ -332,17 +362,25 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     m_uploadMsLast = msSince(uploadStart);
 }
 
-void ChunkManager::collectDrawInfo(std::vector<ChunkDrawInfo>& out) {
+void ChunkManager::collectDrawInfo(std::vector<ChunkDrawInfo>& out,
+                                   std::vector<ChunkDrawInfo>& water) {
     out.clear();
+    water.clear();
     for (auto& item : m_chunks) {
         Entry& e = item.second;
-        if (e.state != ChunkState::Meshed || e.quads == 0 || e.range.count == 0) {
+        if (e.state != ChunkState::Meshed) {
             e.metaIndex = -1;
             continue;
         }
-        e.metaIndex = std::int32_t(out.size());
-        out.push_back({{item.first.x, item.first.y, item.first.z}, e.range.first,
-                       e.range.count});
+        const glm::ivec3 cp{item.first.x, item.first.y, item.first.z};
+        if (e.quads > 0 && e.range.count != 0) {
+            e.metaIndex = std::int32_t(out.size());
+            out.push_back({cp, e.range.first, e.range.count});
+        } else {
+            e.metaIndex = -1;
+        }
+        if (e.waterQuads > 0 && e.waterRange.count != 0)
+            water.push_back({cp, e.waterRange.first, e.waterRange.count});
     }
     m_metaCount = int(out.size());
     m_visDirty = true;
@@ -452,14 +490,20 @@ void ChunkManager::remeshNow(Renderer& renderer, ChunkPos pos) {
         voxelsAt({pos.x, pos.y + 1, pos.z}), voxelsAt({pos.x, pos.y - 1, pos.z}),
         voxelsAt({pos.x, pos.y, pos.z + 1}), voxelsAt({pos.x, pos.y, pos.z - 1}),
     };
-    const GreedyStats stats = m_mesher.mesh(*e.voxels, neighbors, m_quadScratch);
+    const GreedyStats stats =
+        m_mesher.mesh(*e.voxels, neighbors, m_quadScratch, m_waterScratch);
     e.connectivity = computeConnectivity(*e.voxels);
 
     if (e.range.count != 0) {
         renderer.free(e.range);
         e.range = {};
     }
+    if (e.waterRange.count != 0) {
+        renderer.free(e.waterRange);
+        e.waterRange = {};
+    }
     e.quads = stats.quads;
+    e.waterQuads = stats.waterQuads;
     if (stats.quads > 0) {
         e.range = renderer.alloc(m_quadScratch);
         if (e.range.count == 0) {
@@ -469,6 +513,16 @@ void ChunkManager::remeshNow(Renderer& renderer, ChunkPos pos) {
         e.quadsCpu.assign(m_quadScratch.begin(), m_quadScratch.end());
     } else {
         e.quadsCpu.clear();
+    }
+    if (stats.waterQuads > 0) {
+        e.waterRange = renderer.alloc(m_waterScratch);
+        if (e.waterRange.count == 0) {
+            rebuildArena(renderer);
+            e.waterRange = renderer.alloc(m_waterScratch);
+        }
+        e.waterQuadsCpu.assign(m_waterScratch.begin(), m_waterScratch.end());
+    } else {
+        e.waterQuadsCpu.clear();
     }
     e.state = ChunkState::Meshed; // a stale worker result for this chunk now gets dropped
     m_dirty = true;
