@@ -43,7 +43,8 @@ public:
         glm::vec3 sunL;
         const ShadowMap* shadows;
         FxToggles toggles;
-        unsigned int targetFbo; // 0 = backbuffer
+        bool underwater = false; // camera eye submerged -> composite adds depth fog + tint
+        unsigned int targetFbo;  // 0 = backbuffer
         int targetWidth, targetHeight;
     };
     void run(const RunParams& p);

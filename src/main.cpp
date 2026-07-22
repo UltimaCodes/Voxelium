@@ -124,7 +124,7 @@ struct FrameTimers {
 void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxToggles& fx,
                  bool caveCull, int fbW, int fbH, unsigned int targetFbo, float time,
                  FrameTimers* timers, bool hasSelection = false,
-                 const glm::vec3& selMinCamRel = glm::vec3(0.0f)) {
+                 const glm::vec3& selMinCamRel = glm::vec3(0.0f), bool underwater = false) {
     const CameraFrame cam = buildCameraFrame(camera, fbW, fbH);
     const glm::vec3 sunL = sunFromAltitude(fx.sunAltitudeDeg);
     const float aspect = float(fbW) / float(fbH);
@@ -193,6 +193,7 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     rp.sunL = sunL;
     rp.shadows = &rc.shadows;
     rp.toggles = fx;
+    rp.underwater = underwater;
     rp.targetFbo = targetFbo;
     rp.targetWidth = fbW;
     rp.targetHeight = fbH;
@@ -765,12 +766,16 @@ int main(int argc, char** argv) {
             }
         }
 
+        // eye submerged -> underwater fog/tint in the composite pass
+        const bool eyeUnderwater =
+            vx::blocks::isWater(world->blockAtWorld(glm::ivec3(glm::floor(camera.position))));
+
         int fbW = 0;
         int fbH = 0;
         window->framebufferSize(fbW, fbH);
         if (fbW > 0 && fbH > 0) {
             renderFrame(rc, camera, fx, caveCull, fbW, fbH, 0, float(now), &timers, hasSel,
-                        selMin);
+                        selMin, eyeUnderwater);
             if (hotbarOpen)
                 overlay.drawHotbar(fbW, fbH, kHotbar, kHotbarCount, hotbarSel, blockTex);
         }

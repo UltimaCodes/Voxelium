@@ -21,6 +21,9 @@ layout(location = 4) uniform float uVolumetricOn;
 layout(location = 5) uniform vec3 uSunL;
 layout(location = 6) uniform mat4 uCascadeVp[3];
 layout(location = 18) uniform vec3 uCascadeSplit;
+layout(location = 19) uniform float uUnderwater; // 1 when the camera eye is submerged
+
+const vec3 kWaterDeep = vec3(0.03, 0.13, 0.20);
 
 vec3 viewRay() {
     vec2 ndc = vUv * 2.0 - 1.0;
@@ -67,9 +70,10 @@ void main() {
     float rawD = texture(uDepth, vUv).r;
     vec3 dir = viewRay();
 
-    // sky pixel (reversed-z far = 0): paint the sky instead of the flat clear colour
+    // sky pixel (reversed-z far = 0): paint the sky instead of the flat clear colour.
+    // underwater there is no sky — the far distance is just deep water.
     if (rawD <= 0.0) {
-        outColor = vec4(skyColor(dir), 1.0);
+        outColor = vec4(uUnderwater > 0.5 ? kWaterDeep : skyColor(dir), 1.0);
         return;
     }
 
@@ -98,6 +102,16 @@ void main() {
         // clearly when looking toward the sun, without bringing the aliased grid back
         float phase = 0.10 + 0.90 * pow(max(dot(rd, uSunL), 0.0), 5.0);
         color += vec3(1.14, 1.05, 0.86) * (scatter * phase * len * 0.00032);
+    }
+
+    // underwater: absorb reds and fog toward deep water with distance (Beer-Lambert-ish)
+    if (uUnderwater > 0.5) {
+        float viewZ = -uNear / max(rawD, 1e-7);
+        vec2 ndc = vUv * 2.0 - 1.0;
+        vec3 vpos = vec3(ndc.x * uProjScale.x * -viewZ, ndc.y * uProjScale.y * -viewZ, viewZ);
+        float dist = length(vpos);
+        color *= vec3(0.55, 0.82, 1.0);            // water eats warm light first
+        color = mix(color, kWaterDeep, 1.0 - exp(-dist * 0.10));
     }
 
     outColor = vec4(color, 1.0);

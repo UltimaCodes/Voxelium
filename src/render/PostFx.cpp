@@ -162,6 +162,7 @@ void PostFx::run(const RunParams& p) {
     const glm::vec3 splits{ShadowMap::kSplits[0], ShadowMap::kSplits[1],
                            ShadowMap::kSplits[2]};
     glProgramUniform3fv(m_progComposite, 18, 1, &splits.x);
+    glProgramUniform1f(m_progComposite, 19, p.underwater ? 1.0f : 0.0f);
     glBindTextureUnit(0, m_hdrColor);
     glBindTextureUnit(1, p.shadows->texture());
     glBindTextureUnit(2, m_ssaoBlurTex);
