@@ -598,6 +598,7 @@ int main(int argc, char** argv) {
     bool vsync = false;
     bool caveCull = true;
     bool loadLogged = false;
+    bool everBusy = false; // don't log the "loaded" summary before streaming even starts
     vx::BlockId placeBlock = vx::blocks::Stone;
     std::uint64_t allocsPrevFrame = vx::heapAllocCount();
 
@@ -681,7 +682,8 @@ int main(int argc, char** argv) {
             renderer.updateWaterMeta(waterInfo);
         }
         world->updateVisibilityIfNeeded(renderer, camera.position, caveCull);
-        if (!loadLogged && !world->busy()) {
+        everBusy = everBusy || world->busy();
+        if (!loadLogged && everBusy && !world->busy()) {
             world->logSummary();
             loadLogged = true;
         }
