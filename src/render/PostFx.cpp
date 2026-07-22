@@ -66,8 +66,9 @@ void PostFx::destroyTargets() {
     const GLuint fbos[] = {m_hdrFbo, m_hdr2Fbo, m_ssaoFbo, m_ssaoBlurFbo};
     glDeleteFramebuffers(4, fbos);
     glDeleteFramebuffers(kBloomMips, m_bloomFbo);
-    const GLuint texes[] = {m_hdrColor, m_depth, m_hdr2, m_ssaoTex, m_ssaoBlurTex};
-    glDeleteTextures(5, texes);
+    const GLuint texes[] = {m_hdrColor, m_depth,   m_hdr2,
+                            m_ssaoTex,  m_ssaoBlurTex, m_sceneCopy};
+    glDeleteTextures(6, texes);
     glDeleteTextures(kBloomMips, m_bloomTex);
     m_width = 0;
 }
@@ -79,6 +80,7 @@ void PostFx::createTargets(int width, int height) {
     m_hdrColor = makeTex2D(GL_RGBA16F, width, height);
     m_depth = makeTex2D(GL_DEPTH_COMPONENT32F, width, height, GL_NEAREST);
     m_hdrFbo = makeFbo(m_hdrColor, m_depth);
+    m_sceneCopy = makeTex2D(GL_RGBA16F, width, height);
 
     m_hdr2 = makeTex2D(GL_RGBA16F, width, height);
     m_hdr2Fbo = makeFbo(m_hdr2);
@@ -110,6 +112,15 @@ void PostFx::resize(int width, int height) {
 }
 
 void PostFx::beginScene() {
+    glBindFramebuffer(GL_FRAMEBUFFER, m_hdrFbo);
+    glViewport(0, 0, m_width, m_height);
+}
+
+void PostFx::captureOpaqueForWater() {
+    // GPU-side copy of the opaque color; the water shader reads it for SSR while it
+    // blends new pixels into m_hdrColor (can't read+write the same texture).
+    glCopyImageSubData(m_hdrColor, GL_TEXTURE_2D, 0, 0, 0, 0, m_sceneCopy, GL_TEXTURE_2D, 0,
+                       0, 0, 0, m_width, m_height, 1);
     glBindFramebuffer(GL_FRAMEBUFFER, m_hdrFbo);
     glViewport(0, 0, m_width, m_height);
 }

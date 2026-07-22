@@ -50,4 +50,3 @@ and region-file persistence.
 
 `voxelium --smoke [out.bmp]` renders offscreen, checks that pixels actually got drawn,
 writes a screenshot and exits 0/1. headless self-check, useful for CI later.
-Just typing some totall

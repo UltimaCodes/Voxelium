@@ -36,20 +36,32 @@ vec3 skyColor(vec3 dir) {
         col = mix(horizon, vec3(0.34, 0.38, 0.44), clamp(-dir.y * 3.0, 0.0, 1.0));
     float sd = max(dot(dir, uSunL), 0.0);
     col += vec3(1.0, 0.55, 0.28) * pow(sd, 8.0) * 0.6;        // warm glow around the sun
-    col += vec3(1.0, 0.95, 0.85) * smoothstep(0.9975, 0.9990, sd) * 14.0; // the disc
+    col += vec3(1.0, 0.95, 0.85) * smoothstep(0.9985, 0.9995, sd) * 9.0; // the disc
     return col;
 }
 
+// 4-tap softened shadow lookup for the raymarch — a single tap makes the light shafts
+// alias into a grid against the shadow texels; averaging a few taps smooths them out.
 float shadowSingle(vec3 pos) {
     float d = length(pos);
-    int c = d < uCascadeSplit.x ? 0 : (d < uCascadeSplit.y ? 1 : 2);
     if (d >= uCascadeSplit.z)
         return 1.0;
+    int c = d < uCascadeSplit.x ? 0 : (d < uCascadeSplit.y ? 1 : 2);
     vec4 sc = uCascadeVp[c] * vec4(pos, 1.0);
-    return texture(uShadowMap, vec4(sc.xy * 0.5 + 0.5, float(c), sc.z - 0.0015));
+    vec2 uv = sc.xy * 0.5 + 0.5;
+    float z = sc.z - 0.0015;
+    float t = 1.5 / 1536.0;
+    return 0.25 * (texture(uShadowMap, vec4(uv + vec2(t, t), float(c), z)) +
+                   texture(uShadowMap, vec4(uv + vec2(-t, t), float(c), z)) +
+                   texture(uShadowMap, vec4(uv + vec2(t, -t), float(c), z)) +
+                   texture(uShadowMap, vec4(uv + vec2(-t, -t), float(c), z)));
 }
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+// interleaved gradient noise — a much better dither than a plain hash, so the raymarch
+// start offset breaks up banding evenly instead of in blotches
+float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
 
 void main() {
     float rawD = texture(uDepth, vUv).r;
@@ -70,20 +82,20 @@ void main() {
         vec2 ndc = vUv * 2.0 - 1.0;
         vec3 vpos = vec3(ndc.x * uProjScale.x * -viewZ, ndc.y * uProjScale.y * -viewZ, viewZ);
         vec3 world = uInvViewRot * vpos;
-        float len = min(length(world), 140.0);
+        float len = min(length(world), 150.0);
         vec3 rd = normalize(world);
 
-        const int kSteps = 12;
+        const int kSteps = 24;
         float stepLen = len / float(kSteps);
-        float t = stepLen * hash(gl_FragCoord.xy); // jitter hides banding
+        float t = stepLen * ign(gl_FragCoord.xy); // dithered start, breaks up banding
         float scatter = 0.0;
         for (int i = 0; i < kSteps; ++i) {
             scatter += shadowSingle(rd * t);
             t += stepLen;
         }
         scatter /= float(kSteps);
-        float phase = 0.10 + 0.90 * pow(max(dot(rd, uSunL), 0.0), 8.0);
-        color += vec3(1.15, 1.05, 0.88) * (scatter * phase * len * 0.0007);
+        float phase = 0.12 + 0.88 * pow(max(dot(rd, uSunL), 0.0), 6.0);
+        color += vec3(1.12, 1.04, 0.88) * (scatter * phase * len * 0.00020);
     }
 
     outColor = vec4(color, 1.0);

@@ -5,8 +5,8 @@
 layout(std430, binding = 0) readonly buffer Quads { uvec2 quads[]; };
 layout(std430, binding = 1) readonly buffer Offsets { vec4 uOffsets[]; };
 
-layout(location = 0) uniform mat4 uViewProj;
-layout(location = 1) uniform float uTime;
+layout(location = 0) uniform mat4 uViewProj; // occupies locations 0..3
+layout(location = 4) uniform float uTime;
 
 out vec3 vWorldRel;
 flat out uint vDir;

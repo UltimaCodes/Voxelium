@@ -28,6 +28,14 @@ public:
 
     void beginScene(); // binds the HDR framebuffer; caller clears and draws the world
 
+    // Snapshot the opaque HDR color so the water pass can read it for screen-space
+    // reflections/refraction, then rebind the HDR framebuffer to draw water into.
+    void captureOpaqueForWater();
+    unsigned int sceneCopyTex() const { return m_sceneCopy; }
+    unsigned int depthTex() const { return m_depth; }
+    int width() const { return m_width; }
+    int height() const { return m_height; }
+
     struct RunParams {
         glm::vec2 projScale; // (aspect/f, 1/f) for depth reconstruction
         float nearPlane;
@@ -49,6 +57,7 @@ private:
     unsigned int m_vao = 0;
 
     unsigned int m_hdrFbo = 0, m_hdrColor = 0, m_depth = 0;
+    unsigned int m_sceneCopy = 0; // opaque snapshot for water SSR
     unsigned int m_hdr2Fbo = 0, m_hdr2 = 0;
     unsigned int m_ssaoFbo = 0, m_ssaoTex = 0;
     unsigned int m_ssaoBlurFbo = 0, m_ssaoBlurTex = 0;

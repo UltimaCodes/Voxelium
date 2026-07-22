@@ -153,9 +153,17 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     rc.renderer.drawWorld(cam.viewProj, cam.frustum, cam.cameraChunk, cam.cameraFrac,
                           caveCull);
 
-    // transparent water over the opaque scene: alpha blend, depth test but no write
-    glProgramUniform1f(rc.waterProgram, 1, time);
-    glProgramUniform3fv(rc.waterProgram, 4, 1, &sunL.x);
+    // transparent water over the opaque scene: alpha blend, depth test but no write.
+    // snapshot the opaque colour first so the water shader can reflect it (SSR).
+    rc.postfx.captureOpaqueForWater();
+    const float wf = 1.0f / std::tan(glm::radians(camera.fovYDeg) * 0.5f);
+    const glm::vec2 projScale{aspect / wf, 1.0f / wf};
+    glProgramUniform1f(rc.waterProgram, 4, time);
+    glProgramUniform3fv(rc.waterProgram, 5, 1, &sunL.x);
+    glProgramUniform2fv(rc.waterProgram, 6, 1, &projScale.x);
+    glProgramUniform1f(rc.waterProgram, 7, camera.nearPlane);
+    glBindTextureUnit(2, rc.postfx.sceneCopyTex());
+    glBindTextureUnit(3, rc.postfx.depthTex());
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
