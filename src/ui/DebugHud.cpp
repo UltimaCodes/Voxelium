@@ -162,6 +162,8 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     ImGui::Checkbox("volumetric", &fx.volumetric);
     ImGui::SameLine();
     ImGui::Checkbox("bloom", &fx.bloom);
+    ImGui::SameLine();
+    ImGui::Checkbox("clouds", &fx.clouds);
     ImGui::Checkbox("taa (anti-aliasing)", &fx.taa);
 
     ImGui::Separator();

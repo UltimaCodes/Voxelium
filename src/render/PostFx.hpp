@@ -13,6 +13,7 @@ struct FxToggles {
     bool ssao = true;
     bool volumetric = true;
     bool bloom = true;
+    bool clouds = true;
     bool taa = false; // enabled by the live app; off keeps offscreen/smoke renders exact
     float sunAltitudeDeg = 42.0f;
     float exposure = 1.0f;
@@ -44,6 +45,7 @@ public:
         glm::vec3 sunL;
         const ShadowMap* shadows;
         FxToggles toggles;
+        float time = 0.0f;       // drives cloud drift
         bool underwater = false; // camera eye submerged -> composite adds depth fog + tint
         // TAA reprojection: last frame's unjittered view-proj and how far the camera moved
         glm::mat4 prevViewProj{1.0f};

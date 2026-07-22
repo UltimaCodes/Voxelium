@@ -22,6 +22,8 @@ layout(location = 5) uniform vec3 uSunL;
 layout(location = 6) uniform mat4 uCascadeVp[3];
 layout(location = 18) uniform vec3 uCascadeSplit;
 layout(location = 19) uniform float uUnderwater; // 1 when the camera eye is submerged
+layout(location = 20) uniform float uCloudsOn;
+layout(location = 21) uniform float uTime;
 
 const vec3 kWaterDeep = vec3(0.03, 0.13, 0.20);
 
@@ -41,6 +43,52 @@ vec3 skyColor(vec3 dir) {
     col += vec3(1.0, 0.55, 0.28) * pow(sd, 8.0) * 0.6;        // warm glow around the sun
     col += vec3(1.0, 0.95, 0.85) * smoothstep(0.9985, 0.9995, sd) * 9.0; // the disc
     return col;
+}
+
+// drifting fbm cloud dome: flatten the view direction onto a plane (perspective toward the
+// horizon), fbm coverage, and a cheap sun-side density difference for shading + silver
+// lining. smooth noise -> soft organic clouds, never blocky.
+float vhash(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+float vnoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(vhash(i), vhash(i + vec2(1, 0)), f.x),
+               mix(vhash(i + vec2(0, 1)), vhash(i + vec2(1, 1)), f.x), f.y);
+}
+float cloudFbm(vec2 p) {
+    float s = 0.0, a = 0.5;
+    for (int i = 0; i < 5; ++i) {
+        s += a * vnoise(p);
+        p = p * 2.02 + 3.1;
+        a *= 0.5;
+    }
+    return s;
+}
+vec4 clouds(vec3 dir) {
+    if (dir.y < 0.03)
+        return vec4(0.0);
+    vec2 p = dir.xz / dir.y * 0.6 + vec2(uTime * 0.008, uTime * 0.005); // flatten + wind
+    float cov = cloudFbm(p);
+    float d = smoothstep(0.42, 0.66, cov) * smoothstep(0.03, 0.22, dir.y);
+    if (d <= 0.001)
+        return vec4(0.0);
+    vec2 sp = (uSunL.xz / max(uSunL.y, 0.25)) * 0.12; // one step toward the sun
+    float shade = clamp((cov - cloudFbm(p + sp)) * 2.2 + 0.55, 0.25, 1.0);
+    vec3 col = mix(vec3(0.52, 0.56, 0.64), vec3(1.05, 1.02, 0.98), shade);
+    col += vec3(1.0, 0.85, 0.6) * pow(max(dot(dir, uSunL), 0.0), 6.0) * 0.5; // warm sun side
+    return vec4(col, d);
+}
+vec3 skyWithClouds(vec3 dir) {
+    vec3 s = skyColor(dir);
+    if (uCloudsOn > 0.5) {
+        vec4 c = clouds(dir);
+        s = mix(s, c.rgb, c.a);
+    }
+    return s;
 }
 
 // 4-tap softened shadow lookup for the raymarch — a single tap makes the light shafts
@@ -73,7 +121,7 @@ void main() {
     // sky pixel (reversed-z far = 0): paint the sky instead of the flat clear colour.
     // underwater there is no sky — the far distance is just deep water.
     if (rawD <= 0.0) {
-        outColor = vec4(uUnderwater > 0.5 ? kWaterDeep : skyColor(dir), 1.0);
+        outColor = vec4(uUnderwater > 0.5 ? kWaterDeep : skyWithClouds(dir), 1.0);
         return;
     }
 

@@ -224,6 +224,7 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     rp.sunL = sunL;
     rp.shadows = &rc.shadows;
     rp.toggles = fx;
+    rp.time = time;
     rp.toggles.taa = useTaa; // only let PostFx run TAA when we actually have history state
     rp.underwater = underwater;
     if (useTaa) {
