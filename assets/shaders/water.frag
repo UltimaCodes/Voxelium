@@ -41,6 +41,20 @@ vec2 waveGrad(vec2 p) {
     return g;
 }
 
+float hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+float vnoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash21(i), b = hash21(i + vec2(1, 0));
+    float c = hash21(i + vec2(0, 1)), d = hash21(i + vec2(1, 1));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+float fbm2(vec2 p) { return 0.6 * vnoise(p) + 0.4 * vnoise(p * 2.1 + 3.7); }
+
 vec3 skyColor(vec3 d) {
     float up = clamp(d.y, 0.0, 1.0);
     vec3 col = mix(vec3(0.66, 0.78, 0.92), vec3(0.14, 0.34, 0.80), pow(up, 0.5));
@@ -80,30 +94,47 @@ vec3 reflection(vec3 P, vec3 R) {
 
 void main() {
     vec3 N = kNormal[vDir];
+    vec2 g = vec2(0.0);
     if (vDir == 2u) { // organic ripple on the top surface
-        vec2 g = waveGrad(vWorldRel.xz) * 6.0;
-        N = normalize(vec3(-g.x, 1.0, -g.y));
+        g = waveGrad(vWorldRel.xz);
+        N = normalize(vec3(-g.x * 6.0, 1.0, -g.y * 6.0));
     }
     vec3 V = normalize(-vWorldRel); // camera at the origin
     float fres = mix(0.02, 1.0, pow(1.0 - max(dot(N, V), 0.0), 5.0));
 
-    // how much water sits between the surface and the seabed at this pixel -> clear
-    // shallows, deep opaque blue
-    vec2 suv = gl_FragCoord.xy / vec2(textureSize(uSceneDepth, 0));
+    vec2 res = vec2(textureSize(uSceneDepth, 0));
+    vec2 suv = gl_FragCoord.xy / res;
+
+    // water thickness at this pixel (surface vs seabed, view space) -> absorption + foam
     float bedZ = -uNear / max(texture(uSceneDepth, suv).r, 1e-7);
     float surfZ = -(uViewProj * vec4(vWorldRel, 1.0)).w;
     float thickness = max(surfZ - bedZ, 0.0);
-    float deep = 1.0 - exp(-thickness * 0.11);
 
-    vec3 tint = mix(vec3(0.10, 0.30, 0.38), vec3(0.01, 0.055, 0.12), deep) * (0.3 + 0.7 * vSky);
-    vec3 refl = reflection(vWorldRel, reflect(-V, N)) * (0.35 + 0.65 * vSky);
+    // refraction: sample the seabed nudged by the wave slope. shrink the offset in shallow
+    // water so the shoreline doesn't smear, and undo it if it grabbed a nearer (foreground)
+    // pixel that isn't actually under the water.
+    vec2 ruv = clamp(suv + g * 0.06 * clamp(thickness * 0.5, 0.0, 1.0), vec2(0.001), vec2(0.999));
+    if (-uNear / max(texture(uSceneDepth, ruv).r, 1e-7) > surfZ)
+        ruv = suv;
+    vec3 refr = texture(uSceneColor, ruv).rgb;
 
-    // broader, softer sun glint (was a razor-thin pow(400) that only lit the lattice)
+    // Beer-Lambert absorption: shallow shows the bed, deep goes blue-green
+    float absorb = 1.0 - exp(-thickness * 0.18);
+    vec3 tint = mix(vec3(0.12, 0.30, 0.36), vec3(0.02, 0.09, 0.16), absorb);
+    refr = mix(refr, tint, absorb) * (0.4 + 0.6 * vSky);
+
+    vec3 refl = reflection(vWorldRel, reflect(-V, N)) * (0.4 + 0.6 * vSky);
+
     vec3 H = normalize(uSunL + V);
-    float spec = pow(max(dot(N, H), 0.0), 90.0) * 0.9 * vSky;
+    float spec = pow(max(dot(N, H), 0.0), 120.0) * 1.1 * vSky;
 
-    vec3 col = mix(tint, refl, fres) + vec3(1.0, 0.96, 0.86) * spec;
-    // shallow + steep -> low alpha (see the seabed); deep or grazing -> opaque water
-    float alpha = clamp(mix(mix(0.35, 0.9, deep), 1.0, fres) + spec, 0.0, 1.0);
-    outColor = vec4(col, alpha);
+    vec3 col = mix(refr, refl, fres) + vec3(1.0, 0.96, 0.86) * spec;
+
+    // shoreline foam: thin water gets an animated white fringe
+    float shore = 1.0 - smoothstep(0.0, 1.6, thickness);
+    float fn = fbm2(vWorldRel.xz * 1.3 + vec2(uTime * 0.3, -uTime * 0.2));
+    float foam = smoothstep(0.55, 0.95, shore * (0.55 + 0.6 * fn));
+    col = mix(col, vec3(0.92, 0.96, 1.0), foam);
+
+    outColor = vec4(col, 1.0); // fully composited here (refraction sampled directly)
 }
