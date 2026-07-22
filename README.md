@@ -31,10 +31,10 @@ trees and IDE working dirs just work.
 
 controls:
 
-- F3 debug HUD, F5 walk/fly, F2 save edited chunks, ESC quit
+- F3 debug HUD, E inventory, F5 walk/fly, F2 save edited chunks, ESC quit
 - fly: hold RMB, wasd + space/ctrl, shift = fast, scroll = speed
 - walk: wasd, space to jump, mouse look
-- LMB break block, MMB place, keys 1-3 pick stone/dirt/glow
+- LMB break block, MMB place; E opens the block picker (or keys 1-3 for stone/dirt/glow)
 
 the HUD has live toggles for every shader effect (shadows, ssao, volumetric, bloom) plus
 sun angle, exposure, vsync and render distance.

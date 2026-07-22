@@ -612,7 +612,9 @@ int main(int argc, char** argv) {
     bool caveCull = true;
     bool loadLogged = false;
     bool everBusy = false; // don't log the "loaded" summary before streaming even starts
-    vx::BlockId placeBlock = vx::blocks::Stone;
+    bool e_Held = false;
+    bool inventoryOpen = false;
+    int placeBlock = vx::blocks::Stone;
     std::uint64_t allocsPrevFrame = vx::heapAllocCount();
 
     while (!window->shouldClose()) {
@@ -639,6 +641,10 @@ int main(int argc, char** argv) {
             }
         }
         f5Held = f5;
+        const bool eKey = window->keyDown(GLFW_KEY_E);
+        if (eKey && !e_Held)
+            inventoryOpen = !inventoryOpen;
+        e_Held = eKey;
         if (window->keyDown(GLFW_KEY_1)) placeBlock = vx::blocks::Stone;
         if (window->keyDown(GLFW_KEY_2)) placeBlock = vx::blocks::Dirt;
         if (window->keyDown(GLFW_KEY_3)) placeBlock = vx::blocks::Glow;
@@ -681,7 +687,8 @@ int main(int argc, char** argv) {
                     if (lmb && !lmbHeld)
                         world->setBlock(renderer, *light, hit.voxel, vx::blocks::Air);
                     else
-                        world->setBlock(renderer, *light, hit.voxel + hit.normal, placeBlock);
+                        world->setBlock(renderer, *light, hit.voxel + hit.normal,
+                                        vx::BlockId(placeBlock));
                 }
             }
             lmbHeld = lmb;
@@ -730,7 +737,7 @@ int main(int argc, char** argv) {
             .arenaCapQuads = as.capacityQuads,
             .arenaFreeBlocks = as.freeBlocks,
             .walkMode = walkMode,
-            .placeBlock = int(placeBlock),
+            .placeBlock = placeBlock,
             .gpuShadowMs = timers.shadow.milliseconds(),
             .gpuSceneMs = timers.scene.milliseconds(),
             .gpuPostMs = timers.post.milliseconds(),
@@ -738,6 +745,7 @@ int main(int argc, char** argv) {
         allocsPrevFrame = allocsNow;
         const bool vsyncBefore = vsync;
         hud.buildUi(stats, camera, vsync, caveCull, world->radius, fx);
+        hud.blockPicker(placeBlock, inventoryOpen);
         if (vsync != vsyncBefore)
             window->setVsync(vsync);
         hud.render();

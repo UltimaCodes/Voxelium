@@ -94,8 +94,10 @@ void main() {
             t += stepLen;
         }
         scatter /= float(kSteps);
-        float phase = 0.12 + 0.88 * pow(max(dot(rd, uSunL), 0.0), 6.0);
-        color += vec3(1.12, 1.04, 0.88) * (scatter * phase * len * 0.00020);
+        // stronger forward lobe + a touch more intensity so the god-ray shafts read
+        // clearly when looking toward the sun, without bringing the aliased grid back
+        float phase = 0.10 + 0.90 * pow(max(dot(rd, uSunL), 0.0), 5.0);
+        color += vec3(1.14, 1.05, 0.86) * (scatter * phase * len * 0.00032);
     }
 
     outColor = vec4(color, 1.0);

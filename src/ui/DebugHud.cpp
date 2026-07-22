@@ -137,6 +137,43 @@ void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera, bool& v
     ImGui::End();
 }
 
+void DebugHud::blockPicker(int& placeBlock, bool open) {
+    if (!open)
+        return;
+    struct Entry {
+        int id;
+        const char* name;
+        ImVec4 color;
+    };
+    static const Entry kBlocks[] = {
+        {1, "Stone", {0.49f, 0.49f, 0.51f, 1.0f}}, {2, "Dirt", {0.52f, 0.37f, 0.26f, 1.0f}},
+        {3, "Grass", {0.34f, 0.62f, 0.26f, 1.0f}}, {8, "Sand", {0.85f, 0.79f, 0.58f, 1.0f}},
+        {6, "Wood", {0.42f, 0.29f, 0.17f, 1.0f}},  {7, "Leaves", {0.22f, 0.44f, 0.18f, 1.0f}},
+        {4, "Glow", {1.0f, 0.86f, 0.55f, 1.0f}},   {5, "Water", {0.18f, 0.36f, 0.62f, 1.0f}},
+    };
+
+    ImGui::SetNextWindowPos(ImVec2(430.0f, 12.0f), ImGuiCond_FirstUseEver);
+    ImGui::Begin("inventory (E)", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::TextDisabled("click a block, then MMB places it");
+    int i = 0;
+    for (const Entry& b : kBlocks) {
+        const bool selected = placeBlock == b.id;
+        ImGui::PushStyleColor(ImGuiCol_Button, b.color);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                              ImVec4(b.color.x * 1.2f, b.color.y * 1.2f, b.color.z * 1.2f, 1.0f));
+        if (selected)
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 3.0f);
+        if (ImGui::Button(b.name, ImVec2(72.0f, 48.0f)))
+            placeBlock = b.id;
+        if (selected)
+            ImGui::PopStyleVar();
+        ImGui::PopStyleColor(2);
+        if (++i % 4 != 0)
+            ImGui::SameLine();
+    }
+    ImGui::End();
+}
+
 void DebugHud::render() {
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

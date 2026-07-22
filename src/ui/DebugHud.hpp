@@ -46,6 +46,8 @@ public:
     void beginFrame();
     void buildUi(const FrameStats& stats, const FlyCamera& camera, bool& vsync,
                  bool& caveCull, int& radius, FxToggles& fx);
+    // Block-picker window (toggled with E). Sets `placeBlock` when one is clicked.
+    void blockPicker(int& placeBlock, bool open);
     void render();
 
     void toggle() { m_visible = !m_visible; }
