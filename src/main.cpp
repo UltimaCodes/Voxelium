@@ -14,6 +14,7 @@
 #include "platform/Window.hpp"
 #include "render/Camera.hpp"
 #include "render/Frustum.hpp"
+#include "render/Overlay.hpp"
 #include "render/PostFx.hpp"
 #include "render/Renderer.hpp"
 #include "render/ShadowMap.hpp"
@@ -109,6 +110,7 @@ struct RenderContext {
     vx::Renderer& renderer;
     vx::ShadowMap& shadows;
     vx::PostFx& postfx;
+    vx::Overlay& overlay;
     unsigned int drawProgram;
     unsigned int waterProgram;
     unsigned int blockTex;
@@ -121,7 +123,8 @@ struct FrameTimers {
 // One full frame: cascades -> HDR scene (opaque + transparent water) -> post into target.
 void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxToggles& fx,
                  bool caveCull, int fbW, int fbH, unsigned int targetFbo, float time,
-                 FrameTimers* timers) {
+                 FrameTimers* timers, bool hasSelection = false,
+                 const glm::vec3& selMinCamRel = glm::vec3(0.0f)) {
     const CameraFrame cam = buildCameraFrame(camera, fbW, fbH);
     const glm::vec3 sunL = sunFromAltitude(fx.sunAltitudeDeg);
     const float aspect = float(fbW) / float(fbH);
@@ -175,6 +178,10 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
                           cam.cameraFrac);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
+
+    // block-selection wireframe, in the HDR scene so it depth-tests against the world
+    if (hasSelection)
+        rc.overlay.drawSelection(cam.viewProj, selMinCamRel);
     if (timers) timers->scene.end();
 
     if (timers) timers->post.begin();
@@ -191,6 +198,11 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     rp.targetHeight = fbH;
     rc.postfx.run(rp);
     if (timers) timers->post.end();
+
+    // gameplay HUD on top of the final tonemapped image
+    glBindFramebuffer(GL_FRAMEBUFFER, targetFbo);
+    glViewport(0, 0, fbW, fbH);
+    rc.overlay.drawCrosshair(fbW, fbH);
 }
 
 int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
@@ -560,8 +572,11 @@ int main(int argc, char** argv) {
     vx::PostFx postfx;
     if (!postfx.init(shaders))
         return 1;
+    vx::Overlay overlay;
+    if (!overlay.init(shaders))
+        return 1;
     const GLuint blockTex = vx::createBlockTextureArray(assets / "textures");
-    RenderContext rc{renderer, shadowMap, postfx, drawProgram, waterProgram, blockTex};
+    RenderContext rc{renderer, shadowMap, postfx, overlay, drawProgram, waterProgram, blockTex};
 
     // isolate the smoke test's save data so repeated runs start clean and can't touch a
     // real world save
@@ -592,6 +607,7 @@ int main(int argc, char** argv) {
     if (smoke) {
         const int rc2 = runSmokeTest(rc, *world, *jobs, *light, camera, hud, *window, smokeOut);
         hud.shutdown();
+        overlay.shutdown();
         postfx.shutdown();
         shadowMap.shutdown();
         renderer.shutdown();
@@ -722,11 +738,26 @@ int main(int argc, char** argv) {
             loadLogged = true;
         }
 
+        // block the crosshair is pointing at -> selection wireframe (camera-relative)
+        bool hasSel = false;
+        glm::vec3 selMin(0.0f);
+        if (!settingsOpen) {
+            const auto sel = vx::raycastVoxels(
+                camera.position, camera.forward(), 6.0, [&](const glm::ivec3& p) {
+                    return vx::blocks::opaque(world->blockAtWorld(p));
+                });
+            if (sel.hit) {
+                hasSel = true;
+                selMin = glm::vec3(glm::dvec3(sel.voxel) - camera.position);
+            }
+        }
+
         int fbW = 0;
         int fbH = 0;
         window->framebufferSize(fbW, fbH);
         if (fbW > 0 && fbH > 0)
-            renderFrame(rc, camera, fx, caveCull, fbW, fbH, 0, float(now), &timers);
+            renderFrame(rc, camera, fx, caveCull, fbW, fbH, 0, float(now), &timers, hasSel,
+                        selMin);
 
         const vx::ChunkManager::Stats ws = world->stats();
         const vx::Renderer::ArenaStats as = renderer.arenaStats();
@@ -776,6 +807,7 @@ int main(int argc, char** argv) {
     VX_INFO("window closed, shutting down");
     world->saveDirty(); // persist edits before teardown (workers join after this)
     hud.shutdown();
+    overlay.shutdown();
     postfx.shutdown();
     shadowMap.shutdown();
     renderer.shutdown();
