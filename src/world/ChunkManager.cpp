@@ -1,6 +1,7 @@
 #include "world/ChunkManager.hpp"
 
 #include "core/Log.hpp"
+#include "io/ChunkSerializer.hpp"
 #include "jobs/JobSystem.hpp"
 #include "light/LightEngine.hpp"
 #include "mesh/Connectivity.hpp"
@@ -9,8 +10,12 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <utility>
 
 namespace vx {
+
+ChunkManager::ChunkManager(std::filesystem::path saveDir) : m_regions(std::move(saveDir)) {}
+
 
 namespace {
 
@@ -75,6 +80,11 @@ void ChunkManager::processEvictions(Renderer& renderer) {
         if (inFlight) {
             ++i; // a worker still holds it — retry next frame
             continue;
+        }
+        if (e.dirty) { // player-edited: persist before it leaves memory
+            m_saveScratch.clear();
+            ChunkSerializer::serialize(*e.voxels, m_saveScratch);
+            m_regions.save(m_evictList[i], m_saveScratch);
         }
         if (e.range.count != 0) {
             renderer.free(e.range);
@@ -142,14 +152,35 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     m_genDoneScratch.clear();
 
     // budgeted light seeding + propagation, then remesh whatever light touched.
-    // seeding costs ~0.5-1 ms per column, so keep the per-frame count low
-    for (int n = 0; n < 3 && !m_seedQueue.empty(); ++n) {
+    // seeding costs ~0.5-1 ms per column, so keep the per-frame count low.
+    //
+    // seedColumn reads the column's 4 horizontal neighbors too (cave-mouth spread), so
+    // none of them may be mid-generation on a worker — a Generating chunk has a live
+    // writer racing makeUniform's clear()/push_back() and would read a torn palette.
+    // absent neighbors are fine (blockAt treats them as stone); only Generating blocks.
+    const auto neighborhoodSettled = [this](ChunkPos col) {
+        static constexpr int kCols[5][2] = {{0, 0}, {1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+        for (const auto& c : kCols)
+            for (int cy = 0; cy < kWorldChunksY; ++cy) {
+                const auto it = m_chunks.find({col.x + c[0], cy, col.z + c[1]});
+                if (it != m_chunks.end() && it->second.state == ChunkState::Generating)
+                    return false;
+            }
+        return true;
+    };
+    for (int n = 0, deferred = 0; n < 3 && deferred < int(m_seedQueue.size());) {
         const ChunkPos col = m_seedQueue.back();
         m_seedQueue.pop_back();
+        if (!neighborhoodSettled(col)) {
+            m_seedQueue.insert(m_seedQueue.begin(), col); // retry once neighbors settle
+            ++deferred;
+            continue;
+        }
         light.seedColumn(col.x, col.z);
         for (int cy = 0; cy < kWorldChunksY; ++cy)
             if (const auto cit = m_chunks.find({col.x, cy, col.z}); cit != m_chunks.end())
                 cit->second.lit = true;
+        ++n;
     }
     light.process(1.5);
     for (const ChunkPos pos : light.touched()) {
@@ -176,7 +207,11 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         ++m_jobsInFlight;
         jobs.submit([this, voxels, pos] {
             const auto t0 = Clock::now();
-            m_gen.generate(*voxels, pos);
+            // disk first: a saved (player-edited) chunk loads instead of regenerating.
+            // load() is thread-safe; the read happens here on the worker, never the
+            // main thread. absent chunks fall back to deterministic gen.
+            if (!m_regions.load(pos, *voxels))
+                m_gen.generate(*voxels, pos);
             m_genNanos.fetch_add(nsSince(t0), std::memory_order_relaxed);
             m_genCount.fetch_add(1, std::memory_order_relaxed);
             voxels->releaseJob();
@@ -382,6 +417,21 @@ void ChunkManager::updateVisibilityIfNeeded(Renderer& renderer, const glm::dvec3
     renderer.updateVisibility(m_visBits);
 }
 
+void ChunkManager::saveDirty() {
+    int saved = 0;
+    for (auto& [pos, e] : m_chunks)
+        if (e.dirty && e.voxels) {
+            m_saveScratch.clear();
+            ChunkSerializer::serialize(*e.voxels, m_saveScratch);
+            m_regions.save(pos, m_saveScratch);
+            e.dirty = false;
+            ++saved;
+        }
+    m_regions.flush();
+    if (saved > 0)
+        VX_INFO("persistence: saved %d edited chunk(s)", saved);
+}
+
 BlockId ChunkManager::blockAtWorld(const glm::ivec3& wp) const {
     if (wp.y < 0)
         return blocks::Stone;
@@ -446,6 +496,7 @@ bool ChunkManager::setBlock(Renderer& renderer, LightEngine& light, const glm::i
     while (c->hasJobRefs()) {
     }
     c->set(lx, ly, lz, id);
+    it->second.dirty = true; // content changed: this chunk now needs persisting
 
     light.onBlockChanged(wp, old, id);
     while (!light.idle())

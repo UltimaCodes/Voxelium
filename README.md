@@ -29,8 +29,24 @@ preset (or the IDE's bundled toolchain), hit run.
 run `voxelium` from anywhere — it finds `assets/` by walking up from the exe, so build
 trees and IDE working dirs just work.
 
-F3 toggles the debug HUD. hold RMB to fly (wasd + space/ctrl, shift = fast, scroll =
-speed). ESC quits.
+controls:
+
+- F3 debug HUD, F5 walk/fly, F2 save edited chunks, ESC quit
+- fly: hold RMB, wasd + space/ctrl, shift = fast, scroll = speed
+- walk: wasd, space to jump, mouse look
+- LMB break block, MMB place, keys 1-3 pick stone/dirt/glow
+
+the HUD has live toggles for every shader effect (shadows, ssao, volumetric, bloom) plus
+sun angle, exposure, vsync and render distance.
+
+## what's in it
+
+all 12 milestones from [SPEC.md](SPEC.md), each written up with real numbers in `docs/`:
+binary greedy meshing + vertex pulling (8-byte quads, no VBO), palette-compressed chunks,
+a jthread job system, GPU-driven culling with the whole world in one indirect draw call,
+cave culling, flood-fill block+sky lighting, FastNoise2 terrain with caves, player physics
++ block editing, a forward HDR pipeline (cascaded shadows, SSAO, volumetrics, bloom, ACES),
+and region-file persistence.
 
 `voxelium --smoke [out.bmp]` renders offscreen, checks that pixels actually got drawn,
 writes a screenshot and exits 0/1. headless self-check, useful for CI later.

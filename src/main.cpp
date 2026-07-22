@@ -5,6 +5,7 @@
 #include "gfx/GlDebug.hpp"
 #include "gfx/GpuTimer.hpp"
 #include "gfx/Shader.hpp"
+#include "io/ChunkSerializer.hpp"
 #include "jobs/JobSystem.hpp"
 #include "light/LightEngine.hpp"
 #include "mesh/GreedyMesher.hpp"
@@ -345,6 +346,58 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
             return 1;
     }
 
+    // persistence: serialize->disk->deserialize round-trip and an edit that survives a
+    // full reload from the region file
+    {
+        // (a) serializer round-trip on a generated cave chunk: every voxel must match
+        auto genChunk = std::make_unique<vx::Chunk>();
+        world.generator().generate(*genChunk, {2, 1, 2});
+        std::vector<std::uint8_t> bytes;
+        const std::size_t n = vx::ChunkSerializer::serialize(*genChunk, bytes);
+        auto roundTrip = std::make_unique<vx::Chunk>();
+        bool same = vx::ChunkSerializer::deserialize(bytes, *roundTrip);
+        for (int y = 0; y < vx::kChunkSize && same; ++y)
+            for (int z = 0; z < vx::kChunkSize && same; ++z)
+                for (int x = 0; x < vx::kChunkSize && same; ++x)
+                    same = genChunk->get(x, y, z) == roundTrip->get(x, y, z);
+        VX_INFO("persistence: chunk serialize round-trip %s (%llu bytes vs %d B raw, %.0fx)",
+                same ? "PASS" : "FAIL", static_cast<unsigned long long>(n),
+                vx::kChunkSize3 * 2, double(vx::kChunkSize3 * 2) / double(n));
+        if (!same)
+            return 1;
+
+        // (b) edit a surface block, save to disk, then load it back into a FRESH chunk
+        // straight from the region file — the edit must survive
+        const int surf = world.generator().surfaceHeight(70, 70);
+        const glm::ivec3 wp{70, surf + 1, 70};
+        const vx::ChunkPos cp{wp.x >> 5, wp.y >> 5, wp.z >> 5};
+        world.setBlock(rc.renderer, light, wp, vx::blocks::Glow);
+        world.saveDirty(); // serialize dirty chunks + flush region files
+
+        auto reloaded = std::make_unique<vx::Chunk>();
+        const bool present = world.regions().load(cp, *reloaded);
+        const bool kept = present && reloaded->get(wp.x & 31, wp.y & 31, wp.z & 31) ==
+                                         vx::blocks::Glow;
+        const auto rs = world.regions().stats();
+        VX_INFO("persistence: edit survived reload from disk %s (%d chunk(s), %.1f KB on disk)",
+                kept ? "PASS" : "FAIL", rs.chunksStored,
+                double(rs.bytesStored) / 1024.0);
+        if (!kept)
+            return 1;
+
+        // (c) end-to-end: fly far enough to evict the chunk, then back — it must
+        // regenerate FROM DISK (not the seed) with the edit intact
+        camera.position = {4096.0, 110.0, 4096.0};
+        drain();
+        camera.position = {16.0, 110.0, 16.0};
+        drain();
+        const bool live = world.blockAtWorld(wp) == vx::blocks::Glow;
+        VX_INFO("persistence: edit present after evict + reload from disk %s",
+                live ? "PASS" : "FAIL");
+        if (!live)
+            return 1;
+    }
+
     // screenshot from inside the glow room
     camera.position = {16.5, 48.0, 16.5};
     camera.yawDeg = 40.0f;
@@ -473,9 +526,18 @@ int main(int argc, char** argv) {
         return 1;
     RenderContext rc{renderer, shadowMap, postfx, drawProgram};
 
+    // isolate the smoke test's save data so repeated runs start clean and can't touch a
+    // real world save
+    std::filesystem::path saveDir = "saves/world";
+    if (smoke) {
+        saveDir = smokeOut.parent_path() / "vxsave_smoke";
+        std::error_code ec;
+        std::filesystem::remove_all(saveDir, ec);
+    }
+
     // declaration order matters: jobs is destroyed first, joining all workers, so no
     // job can touch world's chunks or queues during teardown
-    auto world = std::make_unique<vx::ChunkManager>();
+    auto world = std::make_unique<vx::ChunkManager>(saveDir);
     auto light = std::make_unique<vx::LightEngine>(*world);
     auto jobs = std::make_unique<vx::JobSystem>();
     VX_INFO("job system: %d workers", jobs->workerCount());
@@ -510,6 +572,7 @@ int main(int argc, char** argv) {
     double prevTime = glfwGetTime();
     double physAccum = 0.0;
     bool f3Held = false;
+    bool f2Held = false;
     bool f5Held = false;
     bool lmbHeld = false;
     bool mmbHeld = false;
@@ -530,6 +593,10 @@ int main(int argc, char** argv) {
         if (f3 && !f3Held)
             hud.toggle();
         f3Held = f3;
+        const bool f2 = window->keyDown(GLFW_KEY_F2);
+        if (f2 && !f2Held)
+            world->saveDirty(); // save edited chunks to disk
+        f2Held = f2;
         const bool f5 = window->keyDown(GLFW_KEY_F5);
         if (f5 && !f5Held) {
             walkMode = !walkMode;
@@ -646,6 +713,7 @@ int main(int argc, char** argv) {
     }
 
     VX_INFO("window closed, shutting down");
+    world->saveDirty(); // persist edits before teardown (workers join after this)
     hud.shutdown();
     postfx.shutdown();
     shadowMap.shutdown();

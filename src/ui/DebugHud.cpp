@@ -112,7 +112,7 @@ void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera, bool& v
                 double(camera.yawDeg), double(camera.pitchDeg), double(camera.baseSpeed),
                 camera.flying() ? "  [flying]" : "");
     static const char* kBlockNames[] = {"air", "stone", "dirt", "grass", "glow"};
-    ImGui::Text("%s | place: %s (keys 1-3) | LMB break, MMB place | F5 mode",
+    ImGui::Text("%s | place: %s (1-3) | LMB break, MMB place | F5 mode | F2 save",
                 stats.walkMode ? "walk" : "fly",
                 kBlockNames[stats.placeBlock >= 0 && stats.placeBlock <= 4 ? stats.placeBlock
                                                                            : 0]);

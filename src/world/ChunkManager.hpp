@@ -2,6 +2,7 @@
 
 #include "core/Pool.hpp"
 #include "gen/TerrainGenerator.hpp"
+#include "io/RegionStore.hpp"
 #include "mesh/GreedyMesher.hpp"
 #include "render/Renderer.hpp"
 #include "world/Chunk.hpp"
@@ -11,6 +12,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <mutex>
 #include <vector>
 
@@ -38,6 +40,8 @@ enum class ChunkState : std::uint8_t {
 // hard reset without remeshing.
 class ChunkManager {
 public:
+    explicit ChunkManager(std::filesystem::path saveDir);
+
     struct Stats {
         int loaded = 0;
         int meshed = 0;
@@ -70,6 +74,12 @@ public:
     bool setBlock(Renderer& renderer, LightEngine& light, const glm::ivec3& wp, BlockId id);
 
     const TerrainGenerator& generator() const { return m_gen; }
+    RegionStore& regions() { return m_regions; }
+
+    // Serializes every dirty (player-edited) chunk to its region and flushes to disk.
+    // Unedited chunks regenerate from the seed, so only diffs from procedural gen are
+    // stored. Main thread.
+    void saveDirty();
 
     // For the cull compute pass; call when consumeDirty() says the chunk set changed.
     // Assigns each drawable chunk its meta index (the visibility bitset uses the same
@@ -102,7 +112,8 @@ private:
         Renderer::Range range; // quads in the arena
         int quads = 0;
         ChunkState state = ChunkState::Generating;
-        bool lit = false; // sky/emissive seeding done; meshing waits for it
+        bool lit = false;   // sky/emissive seeding done; meshing waits for it
+        bool dirty = false; // player-edited since load; needs saving before eviction
         // all faces connected until meshed: never cave-cull what isn't known yet
         std::uint16_t connectivity = 0x7FFF;
         std::int32_t metaIndex = -1;   // slot in the cull meta buffer, -1 = not drawn
@@ -138,8 +149,10 @@ private:
     std::vector<ChunkPos> m_seedQueue; // columns with full data, waiting for light seed
     Pool<Chunk> m_pool;
     TerrainGenerator m_gen{20260721};
+    RegionStore m_regions;
     GreedyMesher m_mesher; // main-thread instance for the synchronous edit remesh path
     std::vector<std::uint64_t> m_quadScratch;
+    std::vector<std::uint8_t> m_saveScratch;
 
     std::vector<ChunkPos> m_genQueue; // farthest-first, pop_back serves nearest
     std::vector<ChunkPos> m_meshScratch;
