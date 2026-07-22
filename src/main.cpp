@@ -287,9 +287,6 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
     vx::FxToggles fx;
     const vx::ChunkManager::Stats ws = world.stats();
     const vx::Renderer::ArenaStats as = rc.renderer.arenaStats();
-    bool vsyncDummy = false;
-    bool caveCullDummy = true;
-    int radiusDummy = world.radius;
     for (int i = 0; i < 5; ++i) {
         window.pollEvents();
         rc.renderer.beginFrame();
@@ -313,7 +310,7 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                                    .arenaUsedQuads = as.usedQuads,
                                    .arenaCapQuads = as.capacityQuads,
                                    .arenaFreeBlocks = as.freeBlocks};
-        hud.buildUi(stats, camera, vsyncDummy, caveCullDummy, radiusDummy, fx);
+        hud.diagnostics(stats, camera);
         hud.render();
         rc.renderer.endFrame();
     }
@@ -624,15 +621,20 @@ int main(int argc, char** argv) {
     bool everBusy = false; // don't log the "loaded" summary before streaming even starts
     bool e_Held = false;
     bool inventoryOpen = false;
+    bool escHeld = false;
+    bool settingsOpen = false;
     int placeBlock = vx::blocks::Stone;
     std::uint64_t allocsPrevFrame = vx::heapAllocCount();
 
     while (!window->shouldClose()) {
         window->pollEvents();
-        if (window->keyDown(GLFW_KEY_ESCAPE)) {
-            VX_INFO("esc pressed — closing");
-            window->requestClose();
+        const bool esc = window->keyDown(GLFW_KEY_ESCAPE);
+        if (esc && !escHeld) {
+            settingsOpen = !settingsOpen; // ESC pauses into the settings menu, not quit
+            if (settingsOpen)
+                window->setCursorCaptured(false);
         }
+        escHeld = esc;
         const bool f3 = window->keyDown(GLFW_KEY_F3);
         if (f3 && !f3Held)
             hud.toggle();
@@ -666,7 +668,9 @@ int main(int argc, char** argv) {
 
         renderer.beginFrame();
         hud.beginFrame();
-        if (walkMode) {
+        if (settingsOpen) {
+            // paused in the settings menu: freeze look/move/edit, keep streaming + drawing
+        } else if (walkMode) {
             camera.lookOnly(*window);
             physAccum += double(dt);
             while (physAccum >= vx::Player::kTickDt) {
@@ -685,7 +689,7 @@ int main(int argc, char** argv) {
             camera.update(*window, dt, hud.wantsMouse(), hud.wantsKeyboard());
         }
 
-        if (camera.flying()) {
+        if (!settingsOpen && camera.flying()) {
             const bool lmb = window->mouseDown(GLFW_MOUSE_BUTTON_LEFT);
             const bool mmb = window->mouseDown(GLFW_MOUSE_BUTTON_MIDDLE);
             if ((lmb && !lmbHeld) || (mmb && !mmbHeld)) {
@@ -754,11 +758,16 @@ int main(int argc, char** argv) {
         };
         allocsPrevFrame = allocsNow;
         const bool vsyncBefore = vsync;
-        hud.buildUi(stats, camera, vsync, caveCull, world->radius, fx);
+        bool quitRequested = false;
+        hud.diagnostics(stats, camera);
+        hud.settings(settingsOpen, vsync, caveCull, world->radius, camera.fovYDeg, fx,
+                     quitRequested);
         hud.blockPicker(placeBlock, inventoryOpen);
         if (vsync != vsyncBefore)
             window->setVsync(vsync);
         hud.render();
+        if (quitRequested)
+            window->requestClose();
         renderer.endFrame();
 
         window->swapBuffers();

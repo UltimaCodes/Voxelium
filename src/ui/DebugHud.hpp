@@ -36,16 +36,21 @@ struct FrameStats {
     float gpuPostMs = 0.0f;
 };
 
-// ImGui debug overlay: frame graph, timings, alloc counter, camera state, log view.
-// Debug tooling only — gameplay UI will never be ImGui.
+// ImGui debug/settings overlay: F3 diagnostics (frame graph, timings, alloc counter,
+// camera state, log) and the ESC settings menu (every toggle + slider). Debug/settings
+// tooling only — the in-world gameplay HUD (crosshair, hotbar, block outline) is real GL,
+// never ImGui.
 class DebugHud {
 public:
     bool init(GLFWwindow* window);
     void shutdown();
 
     void beginFrame();
-    void buildUi(const FrameStats& stats, const FlyCamera& camera, bool& vsync,
-                 bool& caveCull, int& radius, FxToggles& fx);
+    // F3 window: read-only diagnostics, no controls.
+    void diagnostics(const FrameStats& stats, const FlyCamera& camera);
+    // ESC window: all the knobs. Sets open=false on Resume, quit=true on Quit.
+    void settings(bool& open, bool& vsync, bool& caveCull, int& radius, float& fovDeg,
+                  FxToggles& fx, bool& quit);
     // Block-picker window (toggled with E). Sets `placeBlock` when one is clicked.
     void blockPicker(int& placeBlock, bool open);
     void render();
@@ -61,6 +66,16 @@ private:
     int m_cursor = 0;
     bool m_visible = true;
     bool m_initialized = false;
+
+    // decimated readout: the raw numbers change every frame and are unreadable, so the
+    // displayed frame/gpu/fps values only refresh a few times a second (averaged over the
+    // window in between).
+    float m_accumMs = 0.0f;
+    float m_accumGpuMs = 0.0f;
+    int m_accumFrames = 0;
+    float m_dispFrameMs = 0.0f;
+    float m_dispGpuMs = 0.0f;
+    float m_dispFps = 0.0f;
 };
 
 } // namespace vx

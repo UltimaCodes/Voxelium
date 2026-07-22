@@ -47,10 +47,21 @@ void DebugHud::beginFrame() {
 bool DebugHud::wantsMouse() const { return ImGui::GetIO().WantCaptureMouse; }
 bool DebugHud::wantsKeyboard() const { return ImGui::GetIO().WantCaptureKeyboard; }
 
-void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera, bool& vsync,
-                       bool& caveCull, int& radius, FxToggles& fx) {
+void DebugHud::diagnostics(const FrameStats& stats, const FlyCamera& camera) {
     m_frameMs[m_cursor] = stats.frameMs;
     m_cursor = (m_cursor + 1) % kSamples;
+
+    // roll the frame/gpu numbers up over ~250 ms so the readout is legible instead of a blur
+    m_accumMs += stats.frameMs;
+    m_accumGpuMs += stats.gpuMs;
+    ++m_accumFrames;
+    if (m_accumMs >= 250.0f && m_accumFrames > 0) {
+        m_dispFrameMs = m_accumMs / float(m_accumFrames);
+        m_dispGpuMs = m_accumGpuMs / float(m_accumFrames);
+        m_dispFps = m_dispFrameMs > 0.0f ? 1000.0f / m_dispFrameMs : 0.0f;
+        m_accumMs = m_accumGpuMs = 0.0f;
+        m_accumFrames = 0;
+    }
 
     if (!m_visible)
         return;
@@ -59,8 +70,8 @@ void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera, bool& v
     ImGui::SetNextWindowSize(ImVec2(400.0f, 0.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin("debug (F3)");
 
-    const float fps = stats.frameMs > 0.0f ? 1000.0f / stats.frameMs : 0.0f;
-    ImGui::Text("frame %6.2f ms   gpu %6.2f ms   %5.0f fps", stats.frameMs, stats.gpuMs, fps);
+    ImGui::Text("frame %6.2f ms   gpu %6.2f ms   %5.0f fps", m_dispFrameMs, m_dispGpuMs,
+                m_dispFps);
 
     const float peak = *std::max_element(m_frameMs, m_frameMs + kSamples);
     ImGui::PlotLines("##frametimes", m_frameMs, kSamples, m_cursor, nullptr, 0.0f,
@@ -87,36 +98,15 @@ void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera, bool& v
                 stats.arenaFreeBlocks);
     ImGui::Text("gpu: shadow %.2f   scene %.2f   post %.2f ms", double(stats.gpuShadowMs),
                 double(stats.gpuSceneMs), double(stats.gpuPostMs));
-    ImGui::Checkbox("vsync", &vsync);
-    ImGui::SameLine();
-    ImGui::Checkbox("cave cull", &caveCull);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(120.0f);
-    ImGui::SliderInt("radius", &radius, 4, 16);
-    ImGui::Checkbox("shadows", &fx.shadows);
-    ImGui::SameLine();
-    ImGui::Checkbox("ssao", &fx.ssao);
-    ImGui::SameLine();
-    ImGui::Checkbox("volumetric", &fx.volumetric);
-    ImGui::SameLine();
-    ImGui::Checkbox("bloom", &fx.bloom);
-    ImGui::SetNextItemWidth(120.0f);
-    ImGui::SliderFloat("sun", &fx.sunAltitudeDeg, 8.0f, 85.0f, "%.0f deg");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(120.0f);
-    ImGui::SliderFloat("exposure", &fx.exposure, 0.4f, 2.5f, "%.2f");
 
     ImGui::Separator();
     ImGui::Text("cam (%.1f, %.1f, %.1f)  yaw %.0f  pitch %.0f  speed %.1f%s",
                 double(camera.position.x), double(camera.position.y), double(camera.position.z),
                 double(camera.yawDeg), double(camera.pitchDeg), double(camera.baseSpeed),
                 camera.flying() ? "  [flying]" : "");
-    static const char* kBlockNames[] = {"air", "stone", "dirt", "grass", "glow"};
-    ImGui::Text("%s | place: %s (1-3) | LMB break, MMB place | F5 mode | F2 save",
-                stats.walkMode ? "walk" : "fly",
-                kBlockNames[stats.placeBlock >= 0 && stats.placeBlock <= 4 ? stats.placeBlock
-                                                                           : 0]);
-    ImGui::TextDisabled("hold RMB: fly | wasd + space/ctrl | shift fast | scroll speed");
+    ImGui::TextDisabled("%s | ESC settings | F4 hotbar | LMB break, MMB place | F5 mode | F2 "
+                        "save",
+                        stats.walkMode ? "walk" : "fly");
 
     ImGui::Separator();
     if (ImGui::CollapsingHeader("log", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -133,6 +123,52 @@ void DebugHud::buildUi(const FrameStats& stats, const FlyCamera& camera, bool& v
             ImGui::SetScrollHereY(1.0f);
         ImGui::EndChild();
     }
+
+    ImGui::End();
+}
+
+void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, float& fovDeg,
+                        FxToggles& fx, bool& quit) {
+    if (!open)
+        return;
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->GetCenter().x, vp->GetCenter().y), ImGuiCond_Always,
+                            ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_Always);
+    ImGui::Begin("settings", nullptr,
+                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoCollapse);
+
+    ImGui::SeparatorText("display");
+    ImGui::Checkbox("vsync", &vsync);
+    ImGui::SameLine();
+    ImGui::Checkbox("cave cull", &caveCull);
+    ImGui::SetNextItemWidth(-100.0f);
+    ImGui::SliderInt("render dist", &radius, 4, 16, "%d chunks");
+    ImGui::SetNextItemWidth(-100.0f);
+    ImGui::SliderFloat("fov", &fovDeg, 50.0f, 100.0f, "%.0f deg");
+
+    ImGui::SeparatorText("lighting");
+    ImGui::SetNextItemWidth(-100.0f);
+    ImGui::SliderFloat("sun angle", &fx.sunAltitudeDeg, 8.0f, 85.0f, "%.0f deg");
+    ImGui::SetNextItemWidth(-100.0f);
+    ImGui::SliderFloat("exposure", &fx.exposure, 0.4f, 2.5f, "%.2f");
+    ImGui::Checkbox("shadows", &fx.shadows);
+
+    ImGui::SeparatorText("effects");
+    ImGui::Checkbox("ssao", &fx.ssao);
+    ImGui::SameLine();
+    ImGui::Checkbox("volumetric", &fx.volumetric);
+    ImGui::SameLine();
+    ImGui::Checkbox("bloom", &fx.bloom);
+
+    ImGui::Separator();
+    if (ImGui::Button("resume", ImVec2(160.0f, 32.0f)))
+        open = false;
+    ImGui::SameLine();
+    if (ImGui::Button("quit", ImVec2(160.0f, 32.0f)))
+        quit = true;
 
     ImGui::End();
 }
