@@ -11,19 +11,21 @@ layout(location = 0) out vec4 outColor;
 layout(binding = 0) uniform sampler2D uScene;
 layout(binding = 2) uniform sampler2D uAo;
 layout(binding = 3) uniform sampler2D uDepth;
+layout(binding = 4) uniform sampler2D uSsgi;
 layout(binding = 1) uniform sampler2DArrayShadow uShadowMap;
 
 layout(location = 0) uniform vec2 uProjScale; // (aspect/f, 1/f)
 layout(location = 1) uniform float uNear;
-layout(location = 2) uniform mat3 uInvViewRot; // view -> camera-relative world
-layout(location = 3) uniform float uAoOn;
-layout(location = 4) uniform float uVolumetricOn;
+layout(location = 2) uniform mat3 uInvViewRot; // view -> camera-relative world; eats 2,3,4
 layout(location = 5) uniform vec3 uSunL;
 layout(location = 6) uniform mat4 uCascadeVp[3];
 layout(location = 18) uniform vec3 uCascadeSplit;
 layout(location = 19) uniform float uUnderwater; // 1 when the camera eye is submerged
 layout(location = 20) uniform float uCloudsOn;
 layout(location = 21) uniform float uTime;
+layout(location = 22) uniform float uSsgiOn;
+layout(location = 23) uniform float uAoOn;         // moved off 3 (was aliased by the mat3)
+layout(location = 24) uniform float uVolumetricOn; // moved off 4
 
 const vec3 kWaterDeep = vec3(0.03, 0.13, 0.20);
 
@@ -128,6 +130,8 @@ void main() {
     vec3 color = texture(uScene, vUv).rgb;
     if (uAoOn > 0.5)
         color *= texture(uAo, vUv).r;
+    if (uSsgiOn > 0.5)
+        color += texture(uSsgi, vUv).rgb * 0.9; // one-bounce indirect fill
 
     if (uVolumetricOn > 0.5) {
         float viewZ = -uNear / max(rawD, 1e-7);

@@ -164,6 +164,8 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     ImGui::Checkbox("bloom", &fx.bloom);
     ImGui::SameLine();
     ImGui::Checkbox("clouds", &fx.clouds);
+    ImGui::Checkbox("ssgi (bounce light)", &fx.ssgi);
+    ImGui::SameLine();
     ImGui::Checkbox("taa (anti-aliasing)", &fx.taa);
 
     ImGui::Separator();

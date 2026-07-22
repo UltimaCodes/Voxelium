@@ -45,8 +45,9 @@ bool PostFx::init(const std::filesystem::path& shaderDir) {
     m_progBloomUp = loadProgram(fs, shaderDir / "bloom_up.frag");
     m_progFinal = loadProgram(fs, shaderDir / "final.frag");
     m_progTaa = loadProgram(fs, shaderDir / "taa.frag");
+    m_progSsgi = loadProgram(fs, shaderDir / "ssgi.frag");
     if (!m_progSsao || !m_progBlur || !m_progComposite || !m_progBloomDown ||
-        !m_progBloomUp || !m_progFinal || !m_progTaa)
+        !m_progBloomUp || !m_progFinal || !m_progTaa || !m_progSsgi)
         return false;
     glCreateVertexArrays(1, &m_vao);
     return true;
@@ -54,8 +55,8 @@ bool PostFx::init(const std::filesystem::path& shaderDir) {
 
 void PostFx::shutdown() {
     destroyTargets();
-    const GLuint progs[] = {m_progSsao, m_progBlur, m_progComposite, m_progBloomDown,
-                            m_progBloomUp, m_progFinal, m_progTaa};
+    const GLuint progs[] = {m_progSsao, m_progBlur,  m_progComposite, m_progBloomDown,
+                            m_progBloomUp, m_progFinal, m_progTaa,     m_progSsgi};
     for (const GLuint p : progs)
         glDeleteProgram(p);
     glDeleteVertexArrays(1, &m_vao);
@@ -68,9 +69,10 @@ void PostFx::destroyTargets() {
                            m_taaFbo[1]};
     glDeleteFramebuffers(6, fbos);
     glDeleteFramebuffers(kBloomMips, m_bloomFbo);
-    const GLuint texes[] = {m_hdrColor, m_depth, m_hdr2,      m_ssaoTex,
-                            m_ssaoBlurTex, m_sceneCopy, m_taa[0], m_taa[1]};
-    glDeleteTextures(8, texes);
+    const GLuint texes[] = {m_hdrColor,    m_depth,     m_hdr2,   m_ssaoTex, m_ssaoBlurTex,
+                            m_sceneCopy, m_taa[0], m_taa[1], m_ssgiTex};
+    glDeleteTextures(9, texes);
+    glDeleteFramebuffers(1, &m_ssgiFbo);
     glDeleteTextures(kBloomMips, m_bloomTex);
     m_width = 0;
 }
@@ -100,6 +102,10 @@ void PostFx::createTargets(int width, int height) {
     m_ssaoFbo = makeFbo(m_ssaoTex);
     m_ssaoBlurTex = makeTex2D(GL_RG16F, hw, hh);
     m_ssaoBlurFbo = makeFbo(m_ssaoBlurTex);
+
+    // half-res coloured bounce; LINEAR so the composite upsample is smooth
+    m_ssgiTex = makeTex2D(GL_RGBA16F, hw, hh);
+    m_ssgiFbo = makeFbo(m_ssgiTex);
 
     int bw = width;
     int bh = height;
@@ -154,6 +160,19 @@ void PostFx::run(const RunParams& p) {
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
 
+    // screen-space GI: gather one bounce of coloured light at half res from the lit scene
+    if (p.toggles.ssgi) {
+        glBindFramebuffer(GL_FRAMEBUFFER, m_ssgiFbo);
+        glViewport(0, 0, std::max(m_width / 2, 1), std::max(m_height / 2, 1));
+        glUseProgram(m_progSsgi);
+        glProgramUniform2fv(m_progSsgi, 0, 1, &p.projScale.x);
+        glProgramUniform1f(m_progSsgi, 1, p.nearPlane);
+        glProgramUniform1f(m_progSsgi, 2, p.time);
+        glBindTextureUnit(0, m_depth);
+        glBindTextureUnit(1, m_hdrColor);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+
     // composite: AO + volumetric scattering, still HDR
     glBindFramebuffer(GL_FRAMEBUFFER, m_hdr2Fbo);
     glViewport(0, 0, m_width, m_height);
@@ -161,8 +180,8 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform2fv(m_progComposite, 0, 1, &p.projScale.x);
     glProgramUniform1f(m_progComposite, 1, p.nearPlane);
     glProgramUniformMatrix3fv(m_progComposite, 2, 1, GL_FALSE, &p.invViewRot[0][0]);
-    glProgramUniform1f(m_progComposite, 3, p.toggles.ssao ? 1.0f : 0.0f);
-    glProgramUniform1f(m_progComposite, 4,
+    glProgramUniform1f(m_progComposite, 23, p.toggles.ssao ? 1.0f : 0.0f);
+    glProgramUniform1f(m_progComposite, 24,
                        p.toggles.volumetric && p.toggles.shadows ? 1.0f : 0.0f);
     glProgramUniform3fv(m_progComposite, 5, 1, &p.sunL.x);
     glProgramUniformMatrix4fv(m_progComposite, 6, 3, GL_FALSE,
@@ -173,10 +192,12 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform1f(m_progComposite, 19, p.underwater ? 1.0f : 0.0f);
     glProgramUniform1f(m_progComposite, 20, p.toggles.clouds ? 1.0f : 0.0f);
     glProgramUniform1f(m_progComposite, 21, p.time);
+    glProgramUniform1f(m_progComposite, 22, p.toggles.ssgi ? 1.0f : 0.0f);
     glBindTextureUnit(0, m_hdrColor);
     glBindTextureUnit(1, p.shadows->texture());
     glBindTextureUnit(2, m_ssaoBlurTex);
     glBindTextureUnit(3, m_depth);
+    glBindTextureUnit(4, m_ssgiTex);
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
     // temporal AA: reproject + blend last frame's resolve into this one. everything

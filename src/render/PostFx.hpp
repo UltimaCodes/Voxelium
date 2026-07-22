@@ -14,6 +14,7 @@ struct FxToggles {
     bool volumetric = true;
     bool bloom = true;
     bool clouds = true;
+    bool ssgi = true; // screen-space one-bounce indirect
     bool taa = false; // enabled by the live app; off keeps offscreen/smoke renders exact
     float sunAltitudeDeg = 42.0f;
     float exposure = 1.0f;
@@ -65,7 +66,7 @@ private:
 
     unsigned int m_progSsao = 0, m_progBlur = 0, m_progComposite = 0;
     unsigned int m_progBloomDown = 0, m_progBloomUp = 0, m_progFinal = 0;
-    unsigned int m_progTaa = 0;
+    unsigned int m_progTaa = 0, m_progSsgi = 0;
     unsigned int m_vao = 0;
 
     unsigned int m_hdrFbo = 0, m_hdrColor = 0, m_depth = 0;
@@ -78,6 +79,7 @@ private:
     bool m_taaValid = false;
     unsigned int m_ssaoFbo = 0, m_ssaoTex = 0;
     unsigned int m_ssaoBlurFbo = 0, m_ssaoBlurTex = 0;
+    unsigned int m_ssgiFbo = 0, m_ssgiTex = 0; // half-res RGBA16F bounce
 
     static constexpr int kBloomMips = 5;
     unsigned int m_bloomFbo[kBloomMips] = {};
