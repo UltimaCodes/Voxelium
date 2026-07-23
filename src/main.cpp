@@ -208,9 +208,12 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     glProgramUniform1f(rc.drawProgram, 20, time); // leaf sway
     glBindTextureUnit(0, rc.blockTex);
     glBindTextureUnit(1, rc.shadows.texture());
+    glBindTextureUnit(5, rc.shadows.texture()); // same array, read raw for the PCSS blocker search
+    glBindSampler(5, rc.shadows.rawSampler());
 
     rc.renderer.drawWorld(cam.viewProj, cam.frustum, cam.cameraChunk, cam.cameraFrac,
                           caveCull);
+    glBindSampler(5, 0);
 
     // transparent water over the opaque scene: alpha blend, depth test but no write.
     // snapshot the opaque colour first so the water shader can reflect it (SSR).

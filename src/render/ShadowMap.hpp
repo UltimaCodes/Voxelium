@@ -35,10 +35,14 @@ public:
     const glm::mat4* cascadeVp() const { return m_vp; }
     glm::vec3 cascadeTexelWorld() const { return m_texelWorld; }
     unsigned int texture() const { return m_depthArray; }
+    // a sampler with comparison OFF, so the same depth array can be read as raw depth for
+    // the PCSS blocker search (bound to a second unit alongside the comparison sampler)
+    unsigned int rawSampler() const { return m_rawSampler; }
 
 private:
     unsigned int m_shadowProgram = 0;
     unsigned int m_depthArray = 0;
+    unsigned int m_rawSampler = 0;
     unsigned int m_fbo = 0;
     glm::mat4 m_vp[kCascades] = {};
     glm::vec3 m_texelWorld{0.0f};

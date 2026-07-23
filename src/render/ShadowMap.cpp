@@ -26,6 +26,15 @@ bool ShadowMap::init(unsigned int shadowProgram) {
     glTextureParameteri(m_depthArray, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
     glTextureParameteri(m_depthArray, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
 
+    // raw-depth sampler (no compare) for the PCSS blocker search
+    glCreateSamplers(1, &m_rawSampler);
+    glSamplerParameteri(m_rawSampler, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glSamplerParameteri(m_rawSampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glSamplerParameteri(m_rawSampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+    glSamplerParameteri(m_rawSampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+    const float rawBorder[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    glSamplerParameterfv(m_rawSampler, GL_TEXTURE_BORDER_COLOR, rawBorder);
+
     glCreateFramebuffers(1, &m_fbo);
     glNamedFramebufferTextureLayer(m_fbo, GL_DEPTH_ATTACHMENT, m_depthArray, 0, 0);
     if (glCheckNamedFramebufferStatus(m_fbo, GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
@@ -38,6 +47,7 @@ bool ShadowMap::init(unsigned int shadowProgram) {
 void ShadowMap::shutdown() {
     glDeleteFramebuffers(1, &m_fbo);
     glDeleteTextures(1, &m_depthArray);
+    glDeleteSamplers(1, &m_rawSampler);
 }
 
 void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& forward,
