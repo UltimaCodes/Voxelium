@@ -105,9 +105,25 @@ CameraFrame buildCameraFrame(const vx::FlyCamera& camera, int fbWidth, int fbHei
     return f;
 }
 
-glm::vec3 sunFromAltitude(float deg) {
-    const float a = glm::radians(deg);
-    return glm::normalize(glm::vec3(0.55f * std::cos(a), std::sin(a), 0.35f * std::cos(a)));
+struct SkyLight {
+    glm::vec3 dir;     // toward the sun/moon
+    glm::vec3 color;   // direct radiance: warm+dim near the horizon, ~0 at night
+    glm::vec3 ambient; // sky fill: blue by day, dark cool at night
+};
+// sun along a day arc from time-of-day (0.25 sunrise east, 0.5 noon, 0.75 sunset west)
+SkyLight computeSky(float timeOfDay) {
+    const float theta = (timeOfDay - 0.25f) * 6.2831853f;
+    const glm::vec3 dir = glm::normalize(glm::vec3(std::cos(theta), std::sin(theta), 0.30f));
+    const float alt = dir.y; // -1..1
+    const float day = glm::clamp(alt * 3.0f + 0.12f, 0.0f, 1.0f); // 0 below the horizon
+    const float high = glm::clamp(alt * 1.8f, 0.0f, 1.0f);
+    const glm::vec3 color = glm::mix(glm::vec3(2.7f, 1.25f, 0.5f),   // horizon warm
+                                     glm::vec3(2.05f, 1.85f, 1.5f),  // overhead white
+                                     high) *
+                            day;
+    const glm::vec3 ambient =
+        glm::mix(glm::vec3(0.03f, 0.045f, 0.08f), glm::vec3(0.26f, 0.36f, 0.55f), day);
+    return {dir, color, ambient};
 }
 
 // low-discrepancy sub-pixel offset for the TAA jitter
@@ -158,7 +174,8 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
                   (halton(idx, 3) - 0.5f) * 2.0f / float(fbH)};
     }
     const CameraFrame cam = buildCameraFrame(camera, fbW, fbH, jitter);
-    const glm::vec3 sunL = sunFromAltitude(fx.sunAltitudeDeg);
+    const SkyLight sky = computeSky(fx.timeOfDay);
+    const glm::vec3 sunL = sky.dir;
 
     rc.postfx.resize(fbW, fbH);
 
@@ -176,6 +193,8 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glProgramUniform3fv(rc.drawProgram, 4, 1, &sunL.x);
+    glProgramUniform3fv(rc.drawProgram, 21, 1, &sky.color.x);
+    glProgramUniform3fv(rc.drawProgram, 22, 1, &sky.ambient.x);
     glProgramUniform1f(rc.drawProgram, 5, fx.shadows ? 1.0f : 0.0f);
     glProgramUniformMatrix4fv(rc.drawProgram, 6, 3, GL_FALSE,
                               &rc.shadows.cascadeVp()[0][0][0]);
@@ -198,6 +217,7 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     const glm::vec2 projScale{aspect / wf, 1.0f / wf};
     glProgramUniform1f(rc.waterProgram, 4, time);
     glProgramUniform3fv(rc.waterProgram, 5, 1, &sunL.x);
+    glProgramUniform3fv(rc.waterProgram, 8, 1, &sky.color.x);
     glProgramUniform2fv(rc.waterProgram, 6, 1, &projScale.x);
     glProgramUniform1f(rc.waterProgram, 7, camera.nearPlane);
     glBindTextureUnit(2, rc.postfx.sceneCopyTex());
@@ -222,6 +242,7 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     rp.nearPlane = camera.nearPlane;
     rp.invViewRot = glm::transpose(glm::mat3(camera.viewAtOrigin()));
     rp.sunL = sunL;
+    rp.sunColor = sky.color;
     rp.shadows = &rc.shadows;
     rp.toggles = fx;
     rp.time = time;
@@ -787,6 +808,10 @@ int main(int argc, char** argv) {
         const float frameMs = float((now - prevTime) * 1000.0);
         const float dt = std::min(float(now - prevTime), 0.1f);
         prevTime = now;
+        if (fx.dayCycle && !settingsOpen) { // advance the day, wrap to [0,1)
+            fx.timeOfDay += dt / std::max(fx.dayLengthSec, 1.0f);
+            fx.timeOfDay -= std::floor(fx.timeOfDay);
+        }
 
         renderer.beginFrame();
         hud.beginFrame();

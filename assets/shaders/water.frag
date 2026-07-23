@@ -18,6 +18,7 @@ layout(location = 4) uniform float uTime;
 layout(location = 5) uniform vec3 uSunL;
 layout(location = 6) uniform vec2 uProjScale; // (aspect/f, 1/f)
 layout(location = 7) uniform float uNear;
+layout(location = 8) uniform vec3 uSunColor; // day/night sun radiance
 
 layout(binding = 2) uniform sampler2D uSceneColor; // opaque snapshot
 layout(binding = 3) uniform sampler2D uSceneDepth;
@@ -56,11 +57,14 @@ float vnoise(vec2 p) {
 float fbm2(vec2 p) { return 0.6 * vnoise(p) + 0.4 * vnoise(p * 2.1 + 3.7); }
 
 vec3 skyColor(vec3 d) {
+    float day = clamp(uSunL.y * 3.0 + 0.12, 0.0, 1.0);
     float up = clamp(d.y, 0.0, 1.0);
-    vec3 col = mix(vec3(0.66, 0.78, 0.92), vec3(0.14, 0.34, 0.80), pow(up, 0.5));
+    vec3 col = mix(vec3(0.66, 0.78, 0.92), vec3(0.14, 0.34, 0.80), pow(up, 0.5)) * day +
+               vec3(0.02, 0.03, 0.06) * (1.0 - day); // dim to a night sky
     float sd = max(dot(d, uSunL), 0.0);
-    col += vec3(1.0, 0.55, 0.28) * pow(sd, 8.0) * 0.6;
-    col += vec3(1.0, 0.95, 0.85) * smoothstep(0.9985, 0.9995, sd) * 9.0;
+    float above = smoothstep(-0.03, 0.06, uSunL.y);
+    col += vec3(1.0, 0.55, 0.28) * pow(sd, 8.0) * 0.6 * above;
+    col += uSunColor * smoothstep(0.9985, 0.9995, sd) * 3.0 * above;
     return col;
 }
 
@@ -128,7 +132,7 @@ void main() {
     vec3 H = normalize(uSunL + V);
     float spec = pow(max(dot(N, H), 0.0), 120.0) * 1.1 * vSky;
 
-    vec3 col = mix(refr, refl, fres) + vec3(1.0, 0.96, 0.86) * spec;
+    vec3 col = mix(refr, refl, fres) + uSunColor * 0.5 * spec; // glint fades at night
 
     // shoreline foam: thin water gets an animated white fringe
     float shore = 1.0 - smoothstep(0.0, 1.6, thickness);

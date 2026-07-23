@@ -13,6 +13,8 @@ layout(location = 5) uniform float uShadowsOn;
 layout(location = 6) uniform mat4 uCascadeVp[3]; // consumes 6..17
 layout(location = 18) uniform vec3 uCascadeSplit; // radial split distances
 layout(location = 19) uniform vec3 uCascadeTexel; // world units per shadow texel
+layout(location = 21) uniform vec3 uSunColor;     // day/night direct radiance
+layout(location = 22) uniform vec3 uSkyAmbient;   // day/night sky fill
 
 layout(binding = 0) uniform sampler2DArray uBlockTex;
 layout(binding = 1) uniform sampler2DArrayShadow uShadowMap;
@@ -73,8 +75,8 @@ void main() {
     // warm strong sun vs cool dim sky ambient — the contrast is what keeps the scene
     // from going milky once tonemapped. the small floor stops fully-enclosed faces
     // (interior leaf pockets, deep cave walls) from crushing to pure black.
-    vec3 direct = vec3(2.05, 1.62, 1.08) * (ndl * shadow * skyAccess);
-    vec3 ambient = vec3(0.26, 0.36, 0.55) * (0.10 + 0.90 * skyL) + vec3(0.035, 0.04, 0.05);
+    vec3 direct = uSunColor * (ndl * shadow * skyAccess);
+    vec3 ambient = uSkyAmbient * (0.10 + 0.90 * skyL) + vec3(0.035, 0.04, 0.05);
     vec3 torch = vec3(1.35, 0.95, 0.55) * (blockL * blockL * 1.6);
 
     outColor = vec4(albedo * kShade[vDir] * (direct + ambient + torch), 1.0);

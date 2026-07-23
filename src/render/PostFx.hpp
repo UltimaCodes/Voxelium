@@ -14,9 +14,11 @@ struct FxToggles {
     bool volumetric = true;
     bool bloom = true;
     bool clouds = true;
-    bool ssgi = true; // screen-space one-bounce indirect
-    bool taa = false; // enabled by the live app; off keeps offscreen/smoke renders exact
-    float sunAltitudeDeg = 42.0f;
+    bool ssgi = true;      // screen-space one-bounce indirect
+    bool taa = false;      // enabled by the live app; off keeps offscreen/smoke renders exact
+    bool dayCycle = true;  // advance time of day automatically
+    float timeOfDay = 0.32f; // 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset
+    float dayLengthSec = 240.0f; // real seconds for a full day
     float exposure = 1.0f;
 };
 
@@ -44,6 +46,7 @@ public:
         float nearPlane;
         glm::mat3 invViewRot;
         glm::vec3 sunL;
+        glm::vec3 sunColor{1.0f}; // day/night sun radiance (warm/dim near horizon, ~0 at night)
         const ShadowMap* shadows;
         FxToggles toggles;
         float time = 0.0f;       // drives cloud drift

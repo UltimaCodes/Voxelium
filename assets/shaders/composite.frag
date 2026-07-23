@@ -26,6 +26,7 @@ layout(location = 21) uniform float uTime;
 layout(location = 22) uniform float uSsgiOn;
 layout(location = 23) uniform float uAoOn;         // moved off 3 (was aliased by the mat3)
 layout(location = 24) uniform float uVolumetricOn; // moved off 4
+layout(location = 25) uniform vec3 uSunColor;      // day/night sun radiance
 
 const vec3 kWaterDeep = vec3(0.03, 0.13, 0.20);
 
@@ -34,16 +35,37 @@ vec3 viewRay() {
     return normalize(uInvViewRot * vec3(ndc.x * uProjScale.x, ndc.y * uProjScale.y, -1.0));
 }
 
+float starHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
 vec3 skyColor(vec3 dir) {
     float up = clamp(dir.y, 0.0, 1.0);
-    vec3 zenith = vec3(0.14, 0.34, 0.80);
-    vec3 horizon = vec3(0.66, 0.78, 0.92);
+    float alt = uSunL.y;                             // sun altitude, -1..1
+    float day = clamp(alt * 3.0 + 0.12, 0.0, 1.0);   // 1 day, 0 night
+    // day/night gradient
+    vec3 zenith = mix(vec3(0.01, 0.015, 0.05), vec3(0.14, 0.34, 0.80), day);
+    vec3 horizon = mix(vec3(0.04, 0.06, 0.12), vec3(0.66, 0.78, 0.92), day);
     vec3 col = mix(horizon, zenith, pow(up, 0.5));
-    if (dir.y < 0.0) // below the horizon: fade to a hazy ground tone
-        col = mix(horizon, vec3(0.34, 0.38, 0.44), clamp(-dir.y * 3.0, 0.0, 1.0));
+    if (dir.y < 0.0)
+        col = mix(horizon, mix(vec3(0.06, 0.07, 0.09), vec3(0.34, 0.38, 0.44), day),
+                  clamp(-dir.y * 3.0, 0.0, 1.0));
+
     float sd = max(dot(dir, uSunL), 0.0);
-    col += vec3(1.0, 0.55, 0.28) * pow(sd, 8.0) * 0.6;        // warm glow around the sun
-    col += vec3(1.0, 0.95, 0.85) * smoothstep(0.9985, 0.9995, sd) * 9.0; // the disc
+    float above = smoothstep(-0.03, 0.06, alt);
+    float lowSun = clamp(1.0 - abs(alt) * 2.2, 0.0, 1.0) * day; // sunrise/sunset warmth
+    col += vec3(1.0, 0.34, 0.10) * pow(sd, 3.0) * lowSun * 2.4;            // warm band
+    col = mix(col, col * vec3(1.2, 0.92, 0.72), lowSun * 0.5);            // golden-hour cast
+    col += vec3(1.0, 0.55, 0.28) * pow(sd, 8.0) * 0.6 * above;             // glow
+    col += uSunColor * smoothstep(0.9986, 0.9995, sd) * 3.2 * above;       // sun disc
+
+    float night = 1.0 - day;
+    if (night > 0.01) {
+        vec2 g = floor(dir.xy * 130.0 + dir.z * 41.0);
+        float star = step(0.992, starHash(g)) * step(0.0, dir.y);
+        col += vec3(0.9, 0.92, 1.0) * star * night * 0.9;
+        float md = max(dot(dir, -uSunL), 0.0);                            // moon opposite sun
+        col += vec3(0.75, 0.78, 0.9) * smoothstep(0.9990, 0.9997, md) * night * 2.2;
+        col += vec3(0.2, 0.24, 0.36) * pow(md, 250.0) * night;            // moon halo
+    }
     return col;
 }
 
@@ -78,10 +100,12 @@ vec4 clouds(vec3 dir) {
     float d = smoothstep(0.42, 0.66, cov) * smoothstep(0.03, 0.22, dir.y);
     if (d <= 0.001)
         return vec4(0.0);
-    vec2 sp = (uSunL.xz / max(uSunL.y, 0.25)) * 0.12; // one step toward the sun
+    vec2 sp = (uSunL.xz / max(abs(uSunL.y), 0.25)) * 0.12; // one step toward the sun
     float shade = clamp((cov - cloudFbm(p + sp)) * 2.2 + 0.55, 0.25, 1.0);
     vec3 col = mix(vec3(0.52, 0.56, 0.64), vec3(1.05, 1.02, 0.98), shade);
-    col += vec3(1.0, 0.85, 0.6) * pow(max(dot(dir, uSunL), 0.0), 6.0) * 0.5; // warm sun side
+    float day = clamp(uSunL.y * 3.0 + 0.12, 0.0, 1.0);
+    col += vec3(1.0, 0.55, 0.2) * pow(max(dot(dir, uSunL), 0.0), 6.0) * day; // warm sun side
+    col *= 0.16 + 0.84 * day; // clouds go dim + cool at night (moonlit, not sunlit)
     return vec4(col, d);
 }
 vec3 skyWithClouds(vec3 dir) {
@@ -153,7 +177,8 @@ void main() {
         // stronger forward lobe + a touch more intensity so the god-ray shafts read
         // clearly when looking toward the sun, without bringing the aliased grid back
         float phase = 0.10 + 0.90 * pow(max(dot(rd, uSunL), 0.0), 5.0);
-        color += vec3(1.14, 1.05, 0.86) * (scatter * phase * len * 0.00032);
+        // uSunColor carries the day/night intensity, so the shafts fade out at night
+        color += uSunColor * (scatter * phase * len * 0.00018);
     }
 
     // underwater: absorb reds and fog toward deep water with distance (Beer-Lambert-ish)

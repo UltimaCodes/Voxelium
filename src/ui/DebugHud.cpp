@@ -150,8 +150,11 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     ImGui::SliderFloat("fov", &fovDeg, 50.0f, 100.0f, "%.0f deg");
 
     ImGui::SeparatorText("lighting");
+    ImGui::Checkbox("day/night cycle", &fx.dayCycle);
     ImGui::SetNextItemWidth(-100.0f);
-    ImGui::SliderFloat("sun angle", &fx.sunAltitudeDeg, 8.0f, 85.0f, "%.0f deg");
+    ImGui::SliderFloat("time of day", &fx.timeOfDay, 0.0f, 1.0f, "%.2f");
+    ImGui::SetNextItemWidth(-100.0f);
+    ImGui::SliderFloat("day length", &fx.dayLengthSec, 20.0f, 1200.0f, "%.0f s");
     ImGui::SetNextItemWidth(-100.0f);
     ImGui::SliderFloat("exposure", &fx.exposure, 0.4f, 2.5f, "%.2f");
     ImGui::Checkbox("shadows", &fx.shadows);

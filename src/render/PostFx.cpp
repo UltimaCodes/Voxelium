@@ -184,6 +184,7 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform1f(m_progComposite, 24,
                        p.toggles.volumetric && p.toggles.shadows ? 1.0f : 0.0f);
     glProgramUniform3fv(m_progComposite, 5, 1, &p.sunL.x);
+    glProgramUniform3fv(m_progComposite, 25, 1, &p.sunColor.x);
     glProgramUniformMatrix4fv(m_progComposite, 6, 3, GL_FALSE,
                               &p.shadows->cascadeVp()[0][0][0]);
     const glm::vec3 splits{ShadowMap::kSplits[0], ShadowMap::kSplits[1],
