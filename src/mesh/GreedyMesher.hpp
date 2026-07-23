@@ -51,6 +51,9 @@ private:
     void buildColumns();
     void meshLayer(bool water, std::vector<std::uint64_t>& out, GreedyStats& stats);
     void addFace(int dir, int slice, int u, int v, BlockId block, std::uint8_t light);
+    // per-corner ambient occlusion (4 corners x 2 bits, 3 = lit) for a face whose outer
+    // (air) voxel is (ax,ay,az). 0xFF = fully lit -> the face can still greedy-merge.
+    std::uint32_t faceAO(int ax, int ay, int az, int dir) const;
 
     BlockId m_grid[kPad * kPad * kPad];
     std::uint8_t m_gridLight[kPad * kPad * kPad];
@@ -64,6 +67,7 @@ private:
     std::int16_t m_heads[6][kChunkSize];
     std::vector<Plane> m_planes;
     bool m_hasWater = false;
+    bool m_smoothAO = false; // LOD 0 only: distant chunks don't bother (pad is air anyway)
 };
 
 } // namespace vx

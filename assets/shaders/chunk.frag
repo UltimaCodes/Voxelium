@@ -5,6 +5,7 @@ in vec2 vUv;
 flat in uint vLayer;
 flat in uint vDir;
 flat in vec2 vLight;
+in float vAO; // interpolated per-corner ambient occlusion
 
 layout(location = 0) out vec4 outColor; // HDR
 
@@ -101,5 +102,7 @@ void main() {
     vec3 ambient = uSkyAmbient * (0.10 + 0.90 * skyL) + vec3(0.035, 0.04, 0.05);
     vec3 torch = vec3(1.35, 0.95, 0.55) * (blockL * blockL * 1.6);
 
-    outColor = vec4(albedo * kShade[vDir] * (direct + ambient + torch), 1.0);
+    // per-vertex ambient occlusion darkens concave corners smoothly (occluded -> 55%)
+    float ao = 0.55 + 0.45 * vAO;
+    outColor = vec4(albedo * kShade[vDir] * (direct + ambient + torch) * ao, 1.0);
 }

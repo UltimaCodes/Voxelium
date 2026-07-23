@@ -11,6 +11,39 @@ namespace vx {
 namespace {
 constexpr int kStep[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
                              {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+
+// in-plane U/V world axes per face dir, and the 4 corners' (cx,cy) in kCorner order — must
+// match chunk.vert so the packed AO lines up with the emitted vertices.
+constexpr int kUAxis[6][3] = {{0, 0, 1}, {0, 0, 1}, {1, 0, 0},
+                              {1, 0, 0}, {1, 0, 0}, {1, 0, 0}};
+constexpr int kVAxis[6][3] = {{0, 1, 0}, {0, 1, 0}, {0, 0, 1},
+                              {0, 0, 1}, {0, 1, 0}, {0, 1, 0}};
+constexpr int kCornerCX[6][4] = {{0, 0, 1, 1}, {1, 1, 0, 0}, {0, 0, 1, 1},
+                                 {0, 1, 1, 0}, {0, 1, 1, 0}, {1, 0, 0, 1}};
+constexpr int kCornerCY[6][4] = {{0, 1, 1, 0}, {0, 1, 1, 0}, {0, 1, 1, 0},
+                                 {0, 0, 1, 1}, {0, 0, 1, 1}, {0, 0, 1, 1}};
+} // namespace
+
+std::uint32_t GreedyMesher::faceAO(int ax, int ay, int az, int dir) const {
+    const auto opaque = [&](int gx, int gy, int gz) {
+        return blocks::opaque(m_grid[gi(gx, gy, gz)]) ? 1 : 0;
+    };
+    std::uint32_t packed = 0;
+    for (int i = 0; i < 4; ++i) {
+        const int su = kCornerCX[dir][i] ? 1 : -1;
+        const int sv = kCornerCY[dir][i] ? 1 : -1;
+        const int s1 = opaque(ax + su * kUAxis[dir][0], ay + su * kUAxis[dir][1],
+                              az + su * kUAxis[dir][2]);
+        const int s2 = opaque(ax + sv * kVAxis[dir][0], ay + sv * kVAxis[dir][1],
+                              az + sv * kVAxis[dir][2]);
+        const int cn = opaque(ax + su * kUAxis[dir][0] + sv * kVAxis[dir][0],
+                              ay + su * kUAxis[dir][1] + sv * kVAxis[dir][1],
+                              az + su * kUAxis[dir][2] + sv * kVAxis[dir][2]);
+        // two flanking solids fully occlude the corner; otherwise darken per solid neighbour
+        const int ao = (s1 && s2) ? 0 : (3 - s1 - s2 - cn);
+        packed |= std::uint32_t(ao) << (i * 2);
+    }
+    return packed;
 }
 
 void GreedyMesher::addFace(int dir, int slice, int u, int v, BlockId block,
@@ -182,7 +215,24 @@ void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, Greedy
                     const int ax = x + kStep[dir][0];
                     const int ay = y + kStep[dir][1];
                     const int az = z + kStep[dir][2];
-                    addFace(dir, s, b, a, m_grid[gi(x, y, z)], m_gridLight[gi(ax, ay, az)]);
+                    const BlockId block = m_grid[gi(x, y, z)];
+                    const std::uint8_t light = m_gridLight[gi(ax, ay, az)];
+                    // a face with any corner occlusion carries per-corner AO and can't be
+                    // merged (its AO would smear); emit it 1x1. fully-lit faces merge.
+                    if (m_smoothAO) {
+                        const std::uint32_t ao = faceAO(ax, ay, az, dir);
+                        if (ao != 0xFFu) {
+                            out.push_back(packQuad(x, y, z, 1, 1, dir, block, ao, light));
+                            if (water)
+                                ++stats.waterQuads;
+                            else {
+                                ++stats.quads;
+                                stats.areaPerDir[dir] += 1;
+                            }
+                            continue;
+                        }
+                    }
+                    addFace(dir, s, b, a, block, light);
                 }
             };
             scatter(0, colX & ~(blkX >> 1));
@@ -214,7 +264,7 @@ void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, Greedy
                     case 1: x = u0, y = p.slice, z = v; break;
                     default: x = u0, y = v, z = p.slice; break;
                 }
-                out.push_back(packQuad(x, y, z, w, h, p.dir, p.block, 0, p.light));
+                out.push_back(packQuad(x, y, z, w, h, p.dir, p.block, 0xFFu, p.light));
                 if (water) {
                     ++stats.waterQuads;
                 } else {
@@ -235,6 +285,7 @@ GreedyStats GreedyMesher::mesh(const Chunk& chunk, const Chunk* const* neighbors
     if (chunk.uniform() && chunk.uniformId() == blocks::Air)
         return stats;
 
+    m_smoothAO = (lod == 0); // near chunks only; far LOD pads with air so AO would be wrong
     fillGrid(chunk, neighbors, lod);
     buildColumns();
     meshLayer(/*water=*/false, outOpaque, stats);

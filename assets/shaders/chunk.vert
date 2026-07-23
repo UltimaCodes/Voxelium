@@ -14,6 +14,7 @@ out vec2 vUv;         // tiling texture coords (0..w, 0..h)
 flat out uint vLayer; // texture-array layer
 flat out uint vDir;
 flat out vec2 vLight; // block, sky (0..1)
+out float vAO;        // per-corner ambient occlusion, interpolated -> smooth corner shading
 
 const int kTri[6] = int[6](0, 1, 2, 0, 2, 3);
 const vec2 kCorner[6][4] = vec2[6][4](
@@ -71,6 +72,10 @@ void main() {
         world.z += 0.05 * sin(uTime * 1.9 + ph * 1.3);
         world.y += 0.03 * sin(uTime * 2.2 + ph * 0.7);
     }
+
+    // per-corner AO (bits 12..19 of the hi word, 2 bits per corner, 3 = lit)
+    uint aoCorner = ((q.y >> 12u) >> (uint(corner) * 2u)) & 3u;
+    vAO = float(aoCorner) / 3.0;
 
     vWorldRel = world;
     vUv = c * vec2(w, h); // tile once per block, GL_REPEAT wraps it
