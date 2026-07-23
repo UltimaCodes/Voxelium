@@ -58,6 +58,7 @@ const Chunk* ChunkManager::voxelsAt(ChunkPos pos) const {
 }
 
 void ChunkManager::rescan(ChunkPos center) {
+    m_meshScanDirty = true; // moved: LOD bands shifted, new chunks incoming
     const int dataR = radius + 1;
 
     // rebuilt from scratch so chunks that came back into range drop off the evict list
@@ -150,6 +151,8 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         std::lock_guard lock(m_genDoneMutex);
         m_genDoneScratch.swap(m_genDone);
     }
+    if (!m_genDoneScratch.empty())
+        m_meshScanDirty = true; // new data may be meshable now
     for (const ChunkPos pos : m_genDoneScratch) {
         const auto it = m_chunks.find(pos);
         if (it != m_chunks.end() && it->second.state == ChunkState::Generating)
@@ -202,13 +205,16 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         for (int cy = 0; cy < kWorldChunksY; ++cy)
             if (const auto cit = m_chunks.find({col.x, cy, col.z}); cit != m_chunks.end())
                 cit->second.lit = true;
+        m_meshScanDirty = true; // newly lit -> meshable
         ++n;
     }
     light.process(1.5);
     for (const ChunkPos pos : light.touched()) {
         const auto it = m_chunks.find(pos);
-        if (it != m_chunks.end() && it->second.state == ChunkState::Meshed)
+        if (it != m_chunks.end() && it->second.state == ChunkState::Meshed) {
             it->second.state = ChunkState::Ready; // back through the mesh pipeline
+            m_meshScanDirty = true;
+        }
     }
     light.touched().clear();
 
@@ -246,7 +252,14 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     // first — meshes bake light values into quads, so lighting has to land first. also
     // re-mesh already-meshed chunks whose LOD should change as the camera moves (they
     // stay drawn at the old LOD until the new mesh swaps in, so no flicker).
+    // this loop is O(loaded chunks); skip it whenever nothing could have changed the mesh
+    // set (no streaming in flight and the camera hasn't moved). a loaded, still world then
+    // costs nothing here instead of re-scanning ~36k chunks every single frame.
+    const bool doMeshScan =
+        m_meshScanDirty || m_jobsInFlight > 0 || !m_genQueue.empty() || !m_uploads.empty();
+    m_meshScanDirty = false;
     m_meshScratch.clear();
+    if (doMeshScan)
     for (const auto& item : m_chunks) {
         const Entry& e = item.second;
         if (!e.lit)

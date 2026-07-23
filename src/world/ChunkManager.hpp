@@ -204,6 +204,10 @@ private:
     bool m_lastCaveCull = false;
     int m_jobsInFlight = 0; // main-thread view: submit increments, result-drain decrements
     int m_pendingMesh = 0;
+    // the per-frame mesh scan is O(loaded chunks); only run it when something could have
+    // created mesh work (gen/light/LOD change) instead of every frame. set by those events,
+    // cleared once scanned. when the world is idle there is provably nothing to mesh.
+    bool m_meshScanDirty = true;
     double m_uploadMsLast = 0.0;
 
     std::atomic<std::uint64_t> m_genNanos{0};
