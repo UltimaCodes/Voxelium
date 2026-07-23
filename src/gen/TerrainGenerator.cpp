@@ -257,8 +257,7 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
                     chunk.set(x, y, z, blocks::Water);
         }
 
-    if (detailed)
-        placeTrees(chunk, pos);
+    placeTrees(chunk, pos); // trees even in coarse gen — cheap, and stops them popping in
     carveTestRoom(chunk, pos);
 }
 

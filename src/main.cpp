@@ -164,7 +164,7 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
                  bool caveCull, int fbW, int fbH, unsigned int targetFbo, float time,
                  FrameTimers* timers, bool hasSelection = false,
                  const glm::vec3& selMinCamRel = glm::vec3(0.0f), bool underwater = false,
-                 TaaState* taa = nullptr) {
+                 TaaState* taa = nullptr, float fogEnd = 1e9f) {
     const float aspect = float(fbW) / float(fbH);
     const bool useTaa = fx.taa && taa != nullptr;
     glm::vec2 jitter(0.0f);
@@ -243,6 +243,7 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     rp.invViewRot = glm::transpose(glm::mat3(camera.viewAtOrigin()));
     rp.sunL = sunL;
     rp.sunColor = sky.color;
+    rp.fog = {fogEnd * 0.55f, fogEnd};
     rp.shadows = &rc.shadows;
     rp.toggles = fx;
     rp.time = time;
@@ -275,6 +276,7 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
 int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
                  vx::LightEngine& light, vx::FlyCamera& camera, vx::DebugHud& hud,
                  vx::Window& window, const std::filesystem::path& outPath) {
+    world.radius = 10; // keep the smoke quick; the regen test bumps to 16 on its own
     const auto drain = [&] {
         for (int i = 0; i < 20000 && (world.busy() || !light.idle() || i == 0); ++i) {
             rc.renderer.beginFrame();
@@ -891,8 +893,10 @@ int main(int argc, char** argv) {
         int fbH = 0;
         window->framebufferSize(fbW, fbH);
         if (fbW > 0 && fbH > 0) {
+            // fog the outer ~8% of the loaded radius so the world edge reads as haze
+            const float fogEnd = float(world->radius) * float(vx::kChunkSize) * 0.92f;
             renderFrame(rc, camera, fx, caveCull, fbW, fbH, 0, float(now), &timers, hasSel,
-                        selMin, eyeUnderwater, &taaState);
+                        selMin, eyeUnderwater, &taaState, fogEnd);
             if (hotbarOpen)
                 overlay.drawHotbar(fbW, fbH, kHotbar, kHotbarCount, hotbarSel, blockTex);
         }

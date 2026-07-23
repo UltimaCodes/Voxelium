@@ -27,6 +27,7 @@ layout(location = 22) uniform float uSsgiOn;
 layout(location = 23) uniform float uAoOn;         // moved off 3 (was aliased by the mat3)
 layout(location = 24) uniform float uVolumetricOn; // moved off 4
 layout(location = 25) uniform vec3 uSunColor;      // day/night sun radiance
+layout(location = 26) uniform vec2 uFog;           // (start, end) distance; huge = off
 
 const vec3 kWaterDeep = vec3(0.03, 0.13, 0.20);
 
@@ -157,13 +158,16 @@ void main() {
     if (uSsgiOn > 0.5)
         color += texture(uSsgi, vUv).rgb * 0.9; // one-bounce indirect fill
 
+    // reconstruct the camera-relative world position once, for volumetrics + fog
+    float viewZ = -uNear / max(rawD, 1e-7);
+    vec2 ndc = vUv * 2.0 - 1.0;
+    vec3 worldRel = uInvViewRot *
+                    vec3(ndc.x * uProjScale.x * -viewZ, ndc.y * uProjScale.y * -viewZ, viewZ);
+    float dist = length(worldRel);
+
     if (uVolumetricOn > 0.5) {
-        float viewZ = -uNear / max(rawD, 1e-7);
-        vec2 ndc = vUv * 2.0 - 1.0;
-        vec3 vpos = vec3(ndc.x * uProjScale.x * -viewZ, ndc.y * uProjScale.y * -viewZ, viewZ);
-        vec3 world = uInvViewRot * vpos;
-        float len = min(length(world), 150.0);
-        vec3 rd = normalize(world);
+        float len = min(dist, 150.0);
+        vec3 rd = normalize(worldRel);
 
         const int kSteps = 16;
         float stepLen = len / float(kSteps);
@@ -181,14 +185,16 @@ void main() {
         color += uSunColor * (scatter * phase * len * 0.00018);
     }
 
-    // underwater: absorb reds and fog toward deep water with distance (Beer-Lambert-ish)
     if (uUnderwater > 0.5) {
-        float viewZ = -uNear / max(rawD, 1e-7);
-        vec2 ndc = vUv * 2.0 - 1.0;
-        vec3 vpos = vec3(ndc.x * uProjScale.x * -viewZ, ndc.y * uProjScale.y * -viewZ, viewZ);
-        float dist = length(vpos);
-        color *= vec3(0.55, 0.82, 1.0);            // water eats warm light first
+        // underwater: absorb reds and fog toward deep water with distance (Beer-Lambert-ish)
+        color *= vec3(0.55, 0.82, 1.0);
         color = mix(color, kWaterDeep, 1.0 - exp(-dist * 0.10));
+    } else {
+        // distance fog: melt the far edge of the loaded world into the sky, so the render
+        // boundary reads as haze/horizon instead of a hard cut
+        float fog = smoothstep(uFog.x, uFog.y, dist);
+        if (fog > 0.001)
+            color = mix(color, skyWithClouds(dir), fog);
     }
 
     outColor = vec4(color, 1.0);

@@ -16,10 +16,11 @@ class TerrainGenerator {
 public:
     explicit TerrainGenerator(int seed);
 
-    // detailed=false skips caves, glow deposits and trees — used for far chunks that will
-    // be meshed at a downsampled LOD where those details are averaged away anyway. the
-    // surface + water still generate so the coarse chunk has the right silhouette. when
-    // such a chunk is approached, ChunkManager re-generates it detailed.
+    // detailed=false skips caves + glow deposits (which live underground and vanish under
+    // the LOD downsample anyway) — the bulk of gen cost. surface, water and trees still
+    // generate, so a coarse chunk looks right from above and nothing pops in when the
+    // camera approaches and ChunkManager re-generates it detailed (only caves fill in,
+    // and those are underground).
     void generate(Chunk& chunk, ChunkPos pos, bool detailed = true) const;
     int surfaceHeight(int wx, int wz) const; // for spawn placement
 

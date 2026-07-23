@@ -107,7 +107,7 @@ public:
     // force the next stats() to do the full-chunk scan (used before logSummary)
     void refreshStats() const { m_scanAge = 999; }
 
-    int radius = 10; // render radius in chunks, horizontal
+    int radius = 16; // render radius in chunks, horizontal
 
 private:
     struct Entry {

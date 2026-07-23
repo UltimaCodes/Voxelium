@@ -47,6 +47,7 @@ public:
         glm::mat3 invViewRot;
         glm::vec3 sunL;
         glm::vec3 sunColor{1.0f}; // day/night sun radiance (warm/dim near horizon, ~0 at night)
+        glm::vec2 fog{1e9f, 1e9f}; // distance fog (start, end); huge = off
         const ShadowMap* shadows;
         FxToggles toggles;
         float time = 0.0f;       // drives cloud drift
