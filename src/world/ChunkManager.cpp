@@ -201,7 +201,13 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             }
         return true;
     };
-    for (int n = 0, deferred = 0; n < 3 && deferred < int(m_seedQueue.size());) {
+    // seed as many columns as fit a small time budget (always at least one). a fixed
+    // count/frame was far too slow once the default radius grew — columns backed up and
+    // their chunks sat dark/unmeshed for seconds.
+    const auto seedStart = Clock::now();
+    for (int seeded = 0, deferred = 0; deferred < int(m_seedQueue.size());) {
+        if (seeded > 0 && msSince(seedStart) > 2.0)
+            break;
         const ChunkPos col = m_seedQueue.back();
         m_seedQueue.pop_back();
         if (!neighborhoodSettled(col)) {
@@ -214,7 +220,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             if (const auto cit = m_chunks.find({col.x, cy, col.z}); cit != m_chunks.end())
                 cit->second.lit = true;
         m_meshScanDirty = true; // newly lit -> meshable
-        ++n;
+        ++seeded;
     }
     light.process(1.5);
     for (const ChunkPos pos : light.touched()) {
