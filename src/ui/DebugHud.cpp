@@ -144,32 +144,44 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     ImGui::Checkbox("vsync", &vsync);
     ImGui::SameLine();
     ImGui::Checkbox("cave cull", &caveCull);
-    ImGui::SetNextItemWidth(-100.0f);
+    ImGui::SetNextItemWidth(-110.0f);
     ImGui::SliderInt("render dist", &radius, 4, 32, "%d chunks");
-    ImGui::SetNextItemWidth(-100.0f);
-    ImGui::SliderFloat("fov", &fovDeg, 50.0f, 100.0f, "%.0f deg");
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("fov", &fovDeg, 50.0f, 110.0f, "%.0f deg");
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("exposure", &fx.exposure, 0.4f, 2.5f, "%.2f");
+
+    ImGui::SeparatorText("sky & time");
+    ImGui::Checkbox("day/night cycle", &fx.dayCycle);
+    ImGui::BeginDisabled(fx.dayCycle);
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("time of day", &fx.timeOfDay, 0.0f, 1.0f, "%.2f");
+    ImGui::EndDisabled();
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("day length", &fx.dayLengthSec, 20.0f, 1200.0f, "%.0f s");
+    ImGui::Checkbox("clouds", &fx.clouds);
+    ImGui::SameLine();
+    ImGui::Checkbox("fog", &fx.fog);
 
     ImGui::SeparatorText("lighting");
-    ImGui::Checkbox("day/night cycle", &fx.dayCycle);
-    ImGui::SetNextItemWidth(-100.0f);
-    ImGui::SliderFloat("time of day", &fx.timeOfDay, 0.0f, 1.0f, "%.2f");
-    ImGui::SetNextItemWidth(-100.0f);
-    ImGui::SliderFloat("day length", &fx.dayLengthSec, 20.0f, 1200.0f, "%.0f s");
-    ImGui::SetNextItemWidth(-100.0f);
-    ImGui::SliderFloat("exposure", &fx.exposure, 0.4f, 2.5f, "%.2f");
     ImGui::Checkbox("shadows", &fx.shadows);
-
-    ImGui::SeparatorText("effects");
+    ImGui::SameLine();
     ImGui::Checkbox("ssao", &fx.ssao);
     ImGui::SameLine();
-    ImGui::Checkbox("volumetric", &fx.volumetric);
+    ImGui::Checkbox("ssgi", &fx.ssgi);
     ImGui::SameLine();
+    ImGui::Checkbox("god rays", &fx.volumetric);
+
+    ImGui::SeparatorText("post");
+    ImGui::Checkbox("taa (anti-alias)", &fx.taa);
+    ImGui::SameLine();
+    ImGui::Checkbox("motion blur", &fx.motionBlur);
     ImGui::Checkbox("bloom", &fx.bloom);
+    ImGui::BeginDisabled(!fx.bloom);
     ImGui::SameLine();
-    ImGui::Checkbox("clouds", &fx.clouds);
-    ImGui::Checkbox("ssgi (bounce light)", &fx.ssgi);
-    ImGui::SameLine();
-    ImGui::Checkbox("taa (anti-aliasing)", &fx.taa);
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("strength", &fx.bloomStrength, 0.0f, 1.5f, "%.2f");
+    ImGui::EndDisabled();
 
     ImGui::Separator();
     if (ImGui::Button("resume", ImVec2(160.0f, 32.0f)))

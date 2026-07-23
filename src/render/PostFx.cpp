@@ -46,8 +46,9 @@ bool PostFx::init(const std::filesystem::path& shaderDir) {
     m_progFinal = loadProgram(fs, shaderDir / "final.frag");
     m_progTaa = loadProgram(fs, shaderDir / "taa.frag");
     m_progSsgi = loadProgram(fs, shaderDir / "ssgi.frag");
+    m_progMotion = loadProgram(fs, shaderDir / "motionblur.frag");
     if (!m_progSsao || !m_progBlur || !m_progComposite || !m_progBloomDown ||
-        !m_progBloomUp || !m_progFinal || !m_progTaa || !m_progSsgi)
+        !m_progBloomUp || !m_progFinal || !m_progTaa || !m_progSsgi || !m_progMotion)
         return false;
     glCreateVertexArrays(1, &m_vao);
     return true;
@@ -55,8 +56,8 @@ bool PostFx::init(const std::filesystem::path& shaderDir) {
 
 void PostFx::shutdown() {
     destroyTargets();
-    const GLuint progs[] = {m_progSsao, m_progBlur,  m_progComposite, m_progBloomDown,
-                            m_progBloomUp, m_progFinal, m_progTaa,     m_progSsgi};
+    const GLuint progs[] = {m_progSsao,  m_progBlur,   m_progComposite, m_progBloomDown, m_progBloomUp,
+                            m_progFinal, m_progTaa, m_progSsgi,      m_progMotion};
     for (const GLuint p : progs)
         glDeleteProgram(p);
     glDeleteVertexArrays(1, &m_vao);
@@ -69,10 +70,11 @@ void PostFx::destroyTargets() {
                            m_taaFbo[1]};
     glDeleteFramebuffers(6, fbos);
     glDeleteFramebuffers(kBloomMips, m_bloomFbo);
-    const GLuint texes[] = {m_hdrColor,    m_depth,     m_hdr2,   m_ssaoTex, m_ssaoBlurTex,
-                            m_sceneCopy, m_taa[0], m_taa[1], m_ssgiTex};
-    glDeleteTextures(9, texes);
+    const GLuint texes[] = {m_hdrColor,  m_depth,  m_hdr2,   m_ssaoTex,  m_ssaoBlurTex,
+                            m_sceneCopy, m_taa[0], m_taa[1], m_ssgiTex, m_motionTex};
+    glDeleteTextures(10, texes);
     glDeleteFramebuffers(1, &m_ssgiFbo);
+    glDeleteFramebuffers(1, &m_motionFbo);
     glDeleteTextures(kBloomMips, m_bloomTex);
     m_width = 0;
 }
@@ -94,6 +96,9 @@ void PostFx::createTargets(int width, int height) {
         m_taaFbo[i] = makeFbo(m_taa[i]);
     }
     m_taaValid = false; // new targets: no history to reproject from yet
+
+    m_motionTex = makeTex2D(GL_RGBA16F, width, height);
+    m_motionFbo = makeFbo(m_motionTex);
 
     const int hw = std::max(width / 2, 1);
     const int hh = std::max(height / 2, 1);
@@ -230,6 +235,23 @@ void PostFx::run(const RunParams& p) {
         m_taaValid = false; // stale while off; the next on-frame reprojects from scratch
     }
 
+    // camera motion blur: reproject velocity from depth + prev view-proj, blur along it
+    if (p.toggles.motionBlur) {
+        glBindFramebuffer(GL_FRAMEBUFFER, m_motionFbo);
+        glViewport(0, 0, m_width, m_height);
+        glUseProgram(m_progMotion);
+        glProgramUniform2fv(m_progMotion, 0, 1, &p.projScale.x);
+        glProgramUniform1f(m_progMotion, 1, p.nearPlane);
+        glProgramUniformMatrix3fv(m_progMotion, 2, 1, GL_FALSE, &p.invViewRot[0][0]);
+        glProgramUniformMatrix4fv(m_progMotion, 5, 1, GL_FALSE, &p.prevViewProj[0][0]);
+        glProgramUniform3fv(m_progMotion, 9, 1, &p.camDelta.x);
+        glProgramUniform1f(m_progMotion, 10, p.taaHistoryValid ? 0.5f : 0.0f); // 0 = no prev yet
+        glBindTextureUnit(0, resolved);
+        glBindTextureUnit(1, m_depth);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        resolved = m_motionTex;
+    }
+
     // bloom: 13-tap down chain, tent up chain with additive blending
     if (p.toggles.bloom) {
         glUseProgram(m_progBloomDown);
@@ -260,7 +282,7 @@ void PostFx::run(const RunParams& p) {
     glBindFramebuffer(GL_FRAMEBUFFER, p.targetFbo);
     glViewport(0, 0, p.targetWidth, p.targetHeight);
     glUseProgram(m_progFinal);
-    glProgramUniform1f(m_progFinal, 0, p.toggles.bloom ? 0.55f : 0.0f);
+    glProgramUniform1f(m_progFinal, 0, p.toggles.bloom ? p.toggles.bloomStrength : 0.0f);
     glProgramUniform1f(m_progFinal, 1, p.toggles.exposure);
     // sharpen only when TAA is on, to undo its softening (off = already crisp/aliased)
     glProgramUniform1f(m_progFinal, 3, p.toggles.taa ? 0.22f : 0.0f);

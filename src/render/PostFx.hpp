@@ -16,10 +16,13 @@ struct FxToggles {
     bool clouds = true;
     bool ssgi = true;      // screen-space one-bounce indirect
     bool taa = false;      // enabled by the live app; off keeps offscreen/smoke renders exact
+    bool motionBlur = false; // camera motion blur (uses TAA reprojection data)
+    bool fog = true;         // distance fog into the sky at the render edge
     bool dayCycle = true;  // advance time of day automatically
     float timeOfDay = 0.32f; // 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset
     float dayLengthSec = 240.0f; // real seconds for a full day
     float exposure = 1.0f;
+    float bloomStrength = 0.55f;
 };
 
 // The HDR post stack: scene renders into an RGBA16F target with a depth texture, then
@@ -70,12 +73,13 @@ private:
 
     unsigned int m_progSsao = 0, m_progBlur = 0, m_progComposite = 0;
     unsigned int m_progBloomDown = 0, m_progBloomUp = 0, m_progFinal = 0;
-    unsigned int m_progTaa = 0, m_progSsgi = 0;
+    unsigned int m_progTaa = 0, m_progSsgi = 0, m_progMotion = 0;
     unsigned int m_vao = 0;
 
     unsigned int m_hdrFbo = 0, m_hdrColor = 0, m_depth = 0;
     unsigned int m_sceneCopy = 0; // opaque snapshot for water SSR
     unsigned int m_hdr2Fbo = 0, m_hdr2 = 0;
+    unsigned int m_motionFbo = 0, m_motionTex = 0; // camera motion blur output
 
     // TAA history ping-pong: read prev, write cur, flip. m_taaValid gates the first frame.
     unsigned int m_taa[2] = {0, 0}, m_taaFbo[2] = {0, 0};

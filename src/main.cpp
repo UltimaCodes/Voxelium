@@ -167,6 +167,8 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
                  TaaState* taa = nullptr, float fogEnd = 1e9f) {
     const float aspect = float(fbW) / float(fbH);
     const bool useTaa = fx.taa && taa != nullptr;
+    const bool useMotion = fx.motionBlur && taa != nullptr;
+    const bool useReproj = useTaa || useMotion; // both need last frame's view-proj + cam pos
     glm::vec2 jitter(0.0f);
     if (useTaa) {
         const int idx = taa->frame % 8 + 1; // halton is 1-indexed
@@ -247,9 +249,11 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     rp.shadows = &rc.shadows;
     rp.toggles = fx;
     rp.time = time;
-    rp.toggles.taa = useTaa; // only let PostFx run TAA when we actually have history state
+    // only let PostFx run these when we actually have the reprojection history for them
+    rp.toggles.taa = useTaa;
+    rp.toggles.motionBlur = useMotion;
     rp.underwater = underwater;
-    if (useTaa) {
+    if (useReproj) {
         rp.prevViewProj = taa->prevViewProj;
         rp.camDelta = glm::vec3(camera.position - taa->prevCamPos);
         rp.taaHistoryValid = taa->valid;
@@ -260,7 +264,7 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     rc.postfx.run(rp);
     if (timers) timers->post.end();
 
-    if (useTaa) { // remember this frame (unjittered) for next frame's reprojection
+    if (useReproj) { // remember this frame (unjittered) for next frame's reprojection
         taa->prevViewProj = camera.projReversedZ(aspect) * camera.viewAtOrigin();
         taa->prevCamPos = camera.position;
         ++taa->frame;
@@ -894,7 +898,8 @@ int main(int argc, char** argv) {
         window->framebufferSize(fbW, fbH);
         if (fbW > 0 && fbH > 0) {
             // fog the outer ~8% of the loaded radius so the world edge reads as haze
-            const float fogEnd = float(world->radius) * float(vx::kChunkSize) * 0.92f;
+            const float fogEnd =
+                fx.fog ? float(world->radius) * float(vx::kChunkSize) * 0.92f : 1e9f;
             renderFrame(rc, camera, fx, caveCull, fbW, fbH, 0, float(now), &timers, hasSel,
                         selMin, eyeUnderwater, &taaState, fogEnd);
             if (hotbarOpen)
