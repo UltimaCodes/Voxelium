@@ -50,6 +50,11 @@ int lodForDist2(std::int64_t d2) {
     return 5;
 }
 
+// chunks meshed at this LOD or coarser generate without caves/trees (they'd be averaged
+// away by the downsample). approaching one — desired LOD drops below this — re-generates
+// it detailed. caves cost ~4x gen/mesh/quads, so skipping them far out is the big win.
+constexpr int kCoarseLod = 2;
+
 } // namespace
 
 const Chunk* ChunkManager::voxelsAt(ChunkPos pos) const {
@@ -91,11 +96,14 @@ void ChunkManager::processEvictions(Renderer& renderer) {
         }
         Entry& e = it->second;
         const bool inFlight = e.state == ChunkState::Generating ||
-                              e.state == ChunkState::Meshing || e.voxels->hasJobRefs();
+                              e.state == ChunkState::Meshing || e.voxels->hasJobRefs() ||
+                              (e.pendingDetail && e.pendingDetail->hasJobRefs());
         if (inFlight) {
             ++i; // a worker still holds it — retry next frame
             continue;
         }
+        // an in-flight re-gen whose job already finished: the entry vanishes here, and the
+        // regen-done drain releases that orphaned chunk when it can't find the entry
         if (e.dirty) { // player-edited: persist before it leaves memory
             m_saveScratch.clear();
             ChunkSerializer::serialize(*e.voxels, m_saveScratch);
@@ -229,17 +237,20 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             continue;
         Chunk* voxels = m_pool.acquire();
         voxels->retainJob();
+        // far chunks generate coarse (no caves/trees); re-gen'd detailed when approached
+        const bool detailed = lodForDist2(horizontalDist2(pos, center)) < kCoarseLod;
         Entry entry; // state defaults to Generating
         entry.voxels = voxels;
+        entry.detailed = detailed;
         m_chunks.try_emplace(pos, std::move(entry));
         ++m_jobsInFlight;
-        jobs.submit([this, voxels, pos] {
+        jobs.submit([this, voxels, pos, detailed] {
             const auto t0 = Clock::now();
             // disk first: a saved (player-edited) chunk loads instead of regenerating.
             // load() is thread-safe; the read happens here on the worker, never the
             // main thread. absent chunks fall back to deterministic gen.
             if (!m_regions.load(pos, *voxels))
-                m_gen.generate(*voxels, pos);
+                m_gen.generate(*voxels, pos, detailed);
             m_genNanos.fetch_add(nsSince(t0), std::memory_order_relaxed);
             m_genCount.fetch_add(1, std::memory_order_relaxed);
             voxels->releaseJob();
@@ -259,10 +270,11 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         m_meshScanDirty || m_jobsInFlight > 0 || !m_genQueue.empty() || !m_uploads.empty();
     m_meshScanDirty = false;
     m_meshScratch.clear();
+    m_regenScratch.clear();
     if (doMeshScan)
     for (const auto& item : m_chunks) {
         const Entry& e = item.second;
-        if (!e.lit)
+        if (!e.lit || e.pendingDetail) // pendingDetail: a detailed re-gen is landing
             continue;
         if (std::abs(item.first.x - center.x) > radius ||
             std::abs(item.first.z - center.z) > radius)
@@ -272,6 +284,12 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         const bool reLod = e.state == ChunkState::Meshed && e.lod != desired;
         if (!(firstMesh || reLod) || e.meshingLod == desired)
             continue;
+        // a coarse chunk that's now close enough to want detail: re-generate it (with
+        // caves) rather than re-meshing the cave-less data at a detailed LOD
+        if (reLod && !e.detailed && desired < kCoarseLod && !e.voxels->uniform()) {
+            m_regenScratch.push_back(item.first);
+            continue;
+        }
         bool ready = true;
         static constexpr int kOffsets[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
                                                {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
@@ -295,8 +313,10 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     m_pendingMesh = int(m_meshScratch.size());
 
     for (const ChunkPos pos : m_meshScratch) {
-        if (m_jobsInFlight >= inflightCap)
+        if (m_jobsInFlight >= inflightCap) {
+            m_meshScanDirty = true; // backlog: keep scanning until the rest get scheduled
             break;
+        }
         const auto it = m_chunks.find(pos);
         Entry& e = it->second;
         const int lod = lodForDist2(horizontalDist2(pos, center));
@@ -344,6 +364,71 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             m_meshDone.push_back(std::move(result));
         });
     }
+
+    // schedule detailed re-gens for approached coarse chunks. double-buffered into a fresh
+    // chunk so the coarse mesh keeps drawing until the detailed one lands (no hole), and
+    // the worker only touches its own fresh chunk (no race with neighbour mesh jobs).
+    // nearest first so the detail you're walking into fills in before the far stuff.
+    std::sort(m_regenScratch.begin(), m_regenScratch.end(), [center](ChunkPos a, ChunkPos b) {
+        return horizontalDist2(a, center) < horizontalDist2(b, center);
+    });
+    for (const ChunkPos pos : m_regenScratch) {
+        if (m_jobsInFlight >= inflightCap) {
+            m_meshScanDirty = true; // backlog: re-scan next frame to schedule the rest
+            break;
+        }
+        const auto it = m_chunks.find(pos);
+        if (it == m_chunks.end() || it->second.pendingDetail)
+            continue;
+        Chunk* c2 = m_pool.acquire();
+        c2->retainJob();
+        it->second.pendingDetail = c2;
+        ++m_jobsInFlight;
+        jobs.submit([this, c2, pos] {
+            if (!m_regions.load(pos, *c2))
+                m_gen.generate(*c2, pos, /*detailed=*/true);
+            c2->releaseJob();
+            std::lock_guard lock(m_regenDoneMutex);
+            m_regenDone.push_back({pos, c2});
+        });
+    }
+
+    // land finished re-gens: swap the detailed chunk in once no worker is still reading the
+    // old (coarse) voxels, then re-seed the column so the new caves/glow light correctly
+    // (which re-meshes it; the coarse mesh stays up until that lands).
+    {
+        std::lock_guard lock(m_regenDoneMutex);
+        m_regenDoneScratch.swap(m_regenDone);
+    }
+    for (const RegenResult& r : m_regenDoneScratch) {
+        const auto it = m_chunks.find(r.pos);
+        if (it == m_chunks.end() || it->second.pendingDetail != r.voxels) {
+            m_pool.release(r.voxels); // entry evicted or superseded: drop this re-gen
+            --m_jobsInFlight;
+            continue;
+        }
+        Entry& e = it->second;
+        if (e.voxels->hasJobRefs()) { // a neighbour mesh job still reads the old voxels
+            std::lock_guard lock(m_regenDoneMutex);
+            m_regenDone.push_back(r); // retry next frame; keep the job slot counted
+            continue;
+        }
+        Chunk* old = e.voxels;
+        e.voxels = r.voxels;
+        e.pendingDetail = nullptr;
+        e.detailed = true;
+        m_pool.release(old);
+        --m_jobsInFlight;
+        const ChunkPos col{r.pos.x, 0, r.pos.z};
+        if (m_seededColumns.erase(col)) { // voxels came back with light wiped -> re-seed
+            m_seedQueue.push_back(col);
+            for (int cy = 0; cy < kWorldChunksY; ++cy)
+                if (const auto cit = m_chunks.find({r.pos.x, cy, r.pos.z}); cit != m_chunks.end())
+                    cit->second.lit = false;
+        }
+        m_meshScanDirty = true;
+    }
+    m_regenDoneScratch.clear();
 
     // drain mesh results; the GL upload is the only part with a time budget
     {

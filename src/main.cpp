@@ -265,6 +265,50 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
     drain();
     world.logSummary();
 
+    // far chunks generate coarse (no caves); approaching one must re-generate it detailed.
+    // needs a radius past the coarse threshold, so bump briefly then drop back.
+    {
+        const auto caveAir = [&](int cx, int cz) {
+            int n = 0;
+            for (int y = 0; y < vx::kWorldChunksY; ++y) {
+                const vx::Chunk* c = world.chunkData({cx, y, cz});
+                if (!c)
+                    continue;
+                for (int lz = 0; lz < 32; ++lz)
+                    for (int lx = 0; lx < 32; ++lx) {
+                        const int surf =
+                            world.generator().surfaceHeight(cx * 32 + lx, cz * 32 + lz);
+                        for (int ly = 0; ly < 32; ++ly)
+                            if (const int wy = y * 32 + ly;
+                                wy > 4 && wy < surf - 4 && c->get(lx, ly, lz) == vx::blocks::Air)
+                                ++n;
+                    }
+            }
+            return n;
+        };
+        const int cx = 15; // 15 chunks east -> coarse (cave-less) at radius 16
+        world.radius = 16;
+        drain();
+        const int farAir = caveAir(cx, 0);
+        camera.position = {double(cx * 32 + 16), 110.0, 16.0}; // move next to it -> re-gen
+        // a big move triggers heavy re-streaming; the detailed re-gens land over several
+        // settle cycles (the coarse mesh covers meanwhile), so wait for them to finish
+        int nearAir = 0;
+        for (int i = 0; i < 80 && nearAir <= 100; ++i) {
+            drain();
+            nearAir = caveAir(cx, 0);
+        }
+        camera.position = {16.0, 110.0, 16.0};
+        world.radius = 10;
+        drain();
+        const bool ok = farAir < 30 && nearAir > 100;
+        VX_INFO("regen: far column cave-air %d (want ~0), detailed after approach %d (want "
+                ">0) -> %s",
+                farAir, nearAir, ok ? "PASS" : "FAIL");
+        if (!ok)
+            return 1;
+    }
+
     // lighting checks against the enclosed glow room in the terrain
     {
         const int skyInRoom = light.lightAt({16, 48, 16}) >> 4;

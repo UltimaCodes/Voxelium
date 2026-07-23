@@ -16,7 +16,11 @@ class TerrainGenerator {
 public:
     explicit TerrainGenerator(int seed);
 
-    void generate(Chunk& chunk, ChunkPos pos) const;
+    // detailed=false skips caves, glow deposits and trees — used for far chunks that will
+    // be meshed at a downsampled LOD where those details are averaged away anyway. the
+    // surface + water still generate so the coarse chunk has the right silhouette. when
+    // such a chunk is approached, ChunkManager re-generates it detailed.
+    void generate(Chunk& chunk, ChunkPos pos, bool detailed = true) const;
     int surfaceHeight(int wx, int wz) const; // for spawn placement
 
 private:

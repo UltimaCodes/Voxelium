@@ -117,8 +117,12 @@ private:
         int quads = 0;
         int waterQuads = 0;
         ChunkState state = ChunkState::Generating;
-        bool lit = false;   // sky/emissive seeding done; meshing waits for it
-        bool dirty = false; // player-edited since load; needs saving before eviction
+        bool lit = false;      // sky/emissive seeding done; meshing waits for it
+        bool dirty = false;    // player-edited since load; needs saving before eviction
+        bool detailed = true;  // false = coarse gen (no caves/trees), for far chunks
+        // a detailed re-gen in flight into a second chunk (double buffer); the coarse mesh
+        // stays drawn until this lands, so approaching a coarse chunk never flashes a hole
+        Chunk* pendingDetail = nullptr;
         std::int8_t lod = 0;         // detail level of the current drawn mesh
         std::int8_t meshingLod = -1; // LOD of an in-flight (re)mesh job, -1 = none
         // all faces connected until meshed: never cave-cull what isn't known yet
@@ -170,13 +174,24 @@ private:
     std::vector<ChunkPos> m_remeshScratch;
     std::vector<ChunkPos> m_evictList; // outside the ring; may wait on in-flight jobs
 
+    // a detailed re-gen finished on a worker; carries its own chunk so completion doesn't
+    // depend on the entry still existing (it's released if the entry went away)
+    struct RegenResult {
+        ChunkPos pos;
+        Chunk* voxels;
+    };
+
     // worker -> main queues
     std::mutex m_genDoneMutex;
     std::vector<ChunkPos> m_genDone;
     std::mutex m_meshDoneMutex;
     std::vector<MeshResult> m_meshDone;
+    std::mutex m_regenDoneMutex;
+    std::vector<RegenResult> m_regenDone;
 
     std::vector<ChunkPos> m_genDoneScratch;
+    std::vector<RegenResult> m_regenDoneScratch;
+    std::vector<ChunkPos> m_regenScratch; // coarse chunks that want detail this frame
     std::vector<MeshResult> m_uploads; // drained results awaiting budgeted GL upload
 
     ChunkPos m_center{INT32_MIN, 0, INT32_MIN};

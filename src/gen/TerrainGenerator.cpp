@@ -134,7 +134,7 @@ int TerrainGenerator::surfaceHeight(int wx, int wz) const {
     return std::clamp(int(heightSpline(c) + h * 26.0f), 8, kWorldHeight - 8);
 }
 
-void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos) const {
+void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const {
     chunk.fillLight(0); // pooled chunks carry the previous tenant's light
     const int baseY = pos.y * kChunkSize;
     const int baseX = pos.x * kChunkSize;
@@ -205,8 +205,10 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos) const {
             }
         }
 
-    // caves: cheese blobs + ridged noodles, only meaningfully below the surface
-    if (baseY <= hMax - 2) {
+    // caves: cheese blobs + ridged noodles, only meaningfully below the surface. skipped
+    // for coarse (far) chunks — the LOD downsample collapses caves to solid anyway, and
+    // the 3d noise + carve is by far the most expensive part of gen.
+    if (detailed && baseY <= hMax - 2) {
         static thread_local std::vector<float> cheeseBuf;
         static thread_local std::vector<float> noodleBuf;
         cheeseBuf.resize(std::size_t(kChunkSize3));
@@ -255,7 +257,8 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos) const {
                     chunk.set(x, y, z, blocks::Water);
         }
 
-    placeTrees(chunk, pos);
+    if (detailed)
+        placeTrees(chunk, pos);
     carveTestRoom(chunk, pos);
 }
 
