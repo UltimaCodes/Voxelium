@@ -260,6 +260,10 @@ void PostFx::run(const RunParams& p) {
     glUseProgram(m_progFinal);
     glProgramUniform1f(m_progFinal, 0, p.toggles.bloom ? 0.55f : 0.0f);
     glProgramUniform1f(m_progFinal, 1, p.toggles.exposure);
+    // sharpen only when TAA is on, to undo its softening (off = already crisp/aliased)
+    glProgramUniform1f(m_progFinal, 3, p.toggles.taa ? 0.22f : 0.0f);
+    const glm::vec2 texel(1.0f / float(m_width), 1.0f / float(m_height));
+    glProgramUniform2fv(m_progFinal, 4, 1, &texel.x);
     glBindTextureUnit(0, resolved);
     glBindTextureUnit(2, m_bloomTex[0]);
     glDrawArrays(GL_TRIANGLES, 0, 3);
