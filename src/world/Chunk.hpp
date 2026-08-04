@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <atomic>
 #include <cstdint>
@@ -14,7 +14,7 @@ inline constexpr int kChunkSize3 = kChunkSize * kChunkSize * kChunkSize;
 
 // World height in chunks. 8 => 256 blocks of vertical range so terrain isn't capped so
 // low. Most vertical chunks are uniform air (above) or uniform stone (below), which cost
-// nothing, so this barely moves memory or quad counts â€” only the surface band meshes.
+// nothing, so this barely moves memory or quad counts — only the surface band meshes.
 inline constexpr int kWorldChunksY = 8;
 inline constexpr int kWorldHeight = kWorldChunksY * kChunkSize;
 
@@ -35,7 +35,7 @@ inline constexpr int kBlockCount = 12;
 
 inline constexpr int luminance(BlockId id) { return id == Glow ? 14 : 0; }
 
-// Emitted colour of a light-emitting block, 0..15 per channel. Monochrome for now â€” the
+// Emitted colour of a light-emitting block, 0..15 per channel. Monochrome for now — the
 // storage and the quad format carry three channels so coloured emitters (M18) only have
 // to change this table and the propagation, not the mesh format or the shaders.
 inline constexpr int emitR(BlockId id) { return luminance(id); }
@@ -97,12 +97,12 @@ static_assert(kFullSky == 0xF000, "full sky is the top nibble");
 } // namespace light
 
 // Palette-compressed voxel storage. A uniform chunk (bits == 0) stores one id and no
-// index array â€” most of a world is air or deep stone and must cost nothing. Otherwise
+// index array — most of a world is air or deep stone and must cost nothing. Otherwise
 // indices into the palette are bit-packed at ceil(log2(palette size)) bits per voxel,
 // growing one bit at a time (repack) as the palette grows.
 //
 // Packing is straddled: index i lives at bit i*bits and may span two words. The read
-// is a multiply and two shifts â€” no division, no per-width magic numbers. A value's
+// is a multiply and two shifts — no division, no per-width magic numbers. A value's
 // second word is only touched when it actually straddles, which the branch guards.
 //
 // Palette entries are never garbage collected when blocks are overwritten; stale ids
@@ -141,7 +141,7 @@ public:
     bool hasJobRefs() const { return m_jobRefs.load(std::memory_order_acquire) != 0; }
 
     // Atomic 16-bit words (see namespace light above) so mesh jobs can
-    // read while the main-thread BFS writes â€” relaxed loads/stores are plain MOVs on
+    // read while the main-thread BFS writes — relaxed loads/stores are plain MOVs on
     // x86, so this costs nothing and is formally race-free. A stale read only means the
     // chunk gets remeshed again when the light engine marks it touched.
     //
@@ -149,7 +149,7 @@ public:
     // up front), so the POINTER is raced on too, not just the bytes: a worker can be in
     // lightAt() while the main thread's first setLight() allocates. It is published with
     // release / read with acquire so a worker that sees the pointer also sees the filled
-    // array â€” otherwise it could read uninitialized heap. Same reason m_uniformLight is
+    // array — otherwise it could read uninitialized heap. Same reason m_uniformLight is
     // atomic: it is the value lightAt() returns before the array exists.
     std::uint16_t lightAt(int x, int y, int z) const {
         const auto* l = m_light.load(std::memory_order_acquire);
