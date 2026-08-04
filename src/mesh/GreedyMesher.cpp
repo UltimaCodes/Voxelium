@@ -227,6 +227,16 @@ void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, Greedy
                     const int ax = x + kStep[dir][0];
                     const int ay = y + kStep[dir][1];
                     const int az = z + kStep[dir][2];
+                    // Water never gets a skirt. The skirt works by leaving the border pad
+                    // air, which stops the WATER layer culling at that seam too — so every
+                    // chunk next to a coarser one grew a wall of vertical water faces
+                    // standing up out of the surface, visible as hard chunk-shaped seams
+                    // across every lake. Only the opaque layer needs the crack plugged.
+                    if (water && ((m_coarseNeighbors >> dir) & 1)) {
+                        const int outer = (dir >> 1) == 0 ? ax : ((dir >> 1) == 1 ? ay : az);
+                        if (outer == ((dir & 1) ? -1 : kChunkSize))
+                            continue;
+                    }
                     const BlockId block = m_grid[gi(x, y, z)];
                     const std::uint8_t light = m_gridLight[gi(ax, ay, az)];
                     // a face with any corner occlusion carries per-corner AO and can't be
