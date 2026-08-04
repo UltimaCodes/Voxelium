@@ -109,7 +109,16 @@ public:
         double uploadMs = 0.0;
     };
     PhasePeak phasePeak() const { return m_phase; }
-    void resetPhasePeak() { m_phase = {}; }
+    // Same phases summed over every update instead of maxed. A peak tells you how bad one
+    // frame got; only the total tells you which phase actually owns the streaming budget,
+    // and the two answers differ a lot for a phase that is time-budgeted per frame.
+    PhasePeak phaseTotal() const { return m_phaseSum; }
+    int updateCount() const { return m_updates; }
+    void resetPhasePeak() {
+        m_phase = {};
+        m_phaseSum = {};
+        m_updates = 0;
+    }
 
     bool busy() const {
         // the seed queue counts: a column that hasn't been light-seeded yet is unlit and
@@ -251,6 +260,8 @@ private:
     double m_uploadMsLast = 0.0;
     bool m_seedActive = false; // a column is part-seeded and will resume next frame
     PhasePeak m_phase;
+    PhasePeak m_phaseSum;
+    int m_updates = 0;
 
     std::atomic<std::uint64_t> m_genNanos{0};
     std::atomic<std::uint64_t> m_meshNanos{0};

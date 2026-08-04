@@ -405,6 +405,20 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         VX_INFO("stress: worst phase ms — rescan %.2f, evict %.2f, seed %.2f, propagate "
                 "%.2f, scan %.2f, upload %.2f",
                 pk.rescanMs, pk.evictMs, pk.seedMs, pk.propagateMs, pk.scanMs, pk.uploadMs);
+        // The peaks above are one bad frame each. These are the whole re-stream, which is
+        // what tells you which phase to actually go after.
+        const auto tot = world.phaseTotal();
+        const double n = std::max(1, world.updateCount());
+        const double wall = tot.rescanMs + tot.evictMs + tot.seedMs + tot.propagateMs +
+                            tot.scanMs + tot.uploadMs;
+        VX_INFO("stress: total phase ms over %d updates — rescan %.1f, evict %.1f, seed "
+                "%.1f, propagate %.1f, scan %.1f, upload %.1f (sum %.1f)",
+                world.updateCount(), tot.rescanMs, tot.evictMs, tot.seedMs, tot.propagateMs,
+                tot.scanMs, tot.uploadMs, wall);
+        VX_INFO("stress: light = %.1f ms of %.1f ms main-thread (%.0f%%), %.2f ms/update avg",
+                tot.seedMs + tot.propagateMs, wall,
+                100.0 * (tot.seedMs + tot.propagateMs) / std::max(wall, 1e-6),
+                (tot.seedMs + tot.propagateMs) / n);
     }
     camera.position.x -= 512.0;
     drain();

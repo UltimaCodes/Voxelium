@@ -184,11 +184,16 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         m_lastRadius = radius;
         rescan(center);
     }
-    m_phase.rescanMs = std::max(m_phase.rescanMs, msSince(phase0));
+    ++m_updates;
+    const double rescanMs = msSince(phase0);
+    m_phase.rescanMs = std::max(m_phase.rescanMs, rescanMs);
+    m_phaseSum.rescanMs += rescanMs;
 
     const auto phase1 = Clock::now();
     processEvictions(renderer);
-    m_phase.evictMs = std::max(m_phase.evictMs, msSince(phase1));
+    const double evictMs = msSince(phase1);
+    m_phase.evictMs = std::max(m_phase.evictMs, evictMs);
+    m_phaseSum.evictMs += evictMs;
 
     // drain finished generations (cheap: a state flip per chunk)
     {
@@ -295,7 +300,9 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         }
     }
     m_seedActive = light.seedInProgress(); // a part-seeded column still counts as busy()
-    m_phase.seedMs = std::max(m_phase.seedMs, msSince(seedStart));
+    const double seedMs = msSince(seedStart);
+    m_phase.seedMs = std::max(m_phase.seedMs, seedMs);
+    m_phaseSum.seedMs += seedMs;
     // one shared deadline for the whole light phase: if seeding ran long, propagation
     // gives way rather than stacking a second overshoot on top of the first
     const auto propStart = Clock::now();
@@ -308,7 +315,9 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         }
     }
     light.touched().clear();
-    m_phase.propagateMs = std::max(m_phase.propagateMs, msSince(propStart));
+    const double propagateMs = msSince(propStart);
+    m_phase.propagateMs = std::max(m_phase.propagateMs, propagateMs);
+    m_phaseSum.propagateMs += propagateMs;
 
     // keep enough jobs in flight to feed the workers without racing miles ahead of
     // the camera — stale far-away work is wasted work when it moves
@@ -522,7 +531,9 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             m_uploads.push_back(std::move(r));
         m_meshDone.clear();
     }
-    m_phase.scanMs = std::max(m_phase.scanMs, msSince(scanStart));
+    const double scanMs = msSince(scanStart);
+    m_phase.scanMs = std::max(m_phase.scanMs, scanMs);
+    m_phaseSum.scanMs += scanMs;
 
     const auto uploadStart = Clock::now();
     std::size_t uploaded = 0;
@@ -585,6 +596,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     m_uploads.erase(m_uploads.begin(), m_uploads.begin() + std::ptrdiff_t(uploaded));
     m_uploadMsLast = msSince(uploadStart);
     m_phase.uploadMs = std::max(m_phase.uploadMs, m_uploadMsLast);
+    m_phaseSum.uploadMs += m_uploadMsLast;
 }
 
 void ChunkManager::collectDrawInfo(std::vector<ChunkDrawInfo>& out,
