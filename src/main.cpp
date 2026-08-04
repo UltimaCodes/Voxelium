@@ -6,6 +6,7 @@
 #include "gfx/GlDebug.hpp"
 #include "gfx/GpuTimer.hpp"
 #include "gfx/Shader.hpp"
+#include "core/Settings.hpp"
 #include "io/ChunkSerializer.hpp"
 #include "jobs/JobSystem.hpp"
 #include "light/LightEngine.hpp"
@@ -523,6 +524,37 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         if (!same)
             return 1;
 
+        // (a2) settings round-trip: write non-default values, read them into a fresh set
+        // of defaults, and check every field came back. Uses its own file so it can never
+        // touch the real saves/settings.cfg, and nothing here feeds the render.
+        {
+            const std::filesystem::path sf = outPath.parent_path() / "vxsettings_smoke.cfg";
+            vx::FxToggles wrote;
+            wrote.shadows = false;
+            wrote.ssgi = false;
+            wrote.taa = true;
+            wrote.motionBlur = true;
+            wrote.timeOfDay = 0.77f;
+            wrote.exposure = 1.85f;
+            vx::Settings::save(sf, wrote, true, false, 24, 95.0f);
+
+            vx::FxToggles read; // all defaults; load must overwrite each one
+            bool vsyncR = false;
+            bool caveCullR = true;
+            int radiusR = 16;
+            float fovR = 70.0f;
+            const bool got = vx::Settings::load(sf, read, vsyncR, caveCullR, radiusR, fovR);
+            const bool ok = got && !read.shadows && !read.ssgi && read.taa &&
+                            read.motionBlur && std::abs(read.timeOfDay - 0.77f) < 0.001f &&
+                            std::abs(read.exposure - 1.85f) < 0.001f && vsyncR &&
+                            !caveCullR && radiusR == 24 && std::abs(fovR - 95.0f) < 0.001f;
+            std::error_code sec;
+            std::filesystem::remove(sf, sec);
+            VX_INFO("persistence: settings round-trip %s", ok ? "PASS" : "FAIL");
+            if (!ok)
+                return 1;
+        }
+
         // (b) edit a surface block, save to disk, then load it back into a FRESH chunk
         // straight from the region file — the edit must survive
         const int surf = world.generator().surfaceHeight(70, 70);
@@ -755,6 +787,12 @@ int main(int argc, char** argv) {
     bool walkMode = false;
     bool vsync = false;
     bool caveCull = true;
+    // live app only — a smoke run renders from fixed defaults, never a machine's saved
+    // settings, or the reference image would move under it
+    const std::filesystem::path settingsFile = "saves/settings.cfg";
+    if (vx::Settings::load(settingsFile, fx, vsync, caveCull, world->radius, camera.fovYDeg))
+        VX_INFO("settings: loaded %s", settingsFile.string().c_str());
+    window->setVsync(vsync);
     bool loadLogged = false;
     bool everBusy = false; // don't log the "loaded" summary before streaming even starts
     bool f4Held = false;
@@ -777,6 +815,9 @@ int main(int argc, char** argv) {
             settingsOpen = !settingsOpen; // ESC pauses into the settings menu, not quit
             if (settingsOpen)
                 window->setCursorCaptured(false);
+            else // closing the menu commits whatever was just changed
+                vx::Settings::save(settingsFile, fx, vsync, caveCull, world->radius,
+                                   camera.fovYDeg);
         }
         escHeld = esc;
         const bool f3 = window->keyDown(GLFW_KEY_F3);
@@ -954,6 +995,7 @@ int main(int argc, char** argv) {
     }
 
     VX_INFO("window closed, shutting down");
+    vx::Settings::save(settingsFile, fx, vsync, caveCull, world->radius, camera.fovYDeg);
     world->saveDirty(); // persist edits before teardown (workers join after this)
     hud.shutdown();
     overlay.shutdown();
