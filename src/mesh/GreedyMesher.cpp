@@ -239,6 +239,8 @@ void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, Greedy
                     }
                     const BlockId block = m_grid[gi(x, y, z)];
                     const std::uint8_t light = m_gridLight[gi(ax, ay, az)];
+                    if (!water && (light >> 4) != 0)
+                        stats.sunlit = true; // some sky reaches this face
                     // a face with any corner occlusion carries per-corner AO and can't be
                     // merged (its AO would smear); emit it 1x1. fully-lit faces merge.
                     if (m_smoothAO) {

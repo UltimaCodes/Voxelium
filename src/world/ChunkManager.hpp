@@ -135,6 +135,9 @@ private:
         int waterQuads = 0;
         ChunkState state = ChunkState::Generating;
         bool lit = false;      // sky/emissive seeding done; meshing waits for it
+        // any face reached by sky light. false = sealed underground, so the shadow pass
+        // skips it entirely (it can never be the surface nearest the sun)
+        bool sunlit = true;
         bool dirty = false;    // player-edited since load; needs saving before eviction
         bool detailed = true;  // false = coarse gen (no caves/trees), for far chunks
         // a detailed re-gen in flight into a second chunk (double buffer); the coarse mesh

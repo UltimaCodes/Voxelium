@@ -15,6 +15,7 @@ struct ChunkDrawInfo {
     glm::ivec3 chunkPos; // in chunk units
     std::uint32_t firstQuad;
     std::uint32_t quadCount;
+    std::uint32_t sunlit; // 0 = sealed from the sky, skipped by the shadow pass
 };
 
 // The whole-world renderer: one persistent-mapped quad arena with a free-list
@@ -71,10 +72,11 @@ public:
     // box) into the command buffers, then draw with any depth program. Called once per
     // cascade so far casters aren't drawn into tight near cascades.
     void cullFrustum(const Frustum& frustum, const glm::ivec3& cameraChunk,
-                     const glm::vec3& cameraFrac, bool caveCull);
+                     const glm::vec3& cameraFrac, bool caveCull, bool sunlitOnly = false);
     void drawIndirect(unsigned int program, const glm::mat4& viewProj);
     void cullInto(unsigned int metaBuf, unsigned int chunkCount, const Frustum& frustum,
-                  const glm::ivec3& cameraChunk, const glm::vec3& cameraFrac, bool caveCull);
+                  const glm::ivec3& cameraChunk, const glm::vec3& cameraFrac, bool caveCull,
+                  bool sunlitOnly = false);
 
     int gpuVisibleChunks() const { return m_visibleChunks; } // ~3 frames of latency
     int debugReadDrawCount() const;                          // syncs; smoke test only

@@ -230,7 +230,7 @@ void Renderer::updateChunkMeta(std::span<const ChunkDrawInfo> chunks) {
     for (std::uint32_t i = 0; i < m_chunkCount; ++i) {
         const ChunkDrawInfo& c = chunks[i];
         meta[i] = {c.chunkPos.x, c.chunkPos.y, c.chunkPos.z, std::int32_t(c.firstQuad),
-                   c.quadCount, 0, 0, 0};
+                   c.quadCount, c.sunlit, 0, 0};
     }
 }
 
@@ -245,13 +245,13 @@ void Renderer::updateWaterMeta(std::span<const ChunkDrawInfo> chunks) {
     for (std::uint32_t i = 0; i < m_waterChunkCount; ++i) {
         const ChunkDrawInfo& c = chunks[i];
         meta[i] = {c.chunkPos.x, c.chunkPos.y, c.chunkPos.z, std::int32_t(c.firstQuad),
-                   c.quadCount, 0, 0, 0};
+                   c.quadCount, c.sunlit, 0, 0};
     }
 }
 
 void Renderer::cullInto(unsigned int metaBuf, unsigned int chunkCount, const Frustum& frustum,
                         const glm::ivec3& cameraChunk, const glm::vec3& cameraFrac,
-                        bool caveCull) {
+                        bool caveCull, bool sunlitOnly) {
     const GLuint zero = 0;
     glClearNamedBufferSubData(m_countBuf, GL_R32UI, 0, sizeof(GLuint), GL_RED_INTEGER,
                               GL_UNSIGNED_INT, &zero);
@@ -263,6 +263,7 @@ void Renderer::cullInto(unsigned int metaBuf, unsigned int chunkCount, const Fru
     glProgramUniform1ui(m_cullProgram, 8, chunkCount);
     glProgramUniform1ui(m_cullProgram, 9, caveCull ? 1u : 0u);
     glProgramUniform1ui(m_cullProgram, 10, GLuint(frustum.count));
+    glProgramUniform1ui(m_cullProgram, 11, sunlitOnly ? 1u : 0u);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, metaBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_cmdBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, m_countBuf);
@@ -273,8 +274,8 @@ void Renderer::cullInto(unsigned int metaBuf, unsigned int chunkCount, const Fru
 }
 
 void Renderer::cullFrustum(const Frustum& frustum, const glm::ivec3& cameraChunk,
-                           const glm::vec3& cameraFrac, bool caveCull) {
-    cullInto(m_metaBuf, m_chunkCount, frustum, cameraChunk, cameraFrac, caveCull);
+                           const glm::vec3& cameraFrac, bool caveCull, bool sunlitOnly) {
+    cullInto(m_metaBuf, m_chunkCount, frustum, cameraChunk, cameraFrac, caveCull, sunlitOnly);
 }
 
 void Renderer::drawIndirect(unsigned int program, const glm::mat4& viewProj) {

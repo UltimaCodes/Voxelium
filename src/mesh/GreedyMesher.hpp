@@ -11,6 +11,10 @@ struct GreedyStats {
     int quads = 0;      // opaque
     int waterQuads = 0; // transparent
     int triangles = 0;
+    // Any opaque face here reached by sky light. A chunk with none is sealed from the sky,
+    // which means it can never be the surface nearest the sun — whatever encloses it
+    // already is — so it contributes nothing to a shadow map and can be skipped entirely.
+    bool sunlit = false;
     // Summed w*h per direction for the OPAQUE layer at LOD 0 — must equal the naive
     // mesher's per-direction face counts (the correctness oracle).
     std::int64_t areaPerDir[6] = {};

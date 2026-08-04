@@ -31,6 +31,10 @@ layout(location = 7) uniform vec3 uCameraFrac;
 layout(location = 8) uniform uint uChunkCount;
 layout(location = 9) uniform uint uCaveCull;
 layout(location = 10) uniform uint uPlaneCount;
+// shadow pass: skip chunks sealed from the sky. the shadow map keeps the depth NEAREST
+// the light, and a sealed chunk is always behind whatever encloses it, so it can never
+// change the result — dropping it is exact, not an approximation.
+layout(location = 11) uniform uint uSunlitOnly;
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
@@ -38,6 +42,8 @@ void main() {
         return;
     if (uCaveCull != 0u && (visBits[i >> 5] & (1u << (i & 31u))) == 0u)
         return; // not reachable from the camera through open space
+    if (uSunlitOnly != 0u && meta[i].countPad.y == 0u)
+        return; // sealed from the sky: contributes nothing to a sun shadow map
 
     ChunkMeta m = meta[i];
     vec3 offset = vec3((m.posFirst.xyz - uCameraChunk) * 32) - uCameraFrac;

@@ -104,7 +104,7 @@ void ShadowMap::render(Renderer& renderer, const glm::ivec3& cameraChunk,
         // cull to this cascade's ortho box: the near cascade draws a handful of chunks
         // instead of the whole world. cave culling stays off here — a chunk hidden from
         // the camera can still cast a shadow the camera sees
-        renderer.cullFrustum(Frustum::fromOrtho(m_vp[c]), cameraChunk, cameraFrac, false);
+        renderer.cullFrustum(Frustum::fromOrtho(m_vp[c]), cameraChunk, cameraFrac, false, true);
         glNamedFramebufferTextureLayer(m_fbo, GL_DEPTH_ATTACHMENT, m_depthArray, 0, c);
         glClear(GL_DEPTH_BUFFER_BIT);
         renderer.drawIndirect(m_shadowProgram, m_vp[c]);

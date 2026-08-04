@@ -573,6 +573,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                 e.waterQuadsCpu.clear();
             }
             e.connectivity = r.connectivity;
+            e.sunlit = r.stats.sunlit;
             e.lod = r.lod;
             e.state = ChunkState::Meshed;
             m_dirty = true;
@@ -599,12 +600,12 @@ void ChunkManager::collectDrawInfo(std::vector<ChunkDrawInfo>& out,
         const glm::ivec3 cp{item.first.x, item.first.y, item.first.z};
         if (e.quads > 0 && e.range.count != 0) {
             e.metaIndex = std::int32_t(out.size());
-            out.push_back({cp, e.range.first, e.range.count});
+            out.push_back({cp, e.range.first, e.range.count, e.sunlit ? 1u : 0u});
         } else {
             e.metaIndex = -1;
         }
         if (e.waterQuads > 0 && e.waterRange.count != 0)
-            water.push_back({cp, e.waterRange.first, e.waterRange.count});
+            water.push_back({cp, e.waterRange.first, e.waterRange.count, 1u});
     }
     m_metaCount = int(out.size());
     m_visDirty = true;
@@ -719,6 +720,7 @@ void ChunkManager::remeshNow(Renderer& renderer, ChunkPos pos) {
                                             m_waterScratch, 0,
                                             coarseNeighborMask(pos, 0, m_center));
     e.connectivity = computeConnectivity(*e.voxels);
+    e.sunlit = stats.sunlit; // an edit can open a sealed chunk to the sky, or seal it
 
     if (e.range.count != 0) {
         renderer.free(e.range);
