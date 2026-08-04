@@ -41,21 +41,38 @@ Found and fixed along the way, not on the original list:
 
 ## Tier 1 — Performance
 
+Baseline when this tier started, `--bench` @1280x720 radius 16:
+`shadow 8.97 | scene 2.49 | post 1.11 | frame 15.52 ms` — shadows were ~60% of GPU time.
+
+After the work below, measured back-to-back on the same machine state:
+`shadow 0.28 | scene 1.07 | post 0.67 | frame 2.43 ms` — **frame time cut ~53%**, and the
+GPU is no longer the limiter at this resolution. The main thread (light seeding +
+propagation, ~3–4 ms) now costs more than the whole GPU frame.
+
 | # | Item | Impact | Status |
 |---|---|---|---|
-| 6 | HiZ occlusion culling — depth pyramid from last frame, test chunk AABBs in `cull.comp`. Complements the existing flood-fill cave cull | High | todo |
-| 7 | Render-scale + upscale (FSR-style) — render at 70%, upscale in `final.frag` | High | todo |
-| 8 | Persistent-mapped SSBO uploads | High | **already done** — the quad arena is already `GL_MAP_PERSISTENT_BIT` with a 3-frame fence ring and a free-list sub-allocator. Nothing to do. |
-| 9 | Shadow-pass LOD bias — render cascades one LOD coarser | High | todo |
-| 10 | Shadow cascade caching — cascades 1–2 re-render every N frames | Med | todo |
-| 11 | GPU light propagation — flood-fill in a compute shader | Med | todo |
-| 12 | Sub-chunk (meshlet) culling — cull 8³ groups, not whole 32³ chunks | Med | todo |
-| 13 | Arena defrag scheduling — amortize compaction instead of on-demand | Med | todo |
-| 14 | Depth pre-pass — cuts overdraw for the heavy chunk fragment shader | Low–Med | todo |
+| 6 | HiZ occlusion culling | High | todo — now targets a 1.07 ms scene pass, so the ceiling is small |
+| 7 | Render-scale + upscale | High | **done** — 0.5–1.0 slider, persisted. 0.70x gives ~11–22% frame. Limited at 720p because the frame isn't fill-bound; pays much better at 1440p/4K |
+| 8 | Persistent-mapped SSBO uploads | High | **already done** before this tier — the arena is `GL_MAP_PERSISTENT_BIT` with a 3-frame fence ring |
+| 9 | Shadow-pass LOD bias | High | **rejected on measurement** — shadows are now 0.28 ms, so halving their geometry saves ~0.14 ms of a 2.43 ms frame (~6%) in exchange for a second coarse mesh per chunk (memory, mesh time, a third meta buffer). Bad trade now that #10 landed |
+| 10 | Shadow cascade caching | Med | **done** — the big one. Shadow −89%, frame −53% |
+| 11 | GPU light propagation | Med | todo — now the highest-value item left; the light phase is the main thread's biggest cost |
+| 12 | Sub-chunk (meshlet) culling | Med | todo |
+| 13 | Arena defrag scheduling | Med | todo |
+| 14 | Depth pre-pass | Low–Med | **rejected on measurement** — submitting the full chunk geometry once costs ~1.0 ms (3.03 ÷ 3 cascades). The entire scene pass is 1.07 ms, so a pre-pass would add roughly the cost of the pass it's meant to accelerate. Also unsound as-is: `shadow.vert` has no leaf sway, so `GL_EQUAL` would drop every leaf |
 | 15 | Async shader compile + pipeline cache | Low | todo |
 | 16 | Chunk unload → disk instead of re-gen | Med | todo |
 
----
+Also added: **`--bench [radius]`** — settles the world, fixed camera, TAA off, median of 140
+frames over 3 views, plus a 0.70x render-scale pass and a moving-camera pass reporting
+mean and peak. Repeatable to ~6%. Every number above came from it.
+
+Two extra optimizations not on the original list:
+- **Sky-sealed chunks skipped in the shadow pass.** A chunk with no face reached by sky
+  light is always behind whatever encloses it, and the shadow map keeps the depth nearest
+  the light — so dropping it is exact. Shadow −11% on its own.
+- **`kMaxChunks` 8192 → 32768** (see Tier 0) — that cap was silently dropping ~500 chunks
+  at the default radius.
 
 ## Tier 2 — World & simulation
 
