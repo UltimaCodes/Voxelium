@@ -50,6 +50,6 @@ void main() {
 
     vWorldRel = world;
     vDir = dir;
-    vSky = float((q.y >> 24) & 15u) / 15.0;
+    vSky = float((q.y >> 28) & 15u) / 15.0; // sky is the top nibble of the light word
     gl_Position = uViewProj * vec4(world, 1.0);
 }

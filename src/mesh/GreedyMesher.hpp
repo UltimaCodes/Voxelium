@@ -45,7 +45,7 @@ private:
     struct Plane {
         std::uint32_t rows[kChunkSize];
         BlockId block;
-        std::uint8_t light; // sky<<4 | block, part of the merge key
+        std::uint16_t light; // packed r,g,b,sky (see namespace light), part of the merge key
         std::uint8_t dir;
         std::uint8_t slice;
         std::int16_t next;
@@ -59,13 +59,13 @@ private:
     void fillGrid(const Chunk& chunk, const Chunk* const* neighbors, int lod);
     void buildColumns();
     void meshLayer(bool water, std::vector<std::uint64_t>& out, GreedyStats& stats);
-    void addFace(int dir, int slice, int u, int v, BlockId block, std::uint8_t light);
+    void addFace(int dir, int slice, int u, int v, BlockId block, std::uint16_t light);
     // per-corner ambient occlusion (4 corners x 2 bits, 3 = lit) for a face whose outer
     // (air) voxel is (ax,ay,az). 0xFF = fully lit -> the face can still greedy-merge.
     std::uint32_t faceAO(int ax, int ay, int az, int dir) const;
 
     BlockId m_grid[kPad * kPad * kPad];
-    std::uint8_t m_gridLight[kPad * kPad * kPad];
+    std::uint16_t m_gridLight[kPad * kPad * kPad];
 
     std::uint64_t m_opaqueX[kChunkSize][kChunkSize]; // [y][z]
     std::uint64_t m_opaqueY[kChunkSize][kChunkSize]; // [z][x]

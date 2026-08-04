@@ -35,6 +35,13 @@ inline constexpr int kBlockCount = 12;
 
 inline constexpr int luminance(BlockId id) { return id == Glow ? 14 : 0; }
 
+// Emitted colour of a light-emitting block, 0..15 per channel. Monochrome for now — the
+// storage and the quad format carry three channels so coloured emitters (M18) only have
+// to change this table and the propagation, not the mesh format or the shaders.
+inline constexpr int emitR(BlockId id) { return luminance(id); }
+inline constexpr int emitG(BlockId id) { return luminance(id); }
+inline constexpr int emitB(BlockId id) { return luminance(id); }
+
 // opaque = blocks light and hides faces behind it. water is see-through (renders in the
 // transparent pass, lets light through); leaves are opaque for cheap "fast" foliage.
 inline constexpr bool opaque(BlockId id) { return id != Air && id != Water; }
@@ -42,6 +49,52 @@ inline constexpr bool isWater(BlockId id) { return id == Water; }
 // solid = collides with the player. water is swim-through (no collision).
 inline constexpr bool solid(BlockId id) { return opaque(id); }
 } // namespace blocks
+
+// Packed per-voxel light: 4 bits each of red, green, blue and sky.
+//
+// Block light gets three channels so a coloured emitter is representable; sky light keeps
+// its own because it attenuates differently (full strength straight down) and the sky
+// nibble alone drives the sealed-chunk shadow skip. Widening from the old 4+4 sky/block
+// byte is what M18 needs, and doing it here rather than alongside the coloured
+// propagation keeps the mesh-format change (which must stay in lockstep with chunk.vert,
+// shadow.vert, water.vert and cull.comp) separate from the lighting change.
+//
+// Today the light engine writes r == g == b, so output is bit-identical to the old
+// monochrome path.
+namespace light {
+
+inline constexpr std::uint16_t pack(int r, int g, int b, int sky) {
+    return std::uint16_t((r & 15) | ((g & 15) << 4) | ((b & 15) << 8) | ((sky & 15) << 12));
+}
+inline constexpr int red(std::uint16_t v) { return v & 15; }
+inline constexpr int green(std::uint16_t v) { return (v >> 4) & 15; }
+inline constexpr int blue(std::uint16_t v) { return (v >> 8) & 15; }
+inline constexpr int sky(std::uint16_t v) { return (v >> 12) & 15; }
+// Perceived block-light level, which while r == g == b is just the level back.
+inline constexpr int block(std::uint16_t v) {
+    const int r = red(v), g = green(v), b = blue(v);
+    return r > g ? (r > b ? r : b) : (g > b ? g : b);
+}
+inline constexpr std::uint16_t withBlock(std::uint16_t v, int level) {
+    return pack(level, level, level, sky(v));
+}
+inline constexpr std::uint16_t withSky(std::uint16_t v, int level) {
+    return pack(red(v), green(v), blue(v), level);
+}
+inline constexpr std::uint16_t kFullSky = pack(0, 0, 0, 15);
+
+// The layout is a wire format shared with chunk.vert / water.vert, so pin it here rather
+// than trusting four call sites to agree about which nibble is which.
+static_assert(pack(1, 2, 3, 4) == 0x4321, "light nibble order is r,g,b,sky low to high");
+static_assert(red(pack(1, 2, 3, 4)) == 1 && green(pack(1, 2, 3, 4)) == 2 &&
+                  blue(pack(1, 2, 3, 4)) == 3 && sky(pack(1, 2, 3, 4)) == 4,
+              "light accessors must invert pack");
+static_assert(block(pack(2, 9, 5, 0)) == 9, "block level is the brightest colour channel");
+static_assert(withSky(pack(1, 2, 3, 4), 15) == pack(1, 2, 3, 15), "withSky keeps colour");
+static_assert(withBlock(pack(1, 2, 3, 4), 7) == pack(7, 7, 7, 4), "withBlock keeps sky");
+static_assert(kFullSky == 0xF000, "full sky is the top nibble");
+
+} // namespace light
 
 // Palette-compressed voxel storage. A uniform chunk (bits == 0) stores one id and no
 // index array — most of a world is air or deep stone and must cost nothing. Otherwise
@@ -87,7 +140,7 @@ public:
     void releaseJob() const { m_jobRefs.fetch_sub(1, std::memory_order_release); }
     bool hasJobRefs() const { return m_jobRefs.load(std::memory_order_acquire) != 0; }
 
-    // Light nibbles: low = block light, high = sky light. Atomic bytes so mesh jobs can
+    // Atomic 16-bit words (see namespace light above) so mesh jobs can
     // read while the main-thread BFS writes — relaxed loads/stores are plain MOVs on
     // x86, so this costs nothing and is formally race-free. A stale read only means the
     // chunk gets remeshed again when the light engine marks it touched.
@@ -98,17 +151,17 @@ public:
     // release / read with acquire so a worker that sees the pointer also sees the filled
     // array — otherwise it could read uninitialized heap. Same reason m_uniformLight is
     // atomic: it is the value lightAt() returns before the array exists.
-    std::uint8_t lightAt(int x, int y, int z) const {
+    std::uint16_t lightAt(int x, int y, int z) const {
         const auto* l = m_light.load(std::memory_order_acquire);
         return l ? l[std::size_t(index(x, y, z))].load(std::memory_order_relaxed)
                  : m_uniformLight.load(std::memory_order_relaxed);
     }
-    void setLight(int x, int y, int z, std::uint8_t v) {
+    void setLight(int x, int y, int z, std::uint16_t v) {
         ensureLightArray();
         m_light.load(std::memory_order_relaxed)[std::size_t(index(x, y, z))].store(
             v, std::memory_order_relaxed);
     }
-    void fillLight(std::uint8_t v) {
+    void fillLight(std::uint16_t v) {
         m_uniformLight.store(v, std::memory_order_relaxed);
         if (auto* l = m_light.load(std::memory_order_acquire))
             for (int i = 0; i < kChunkSize3; ++i)
@@ -148,8 +201,8 @@ private:
     void ensureLightArray() {
         if (m_light.load(std::memory_order_relaxed))
             return;
-        auto arr = std::make_unique<std::atomic<std::uint8_t>[]>(kChunkSize3);
-        const std::uint8_t fill = m_uniformLight.load(std::memory_order_relaxed);
+        auto arr = std::make_unique<std::atomic<std::uint16_t>[]>(kChunkSize3);
+        const std::uint16_t fill = m_uniformLight.load(std::memory_order_relaxed);
         for (int i = 0; i < kChunkSize3; ++i)
             arr[std::size_t(i)].store(fill, std::memory_order_relaxed);
         m_lightOwn = std::move(arr);
@@ -161,9 +214,9 @@ private:
     int m_bits = 0;
     // light array survives pool reuse (fillLight resets values, never frees). m_lightOwn
     // holds it; m_light is the published view workers read.
-    std::unique_ptr<std::atomic<std::uint8_t>[]> m_lightOwn;
-    std::atomic<std::atomic<std::uint8_t>*> m_light{nullptr};
-    std::atomic<std::uint8_t> m_uniformLight{0};
+    std::unique_ptr<std::atomic<std::uint16_t>[]> m_lightOwn;
+    std::atomic<std::atomic<std::uint16_t>*> m_light{nullptr};
+    std::atomic<std::uint16_t> m_uniformLight{0};
     mutable std::atomic<std::uint32_t> m_jobRefs{0};
 };
 

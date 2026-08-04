@@ -55,7 +55,7 @@ std::uint32_t GreedyMesher::faceAO(int ax, int ay, int az, int dir) const {
 }
 
 void GreedyMesher::addFace(int dir, int slice, int u, int v, BlockId block,
-                           std::uint8_t light) {
+                           std::uint16_t light) {
     std::int16_t idx = m_heads[dir][slice];
     while (idx >= 0) {
         Plane& p = m_planes[std::size_t(idx)];
@@ -79,7 +79,7 @@ void GreedyMesher::addFace(int dir, int slice, int u, int v, BlockId block,
 void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, int lod) {
     // default: air voxels lit as open sky (border faces at the world edge look right)
     std::fill(std::begin(m_grid), std::end(m_grid), blocks::Air);
-    std::fill(std::begin(m_gridLight), std::end(m_gridLight), std::uint8_t(0xF0));
+    std::fill(std::begin(m_gridLight), std::end(m_gridLight), light::kFullSky);
     m_hasWater = false;
 
     if (lod == 0) {
@@ -138,10 +138,10 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
                             const BlockId b = chunk.get(sx * f + dx, sy * f + dy, sz * f + dz);
                             if (b < blocks::kBlockCount)
                                 ++counts[b];
-                            const std::uint8_t l = chunk.lightAt(sx * f + dx, sy * f + dy,
-                                                                 sz * f + dz);
-                            maxSky = std::max(maxSky, l >> 4);
-                            maxBlk = std::max(maxBlk, l & 15);
+                            const std::uint16_t l = chunk.lightAt(sx * f + dx, sy * f + dy,
+                                                                  sz * f + dz);
+                            maxSky = std::max(maxSky, light::sky(l));
+                            maxBlk = std::max(maxBlk, light::block(l));
                         }
                 const int solid = cube - counts[blocks::Air];
                 BlockId dom = blocks::Air;
@@ -155,12 +155,12 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
                 }
                 if (blocks::isWater(dom))
                     m_hasWater = true;
-                const std::uint8_t light = std::uint8_t((maxSky << 4) | maxBlk);
+                const std::uint16_t lv = light::pack(maxBlk, maxBlk, maxBlk, maxSky);
                 for (int dz = 0; dz < f; ++dz)
                     for (int dy = 0; dy < f; ++dy)
                         for (int dx = 0; dx < f; ++dx) {
                             m_grid[gi(sx * f + dx, sy * f + dy, sz * f + dz)] = dom;
-                            m_gridLight[gi(sx * f + dx, sy * f + dy, sz * f + dz)] = light;
+                            m_gridLight[gi(sx * f + dx, sy * f + dy, sz * f + dz)] = lv;
                         }
             }
 }
@@ -238,15 +238,15 @@ void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, Greedy
                             continue;
                     }
                     const BlockId block = m_grid[gi(x, y, z)];
-                    const std::uint8_t light = m_gridLight[gi(ax, ay, az)];
-                    if (!water && (light >> 4) != 0)
+                    const std::uint16_t lv = m_gridLight[gi(ax, ay, az)];
+                    if (!water && light::sky(lv) != 0)
                         stats.sunlit = true; // some sky reaches this face
                     // a face with any corner occlusion carries per-corner AO and can't be
                     // merged (its AO would smear); emit it 1x1. fully-lit faces merge.
                     if (m_smoothAO) {
                         const std::uint32_t ao = faceAO(ax, ay, az, dir);
                         if (ao != 0xFFu) {
-                            out.push_back(packQuad(x, y, z, 1, 1, dir, block, ao, light));
+                            out.push_back(packQuad(x, y, z, 1, 1, dir, block, ao, lv));
                             if (water)
                                 ++stats.waterQuads;
                             else {
@@ -256,7 +256,7 @@ void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, Greedy
                             continue;
                         }
                     }
-                    addFace(dir, s, b, a, block, light);
+                    addFace(dir, s, b, a, block, lv);
                 }
             };
             scatter(0, colX & ~(blkX >> 1));

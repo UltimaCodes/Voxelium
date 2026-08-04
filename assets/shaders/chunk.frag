@@ -4,7 +4,7 @@ in vec3 vWorldRel;
 in vec2 vUv;
 flat in uint vLayer;
 flat in uint vDir;
-flat in vec2 vLight;
+flat in vec4 vLight;
 in float vAO; // interpolated per-corner ambient occlusion
 
 layout(location = 0) out vec4 outColor; // HDR
@@ -103,8 +103,8 @@ void main() {
         float g = smoothstep(1.0 - kOverlay, 1.0 - kOverlay * 0.45, fract(vUv.y));
         albedo = mix(albedo, texture(uBlockTex, vec3(vUv, 2.0)).rgb, g);
     }
-    float blockL = vLight.x;
-    float skyL = vLight.y;
+    vec3 blockRGB = vLight.rgb; // per-channel so a coloured emitter tints its own light
+    float skyL = vLight.a;
 
     float ndl = max(dot(N, uSunL), 0.0);
     float shadow = ndl > 0.0 ? sunShadow(vWorldRel, N) : 0.0;
@@ -115,7 +115,7 @@ void main() {
     // (interior leaf pockets, deep cave walls) from crushing to pure black.
     vec3 direct = uSunColor * (ndl * shadow * skyAccess);
     vec3 ambient = uSkyAmbient * (0.10 + 0.90 * skyL) + vec3(0.035, 0.04, 0.05);
-    vec3 torch = vec3(1.35, 0.95, 0.55) * (blockL * blockL * 1.6);
+    vec3 torch = vec3(1.35, 0.95, 0.55) * (blockRGB * blockRGB * 1.6);
 
     // per-vertex ambient occlusion darkens concave corners smoothly (occluded -> 68%).
     // every terrace step is a concave corner, so a deep AO stacks with the face shading

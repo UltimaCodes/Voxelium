@@ -54,8 +54,8 @@ int LightEngine::getLevel(const glm::ivec3& wp, int channel) const {
     const Chunk* c = lookupChunk(chunkOf(wp));
     if (!c)
         return 0;
-    const std::uint8_t v = c->lightAt(wp.x & 31, wp.y & 31, wp.z & 31);
-    return channel == Sky ? (v >> 4) : (v & 15);
+    const std::uint16_t v = c->lightAt(wp.x & 31, wp.y & 31, wp.z & 31);
+    return channel == Sky ? light::sky(v) : light::block(v);
 }
 
 void LightEngine::setLevel(const glm::ivec3& wp, int channel, int level) {
@@ -67,10 +67,11 @@ void LightEngine::setLevel(const glm::ivec3& wp, int channel, int level) {
     const int x = wp.x & 31;
     const int y = wp.y & 31;
     const int z = wp.z & 31;
-    const std::uint8_t old = c->lightAt(x, y, z);
-    const std::uint8_t next =
-        channel == Sky ? std::uint8_t((old & 0x0F) | (level << 4))
-                       : std::uint8_t((old & 0xF0) | level);
+    const std::uint16_t old = c->lightAt(x, y, z);
+    // block light writes all three colour channels: the engine is still monochrome, and
+    // keeping them equal means light::block() is exact and output matches the old path
+    const std::uint16_t next =
+        channel == Sky ? light::withSky(old, level) : light::withBlock(old, level);
     if (next == old)
         return;
     c->setLight(x, y, z, next);
@@ -126,7 +127,7 @@ void LightEngine::beginSeedColumn(std::int32_t chunkX, std::int32_t chunkZ) {
     // entirely above the surface, so it is all direct sky. cheap, so it isn't split.
     for (int cy = 0; cy < kWorldChunksY; ++cy)
         if (stack[cy]->uniform() && stack[cy]->uniformId() == blocks::Air)
-            stack[cy]->fillLight(0xF0);
+            stack[cy]->fillLight(light::kFullSky);
 }
 
 bool LightEngine::stepSeedColumn(double budgetMs) {
@@ -173,7 +174,7 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
                 if (blocks::opaque(c->get(dx, y & 31, dz)))
                     break;
                 c->setLight(dx, y & 31, dz,
-                            std::uint8_t((c->lightAt(dx, y & 31, dz) & 0x0F) | 0xF0));
+                            light::withSky(c->lightAt(dx, y & 31, dz), 15));
             }
             m_seed.heights[dz][dx] = y;
             ++m_seed.cursor;
@@ -358,11 +359,12 @@ void LightEngine::process(double budgetMs) {
     }
 }
 
-std::uint8_t LightEngine::lightAt(const glm::ivec3& wp) const {
+std::uint16_t LightEngine::lightAt(const glm::ivec3& wp) const {
     // debug/verification only, and callers reach it at arbitrary times — never trust a
     // cache filled by whatever ran last
     const_cast<LightEngine*>(this)->resetChunkCache();
-    return std::uint8_t((getLevel(wp, Sky) << 4) | getLevel(wp, Block));
+    const int b = getLevel(wp, Block);
+    return light::pack(b, b, b, getLevel(wp, Sky));
 }
 
 } // namespace vx

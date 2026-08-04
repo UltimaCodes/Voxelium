@@ -349,11 +349,11 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
 
     // lighting checks against the enclosed glow room in the terrain
     {
-        const int skyInRoom = light.lightAt({16, 48, 16}) >> 4;
-        const int glowAbove = light.lightAt({16, 46, 16}) & 15;
-        const int glowEdge = light.lightAt({16, 48, 19}) & 15;
+        const int skyInRoom = vx::light::sky(light.lightAt({16, 48, 16}));
+        const int glowAbove = vx::light::block(light.lightAt({16, 46, 16}));
+        const int glowEdge = vx::light::block(light.lightAt({16, 48, 19}));
         // open air near the top of the world — always full sky (trees/terrain can't reach)
-        const int skySurface = light.lightAt({16, vx::kWorldHeight - 4, 16}) >> 4;
+        const int skySurface = vx::light::sky(light.lightAt({16, vx::kWorldHeight - 4, 16}));
         bool ok = skyInRoom == 0 && glowAbove == 13 && glowEdge > 0 && glowEdge < 13 &&
                   skySurface == 15;
         VX_INFO("light: room sky %d (want 0), above-glow %d (want 13), edge %d, surface sky "
@@ -367,12 +367,12 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         light.onBlockChanged({16, 45, 16}, vx::blocks::Glow, vx::blocks::Air);
         while (!light.idle())
             light.process(10.0);
-        const int afterRemove = light.lightAt({16, 46, 16}) & 15;
+        const int afterRemove = vx::light::block(light.lightAt({16, 46, 16}));
         roomChunk->set(16, 13, 16, vx::blocks::Glow);
         light.onBlockChanged({16, 45, 16}, vx::blocks::Air, vx::blocks::Glow);
         while (!light.idle())
             light.process(10.0);
-        const int afterRestore = light.lightAt({16, 46, 16}) & 15;
+        const int afterRestore = vx::light::block(light.lightAt({16, 46, 16}));
         ok = afterRemove == 0 && afterRestore == 13;
         VX_INFO("light: removal %d (want 0), re-add %d (want 13) -> %s", afterRemove,
                 afterRestore, ok ? "PASS" : "FAIL");
@@ -571,7 +571,7 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         }
         // the glow block must have lit its neighbourhood, i.e. light settled after the
         // whole batch rather than being skipped
-        const bool batchLit = (light.lightAt({30, surf + 1, 18}) & 15) > 0;
+        const bool batchLit = vx::light::block(light.lightAt({30, surf + 1, 18})) > 0;
         VX_INFO("edits: batch %d/9 applied, values %s, light %s", applied,
                 batchOk ? "PASS" : "FAIL", batchLit ? "PASS" : "FAIL");
         if (!batchOk || !batchLit)

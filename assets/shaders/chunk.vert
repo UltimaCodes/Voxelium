@@ -13,7 +13,7 @@ out vec3 vWorldRel;
 out vec2 vUv;         // tiling texture coords (0..w, 0..h)
 flat out uint vLayer; // texture-array layer
 flat out uint vDir;
-flat out vec2 vLight; // block, sky (0..1)
+flat out vec4 vLight; // block light r,g,b then sky (0..1)
 out float vAO;        // per-corner ambient occlusion, interpolated -> smooth corner shading
 
 const int kTri[6] = int[6](0, 1, 2, 0, 2, 3);
@@ -51,7 +51,7 @@ void main() {
     float w = float(((q.x >> 15) & 31u) + 1u);
     float h = float(((q.x >> 20) & 31u) + 1u);
     uint dir = (q.x >> 25) & 7u;
-    uint block = q.y & 4095u;
+    uint block = q.y & 255u;
 
     vec2 c = kCorner[dir][corner];
     vec2 uv = c * vec2(w, h) + (c * 2.0 - 1.0) * kBloat;
@@ -73,14 +73,16 @@ void main() {
         world.y += 0.03 * sin(uTime * 2.2 + ph * 0.7);
     }
 
-    // per-corner AO (bits 12..19 of the hi word, 2 bits per corner, 3 = lit)
-    uint aoCorner = ((q.y >> 12u) >> (uint(corner) * 2u)) & 3u;
+    // per-corner AO (bits 8..15 of the hi word, 2 bits per corner, 3 = lit)
+    uint aoCorner = ((q.y >> 8u) >> (uint(corner) * 2u)) & 3u;
     vAO = float(aoCorner) / 3.0;
 
     vWorldRel = world;
     vUv = c * vec2(w, h); // tile once per block, GL_REPEAT wraps it
     vLayer = texLayer(block, dir);
     vDir = dir;
-    vLight = vec2(float((q.y >> 20) & 15u), float((q.y >> 24) & 15u)) / 15.0;
+    // hi word bits 16..31 are the packed light word: r, g, b, sky nibbles in that order
+    vLight = vec4(float((q.y >> 16) & 15u), float((q.y >> 20) & 15u),
+                  float((q.y >> 24) & 15u), float((q.y >> 28) & 15u)) / 15.0;
     gl_Position = uViewProj * vec4(world, 1.0);
 }

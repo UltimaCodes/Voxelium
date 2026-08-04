@@ -60,7 +60,7 @@ public:
     }
 
     // debug/verification
-    std::uint8_t lightAt(const glm::ivec3& wp) const;
+    std::uint16_t lightAt(const glm::ivec3& wp) const;
     int queueDepth() const {
         return int(m_queue[0].size() + m_queue[1].size() + m_removal[0].size() +
                    m_removal[1].size());
