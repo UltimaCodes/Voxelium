@@ -242,16 +242,38 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     // their chunks sat dark/unmeshed for seconds.
     const auto seedStart = Clock::now();
     {
+        // A column only counts as lit once it is FULLY seeded — a half-seeded one would
+        // otherwise get meshed dark.
+        const auto markLit = [&](ChunkPos col) {
+            for (int cy = 0; cy < kWorldChunksY; ++cy)
+                if (const auto cit = m_chunks.find({col.x, cy, col.z}); cit != m_chunks.end())
+                    cit->second.lit = true;
+            m_meshScanDirty = true; // newly lit -> meshable
+        };
+        const auto remaining = [&] {
+            return std::max(0.1, kSeedBudgetMs - msSince(seedStart));
+        };
+
+        // Finish a column left mid-seed by an earlier frame before starting a new one.
+        if (light.seedInProgress()) {
+            const ChunkPos col{light.seedColumnX(), 0, light.seedColumnZ()};
+            if (!neighborhoodSettled(col)) {
+                // a neighbour went back to Generating under it (coarse->detailed re-gen):
+                // drop the partial work and retry later. re-seeding is idempotent.
+                light.abortSeedColumn();
+                m_seedDeferred.push_back(col);
+            } else if (light.stepSeedColumn(remaining())) {
+                markLit(col);
+            }
+        }
+
+        // The budget has to apply even when nothing seeds — right after a teleport every
+        // column's neighbourhood is still mid-generation, and the old "only check the
+        // clock once something seeded" walked the whole queue every frame for no work.
         const std::size_t queued = m_seedQueue.size();
-        for (std::size_t examined = 0; examined < queued; ++examined) {
-            // Two things bind here. The budget has to apply even when nothing seeds —
-            // right after a teleport every column's neighbourhood is still mid-generation,
-            // and the old "only check the clock once something seeded" walked the whole
-            // queue every frame for no useful work. And a column can't be interrupted
-            // once started, so we refuse to begin one we can't afford: measured cost is
-            // ~1-3 ms, and starting a 3 ms column with 0.1 ms left is what turned a 2 ms
-            // budget into a 5 ms frame.
-            if (examined > 0 && msSince(seedStart) + m_seedCostMs > kSeedBudgetMs)
+        for (std::size_t examined = 0; examined < queued && !light.seedInProgress();
+             ++examined) {
+            if (msSince(seedStart) > kSeedBudgetMs)
                 break;
             const ChunkPos col = m_seedQueue.back();
             m_seedQueue.pop_back();
@@ -259,15 +281,9 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                 m_seedDeferred.push_back(col); // retry once neighbours settle
                 continue;
             }
-            const auto colStart = Clock::now();
-            light.seedColumn(col.x, col.z);
-            // EMA, not a max: tracking the worst ever seen let one heavy column sit above
-            // the whole budget and throttle seeding to a crawl for a hundred frames after
-            m_seedCostMs = m_seedCostMs * 0.9 + msSince(colStart) * 0.1;
-            for (int cy = 0; cy < kWorldChunksY; ++cy)
-                if (const auto cit = m_chunks.find({col.x, cy, col.z}); cit != m_chunks.end())
-                    cit->second.lit = true;
-            m_meshScanDirty = true; // newly lit -> meshable
+            light.beginSeedColumn(col.x, col.z);
+            if (light.stepSeedColumn(remaining()))
+                markLit(col);
         }
         // Put deferred columns back at the front so they're retried only after everything
         // else (pop_back serves the tail). One splice a frame, not one memmove of the
@@ -278,6 +294,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             m_seedDeferred.clear();
         }
     }
+    m_seedActive = light.seedInProgress(); // a part-seeded column still counts as busy()
     m_phase.seedMs = std::max(m_phase.seedMs, msSince(seedStart));
     // one shared deadline for the whole light phase: if seeding ran long, propagation
     // gives way rather than stacking a second overshoot on top of the first

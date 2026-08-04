@@ -28,7 +28,19 @@ public:
 
     // Seeds sky columns + emissive blocks for one 32x32 column of chunks (all
     // kWorldChunksY of them at once — sky descent doesn't care about chunk seams).
+    // Runs to completion; fine for tests and one-off re-seeds.
     void seedColumn(std::int32_t chunkX, std::int32_t chunkZ);
+
+    // Incremental form. A column is 32x32x256 voxels and costs 5-10 ms as one lump,
+    // which no per-frame budget can slice — it was the largest remaining streaming
+    // hitch. begin/step spreads it over frames, splitting at (dx,dz) cell granularity.
+    // The caller must not treat the column as lit until step returns true.
+    void beginSeedColumn(std::int32_t chunkX, std::int32_t chunkZ);
+    bool stepSeedColumn(double budgetMs); // true = column finished
+    bool seedInProgress() const { return m_seed.phase != SeedPhase::Idle; }
+    void abortSeedColumn() { m_seed.phase = SeedPhase::Idle; }
+    std::int32_t seedColumnX() const { return m_seed.chunkX; }
+    std::int32_t seedColumnZ() const { return m_seed.chunkZ; }
 
     // Call on any voxel edit, after the chunk itself was updated.
     void onBlockChanged(const glm::ivec3& wp, BlockId oldId, BlockId newId);
@@ -65,6 +77,19 @@ private:
     void propagateStep(int channel, glm::ivec3 wp);
     void removeStep(int channel, Removal r);
     void markTouched(const glm::ivec3& wp);
+
+    // Resumable seed cursor. heights[] is produced by the descent phase and consumed by
+    // the spread phase, so it has to survive across the yield between them.
+    enum class SeedPhase : std::uint8_t { Idle, Descent, Spread, Emissive };
+    struct SeedState {
+        SeedPhase phase = SeedPhase::Idle;
+        std::int32_t chunkX = 0;
+        std::int32_t chunkZ = 0;
+        int cursor = 0; // cell index within Descent/Spread, chunk index within Emissive
+        int heights[kChunkSize][kChunkSize] = {};
+    };
+    SeedState m_seed;
+    bool seedStackValid(Chunk** stack) const; // refetch + validate the column's chunks
 
     ChunkManager& m_world;
     std::vector<glm::ivec3> m_queue[2];

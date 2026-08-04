@@ -117,7 +117,7 @@ public:
         // mesh side looks. leaving it out let "re-streamed" report a finish while chunks
         // were still dark.
         return !m_genQueue.empty() || m_jobsInFlight > 0 || !m_uploads.empty() ||
-               m_pendingMesh > 0 || !m_seedQueue.empty();
+               m_pendingMesh > 0 || !m_seedQueue.empty() || m_seedActive;
     }
     Stats stats() const;
     void logSummary() const;
@@ -246,7 +246,7 @@ private:
     // cleared once scanned. when the world is idle there is provably nothing to mesh.
     bool m_meshScanDirty = true;
     double m_uploadMsLast = 0.0;
-    double m_seedCostMs = 1.0; // observed worst cost of one seedColumn, decayed
+    bool m_seedActive = false; // a column is part-seeded and will resume next frame
     PhasePeak m_phase;
 
     std::atomic<std::uint64_t> m_genNanos{0};

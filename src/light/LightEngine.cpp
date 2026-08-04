@@ -85,29 +85,71 @@ void LightEngine::markTouched(const glm::ivec3& wp) {
     if (z == 31) add({base.x, base.y, base.z + 1});
 }
 
-void LightEngine::seedColumn(std::int32_t chunkX, std::int32_t chunkZ) {
+bool LightEngine::seedStackValid(Chunk** stack) const {
+    // Refetched every step, never cached across a yield: the column can be evicted or
+    // have a chunk swapped under us (the coarse->detailed re-gen double buffer) between
+    // frames, and a stale pointer here would be a use-after-free.
+    for (int cy = 0; cy < kWorldChunksY; ++cy) {
+        stack[cy] = m_world.chunkDataMutable({m_seed.chunkX, cy, m_seed.chunkZ});
+        if (!stack[cy])
+            return false;
+    }
+    return true;
+}
+
+void LightEngine::beginSeedColumn(std::int32_t chunkX, std::int32_t chunkZ) {
+    m_seed.chunkX = chunkX;
+    m_seed.chunkZ = chunkZ;
+    m_seed.cursor = 0;
+    m_seed.phase = SeedPhase::Descent;
+
     Chunk* stack[kWorldChunksY] = {};
-    for (int cy = 0; cy < kWorldChunksY; ++cy)
-        stack[cy] = m_world.chunkDataMutable({chunkX, cy, chunkZ});
-
-    const int baseX = chunkX * kChunkSize;
-    const int baseZ = chunkZ * kChunkSize;
-
+    if (!seedStackValid(stack)) {
+        m_seed.phase = SeedPhase::Idle;
+        return;
+    }
     // whole-chunk fast path: with heightmap-driven terrain a uniform-air chunk sits
-    // entirely above the surface, so it is all direct sky
+    // entirely above the surface, so it is all direct sky. cheap, so it isn't split.
     for (int cy = 0; cy < kWorldChunksY; ++cy)
-        if (stack[cy] && stack[cy]->uniform() && stack[cy]->uniformId() == blocks::Air)
+        if (stack[cy]->uniform() && stack[cy]->uniformId() == blocks::Air)
             stack[cy]->fillLight(0xF0);
+}
+
+bool LightEngine::stepSeedColumn(double budgetMs) {
+    if (m_seed.phase == SeedPhase::Idle)
+        return true;
+
+    Chunk* stack[kWorldChunksY] = {};
+    if (!seedStackValid(stack)) {
+        m_seed.phase = SeedPhase::Idle; // column went away mid-seed; caller re-queues it
+        return true;
+    }
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto over = [&] {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+                   .count() > budgetMs;
+    };
+    const int baseX = m_seed.chunkX * kChunkSize;
+    const int baseZ = m_seed.chunkZ * kChunkSize;
+    constexpr int kCells = kChunkSize * kChunkSize;
+    // How often to read the clock, per phase, because the phases are wildly different
+    // costs per cell. Descent is a straight pointer walk. Spread can climb 256 voxels
+    // doing six HASHED world lookups each, so it needs a much tighter leash — checking it
+    // as rarely as the descent let the 2 ms budget run to 8-10 ms.
+    constexpr int kDescentCheck = 32;
+    constexpr int kSpreadCheck = 4;
 
     // straight-down descent, direct pointers so this stays cheap (no hashing)
-    int heights[kChunkSize][kChunkSize];
-    for (int dz = 0; dz < kChunkSize; ++dz) {
-        for (int dx = 0; dx < kChunkSize; ++dx) {
+    if (m_seed.phase == SeedPhase::Descent) {
+        while (m_seed.cursor < kCells) {
+            if (m_seed.cursor % kDescentCheck == 0 && m_seed.cursor > 0 && over())
+                return false;
+            const int dz = m_seed.cursor >> 5;
+            const int dx = m_seed.cursor & 31;
             int y = kWorldTop - 1;
             for (; y >= 0; --y) {
                 Chunk* c = stack[y >> 5];
-                if (!c)
-                    break;
                 if (c->uniform() && c->uniformId() == blocks::Air) {
                     y = y & ~31; // whole chunk already filled above; skip it
                     continue;
@@ -117,15 +159,22 @@ void LightEngine::seedColumn(std::int32_t chunkX, std::int32_t chunkZ) {
                 c->setLight(dx, y & 31, dz,
                             std::uint8_t((c->lightAt(dx, y & 31, dz) & 0x0F) | 0xF0));
             }
-            heights[dz][dx] = y;
+            m_seed.heights[dz][dx] = y;
+            ++m_seed.cursor;
         }
+        m_seed.cursor = 0;
+        m_seed.phase = SeedPhase::Spread;
     }
 
     // spread sources: direct-sky voxels bordering shadowed air (cave mouths, overhangs).
     // pure heightmap terrain has none — the loop breaks immediately per column
-    for (int dz = 0; dz < kChunkSize; ++dz) {
-        for (int dx = 0; dx < kChunkSize; ++dx) {
-            for (int sy = heights[dz][dx] + 1; sy < kWorldTop; ++sy) {
+    if (m_seed.phase == SeedPhase::Spread) {
+        while (m_seed.cursor < kCells) {
+            if (m_seed.cursor % kSpreadCheck == 0 && m_seed.cursor > 0 && over())
+                return false;
+            const int dz = m_seed.cursor >> 5;
+            const int dx = m_seed.cursor & 31;
+            for (int sy = m_seed.heights[dz][dx] + 1; sy < kWorldTop; ++sy) {
                 const glm::ivec3 p{baseX + dx, sy, baseZ + dz};
                 bool boundary = false;
                 for (int d = 0; d < 6 && !boundary; ++d) {
@@ -137,13 +186,20 @@ void LightEngine::seedColumn(std::int32_t chunkX, std::int32_t chunkZ) {
                 else
                     break;
             }
+            ++m_seed.cursor;
         }
+        m_seed.cursor = 0;
+        m_seed.phase = SeedPhase::Emissive;
     }
 
     // emissive blocks — palette check skips the scan for almost every chunk
-    for (int cy = 0; cy < kWorldChunksY; ++cy) {
+    while (m_seed.cursor < kWorldChunksY) {
+        if (m_seed.cursor > 0 && over())
+            return false;
+        const int cy = m_seed.cursor;
+        ++m_seed.cursor;
         const Chunk* c = stack[cy];
-        if (!c || !c->paletteHas(blocks::Glow))
+        if (!c->paletteHas(blocks::Glow))
             continue;
         for (int y = 0; y < kChunkSize; ++y)
             for (int z = 0; z < kChunkSize; ++z)
@@ -155,6 +211,16 @@ void LightEngine::seedColumn(std::int32_t chunkX, std::int32_t chunkZ) {
                         enqueue(Block, wp);
                     }
                 }
+    }
+
+    m_seed.phase = SeedPhase::Idle;
+    return true;
+}
+
+void LightEngine::seedColumn(std::int32_t chunkX, std::int32_t chunkZ) {
+    beginSeedColumn(chunkX, chunkZ);
+    while (!stepSeedColumn(1e9)) {
+        // budget is effectively infinite: run it out in one go
     }
 }
 
