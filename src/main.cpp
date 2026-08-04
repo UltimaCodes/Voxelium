@@ -937,11 +937,19 @@ int main(int argc, char** argv) {
         return 1;
     }
     const std::filesystem::path shaders = assets / "shaders";
-    const GLuint drawProgram = vx::loadProgram(shaders / "chunk.vert", shaders / "chunk.frag");
-    const GLuint cullProgram = vx::loadComputeProgram(shaders / "cull.comp");
-    const GLuint shadowProgram =
-        vx::loadProgram(shaders / "shadow.vert", shaders / "shadow.frag");
-    const GLuint waterProgram = vx::loadProgram(shaders / "water.vert", shaders / "water.frag");
+    // shared across runs including --smoke: this caches driver output keyed by source and
+    // GL identity, not world state, so there is nothing here for a test run to poison
+    vx::initShaderCache("saves/shadercache");
+    vx::ProgramJob worldJobs[] = {
+        vx::submitProgram(shaders / "chunk.vert", shaders / "chunk.frag"),
+        vx::submitComputeProgram(shaders / "cull.comp"),
+        vx::submitProgram(shaders / "shadow.vert", shaders / "shadow.frag"),
+        vx::submitProgram(shaders / "water.vert", shaders / "water.frag"),
+    };
+    const GLuint drawProgram = vx::resolveProgram(worldJobs[0]);
+    const GLuint cullProgram = vx::resolveProgram(worldJobs[1]);
+    const GLuint shadowProgram = vx::resolveProgram(worldJobs[2]);
+    const GLuint waterProgram = vx::resolveProgram(worldJobs[3]);
     if (!drawProgram || !cullProgram || !shadowProgram || !waterProgram)
         return 1;
 
@@ -960,6 +968,7 @@ int main(int argc, char** argv) {
     vx::Overlay overlay;
     if (!overlay.init(shaders))
         return 1;
+    vx::shutdownShaderCache(); // every program is built by here
     const GLuint blockTex = vx::createBlockTextureArray(assets / "textures");
     RenderContext rc{renderer, shadowMap, postfx, overlay, drawProgram, waterProgram, blockTex};
 

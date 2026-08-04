@@ -2,15 +2,43 @@
 
 #include "core/Log.hpp"
 
+#include <ankerl/unordered_dense.h>
 #include <glad/gl.h>
+#include <GLFW/glfw3.h>
 
+#include <chrono>
+#include <cstdio>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace vx {
 
-static std::string readTextFile(const std::filesystem::path& path) {
+namespace {
+
+std::filesystem::path g_cacheDir;
+bool g_cacheOn = false;
+std::chrono::steady_clock::time_point g_start;
+std::uint64_t g_glIdentity = 0; // vendor/renderer/version, so a driver update misses
+int g_hits = 0;
+int g_misses = 0;
+
+// GL_ARB_parallel_shader_compile. Not in this glad build, so the entry point is fetched
+// by name — it only ever raises a thread-count ceiling, so missing it is harmless.
+using PFNMaxShaderCompilerThreads = void(APIENTRY*)(GLuint);
+constexpr GLenum kMaxShaderCompilerThreadsArb = 0x91B0;
+
+std::uint64_t hashBytes(const void* p, std::size_t n) {
+    return ankerl::unordered_dense::detail::wyhash::hash(p, n);
+}
+
+std::uint64_t mixHash(std::uint64_t a, std::uint64_t b) {
+    return ankerl::unordered_dense::detail::wyhash::mix(a ^ 0x9e3779b97f4a7c15ull, b);
+}
+
+std::string readTextFile(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
         VX_ERROR("failed to open %s", path.string().c_str());
@@ -21,7 +49,76 @@ static std::string readTextFile(const std::filesystem::path& path) {
     return ss.str();
 }
 
-static GLuint compileStage(GLenum stage, const std::string& source, const char* label) {
+std::filesystem::path cachePath(std::uint64_t key) {
+    char name[32];
+    std::snprintf(name, sizeof(name), "%016llx.bin", static_cast<unsigned long long>(key));
+    return g_cacheDir / name;
+}
+
+// Cached binaries are keyed by content, so a stale file is a miss and never a wrong hit.
+// The header is re-checked on read anyway: a hash collision that got past the filename
+// would still have to match both halves here.
+struct CacheHeader {
+    std::uint32_t magic;
+    std::uint32_t version;
+    std::uint64_t key;
+    std::uint64_t glIdentity;
+    std::uint32_t binaryFormat;
+    std::uint32_t size;
+};
+constexpr std::uint32_t kCacheMagic = 0x43535856; // 'VXSC'
+constexpr std::uint32_t kCacheVersion = 1;
+
+bool tryLoadBinary(std::uint64_t key, GLuint program) {
+    if (!g_cacheOn)
+        return false;
+    std::ifstream f(cachePath(key), std::ios::binary);
+    if (!f)
+        return false;
+    CacheHeader h{};
+    f.read(reinterpret_cast<char*>(&h), sizeof(h));
+    if (!f || h.magic != kCacheMagic || h.version != kCacheVersion || h.key != key ||
+        h.glIdentity != g_glIdentity || h.size == 0)
+        return false;
+    std::vector<char> blob(h.size);
+    f.read(blob.data(), std::streamsize(h.size));
+    if (!f)
+        return false;
+
+    glProgramBinary(program, GLenum(h.binaryFormat), blob.data(), GLsizei(h.size));
+    GLint ok = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &ok);
+    // A driver is entitled to reject its own binary (it does after some updates). That is
+    // not an error, it just means compiling from source instead.
+    return ok == GL_TRUE;
+}
+
+void storeBinary(std::uint64_t key, GLuint program) {
+    if (!g_cacheOn)
+        return;
+    GLint len = 0;
+    glGetProgramiv(program, GL_PROGRAM_BINARY_LENGTH, &len);
+    if (len <= 0)
+        return;
+    std::vector<char> blob(static_cast<std::size_t>(len), '\0');
+    GLenum format = 0;
+    GLsizei written = 0;
+    glGetProgramBinary(program, len, &written, &format, blob.data());
+    if (written <= 0)
+        return;
+
+    std::error_code ec;
+    std::filesystem::create_directories(g_cacheDir, ec);
+    std::ofstream f(cachePath(key), std::ios::binary | std::ios::trunc);
+    if (!f)
+        return;
+    const CacheHeader h{kCacheMagic, kCacheVersion, key, g_glIdentity, std::uint32_t(format),
+                        std::uint32_t(written)};
+    f.write(reinterpret_cast<const char*>(&h), sizeof(h));
+    f.write(blob.data(), written);
+}
+
+GLuint compileStage(GLenum stage, const std::string& source, const char* label) {
     GLuint shader = glCreateShader(stage);
     const char* src = source.c_str();
     glShaderSource(shader, 1, &src, nullptr);
@@ -39,66 +136,135 @@ static GLuint compileStage(GLenum stage, const std::string& source, const char* 
     return shader;
 }
 
-unsigned int loadProgram(const std::filesystem::path& vertPath,
+// Shared tail: restore from cache if we can, otherwise compile every stage and link.
+// Never queries link status — that is resolveProgram's job, and querying here is exactly
+// what serializes the driver's compiler threads.
+ProgramJob buildProgram(std::uint64_t key, std::string label,
+                        std::initializer_list<std::pair<GLenum, const std::string*>> stages) {
+    ProgramJob job;
+    job.label = std::move(label);
+    job.program = glCreateProgram();
+
+    if (tryLoadBinary(key, job.program)) {
+        ++g_hits;
+        return job; // key stays 0: nothing to write back
+    }
+    ++g_misses;
+
+    std::vector<GLuint> compiled;
+    for (const auto& [stage, src] : stages) {
+        const GLuint s = compileStage(stage, *src, job.label.c_str());
+        if (!s) {
+            for (const GLuint c : compiled)
+                glDeleteShader(c);
+            glDeleteProgram(job.program);
+            job.program = 0;
+            return job;
+        }
+        compiled.push_back(s);
+        glAttachShader(job.program, s);
+    }
+    if (g_cacheOn)
+        glProgramParameteri(job.program, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
+    glLinkProgram(job.program);
+    for (const GLuint c : compiled)
+        glDeleteShader(c); // flagged for deletion; freed when the program goes
+    job.key = key;
+    return job;
+}
+
+} // namespace
+
+void initShaderCache(const std::filesystem::path& dir) {
+    g_start = std::chrono::steady_clock::now();
+    const auto str = [](GLenum e) {
+        const char* s = reinterpret_cast<const char*>(glGetString(e));
+        return std::string(s ? s : "");
+    };
+    const std::string identity = str(GL_VENDOR) + '|' + str(GL_RENDERER) + '|' + str(GL_VERSION);
+    g_glIdentity = hashBytes(identity.data(), identity.size());
+
+    GLint formats = 0;
+    glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &formats);
+    if (formats <= 0) {
+        VX_INFO("shader cache: driver exposes no program binary formats, compiling from source");
+    } else {
+        g_cacheDir = dir;
+        g_cacheOn = true;
+    }
+
+    if (auto fn = reinterpret_cast<PFNMaxShaderCompilerThreads>(
+            glfwGetProcAddress("glMaxShaderCompilerThreadsARB"))) {
+        fn(0xFFFFFFFFu); // no ceiling: use as many compiler threads as the driver has
+        VX_INFO("shader cache: parallel compile enabled");
+    }
+}
+
+void shutdownShaderCache() {
+    if (g_hits + g_misses > 0) {
+        const double ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - g_start)
+                              .count();
+        VX_INFO("shader cache: %d hit(s), %d compiled, %.0f ms", g_hits, g_misses, ms);
+    }
+    g_cacheOn = false;
+}
+
+ProgramJob submitProgram(const std::filesystem::path& vertPath,
                          const std::filesystem::path& fragPath) {
     const std::string vertSrc = readTextFile(vertPath);
     const std::string fragSrc = readTextFile(fragPath);
     if (vertSrc.empty() || fragSrc.empty())
-        return 0;
+        return {};
 
-    GLuint vert = compileStage(GL_VERTEX_SHADER, vertSrc, vertPath.string().c_str());
-    if (!vert)
-        return 0;
-    GLuint frag = compileStage(GL_FRAGMENT_SHADER, fragSrc, fragPath.string().c_str());
-    if (!frag) {
-        glDeleteShader(vert);
-        return 0;
-    }
+    std::uint64_t key = mixHash(hashBytes(vertSrc.data(), vertSrc.size()),
+                                hashBytes(fragSrc.data(), fragSrc.size()));
+    key = mixHash(key, g_glIdentity);
+    return buildProgram(key, vertPath.filename().string() + " + " + fragPath.filename().string(),
+                        {{GL_VERTEX_SHADER, &vertSrc}, {GL_FRAGMENT_SHADER, &fragSrc}});
+}
 
-    GLuint program = glCreateProgram();
-    glAttachShader(program, vert);
-    glAttachShader(program, frag);
-    glLinkProgram(program);
-    glDeleteShader(vert); // flagged for deletion; freed when the program goes
-    glDeleteShader(frag);
+ProgramJob submitComputeProgram(const std::filesystem::path& compPath) {
+    const std::string src = readTextFile(compPath);
+    if (src.empty())
+        return {};
+
+    // salted differently from the vert+frag key so a compute shader can never collide
+    // with a graphics program that happens to hash the same
+    constexpr std::uint64_t kComputeSalt = 0xc03303f7a19b45d1ull;
+    const std::uint64_t key =
+        mixHash(hashBytes(src.data(), src.size()), mixHash(g_glIdentity, kComputeSalt));
+    return buildProgram(key, compPath.filename().string(), {{GL_COMPUTE_SHADER, &src}});
+}
+
+unsigned int resolveProgram(ProgramJob& job) {
+    if (job.program == 0)
+        return 0;
 
     GLint ok = GL_FALSE;
-    glGetProgramiv(program, GL_LINK_STATUS, &ok);
+    glGetProgramiv(job.program, GL_LINK_STATUS, &ok);
     if (!ok) {
         char infoLog[4096];
-        glGetProgramInfoLog(program, sizeof(infoLog), nullptr, infoLog);
-        VX_ERROR("program link failed (%s + %s):\n%s", vertPath.string().c_str(),
-                 fragPath.string().c_str(), infoLog);
-        glDeleteProgram(program);
+        glGetProgramInfoLog(job.program, sizeof(infoLog), nullptr, infoLog);
+        VX_ERROR("program link failed (%s):\n%s", job.label.c_str(), infoLog);
+        glDeleteProgram(job.program);
+        job.program = 0;
         return 0;
     }
-    return program;
+    if (job.key != 0)
+        storeBinary(job.key, job.program);
+    return job.program;
+}
+
+unsigned int loadProgram(const std::filesystem::path& vertPath,
+                         const std::filesystem::path& fragPath) {
+    ProgramJob job = submitProgram(vertPath, fragPath);
+    return resolveProgram(job);
 }
 
 unsigned int loadComputeProgram(const std::filesystem::path& compPath) {
-    const std::string src = readTextFile(compPath);
-    if (src.empty())
-        return 0;
-
-    GLuint comp = compileStage(GL_COMPUTE_SHADER, src, compPath.string().c_str());
-    if (!comp)
-        return 0;
-
-    GLuint program = glCreateProgram();
-    glAttachShader(program, comp);
-    glLinkProgram(program);
-    glDeleteShader(comp);
-
-    GLint ok = GL_FALSE;
-    glGetProgramiv(program, GL_LINK_STATUS, &ok);
-    if (!ok) {
-        char infoLog[4096];
-        glGetProgramInfoLog(program, sizeof(infoLog), nullptr, infoLog);
-        VX_ERROR("compute link failed (%s):\n%s", compPath.string().c_str(), infoLog);
-        glDeleteProgram(program);
-        return 0;
-    }
-    return program;
+    ProgramJob job = submitComputeProgram(compPath);
+    return resolveProgram(job);
 }
 
 } // namespace vx

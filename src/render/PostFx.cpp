@@ -37,16 +37,29 @@ unsigned int makeFbo(unsigned int color, unsigned int depth = 0) {
 } // namespace
 
 bool PostFx::init(const std::filesystem::path& shaderDir) {
+    // all nine submitted before any of them is waited on, so the driver's compiler threads
+    // have the whole set to chew through at once instead of one program at a time
     const auto fs = shaderDir / "fullscreen.vert";
-    m_progSsao = loadProgram(fs, shaderDir / "ssao.frag");
-    m_progBlur = loadProgram(fs, shaderDir / "blur4.frag");
-    m_progComposite = loadProgram(fs, shaderDir / "composite.frag");
-    m_progBloomDown = loadProgram(fs, shaderDir / "bloom_down.frag");
-    m_progBloomUp = loadProgram(fs, shaderDir / "bloom_up.frag");
-    m_progFinal = loadProgram(fs, shaderDir / "final.frag");
-    m_progTaa = loadProgram(fs, shaderDir / "taa.frag");
-    m_progSsgi = loadProgram(fs, shaderDir / "ssgi.frag");
-    m_progMotion = loadProgram(fs, shaderDir / "motionblur.frag");
+    ProgramJob jobs[] = {
+        submitProgram(fs, shaderDir / "ssao.frag"),
+        submitProgram(fs, shaderDir / "blur4.frag"),
+        submitProgram(fs, shaderDir / "composite.frag"),
+        submitProgram(fs, shaderDir / "bloom_down.frag"),
+        submitProgram(fs, shaderDir / "bloom_up.frag"),
+        submitProgram(fs, shaderDir / "final.frag"),
+        submitProgram(fs, shaderDir / "taa.frag"),
+        submitProgram(fs, shaderDir / "ssgi.frag"),
+        submitProgram(fs, shaderDir / "motionblur.frag"),
+    };
+    m_progSsao = resolveProgram(jobs[0]);
+    m_progBlur = resolveProgram(jobs[1]);
+    m_progComposite = resolveProgram(jobs[2]);
+    m_progBloomDown = resolveProgram(jobs[3]);
+    m_progBloomUp = resolveProgram(jobs[4]);
+    m_progFinal = resolveProgram(jobs[5]);
+    m_progTaa = resolveProgram(jobs[6]);
+    m_progSsgi = resolveProgram(jobs[7]);
+    m_progMotion = resolveProgram(jobs[8]);
     if (!m_progSsao || !m_progBlur || !m_progComposite || !m_progBloomDown ||
         !m_progBloomUp || !m_progFinal || !m_progTaa || !m_progSsgi || !m_progMotion)
         return false;
