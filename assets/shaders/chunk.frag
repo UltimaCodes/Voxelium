@@ -23,7 +23,11 @@ layout(binding = 5) uniform sampler2DArray uShadowDepth; // raw depth, for the P
 
 const vec3 kNormal[6] = vec3[6](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0),
                                 vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1));
-const float kShade[6] = float[6](0.80, 0.80, 1.00, 0.50, 0.65, 0.65);
+// Per-face shading. The spread used to be 0.50..1.00, which reads fine on a wall but turns
+// terraced ground into corduroy: looking down a slope you see a lit top, then the side of
+// the block above, alternating every block, and a 2x brightness step between them makes
+// every stair a hard band. Compressed to 0.66..1.00 — still clearly directional, no stripes.
+const float kShade[6] = float[6](0.86, 0.86, 1.00, 0.66, 0.76, 0.76);
 
 // fixed 16-tap Poisson disk — a soft penumbra without per-pixel rotation, so shadow
 // edges don't crawl/shimmer when the camera moves (rotated PCF looks softer but needs
@@ -88,6 +92,17 @@ float sunShadow(vec3 pos, vec3 N) {
 void main() {
     vec3 N = kNormal[vDir];
     vec3 albedo = texture(uBlockTex, vec3(vUv, float(vLayer))).rgb;
+
+    // Grass side faces (layer 3) get the grass colour blended over their top edge. Without
+    // it a terraced hillside alternates green tops with brown risers every single block,
+    // which from altitude reads as corduroy. vUv.y is world Y on all four side faces and
+    // tiles once per block, so fract() puts the overlay on each block's top edge — and a
+    // greedy quad only ever merges grass sideways, never into a vertical run.
+    if (vLayer == 3u) {
+        const float kOverlay = 0.34; // top third of the block
+        float g = smoothstep(1.0 - kOverlay, 1.0 - kOverlay * 0.45, fract(vUv.y));
+        albedo = mix(albedo, texture(uBlockTex, vec3(vUv, 2.0)).rgb, g);
+    }
     float blockL = vLight.x;
     float skyL = vLight.y;
 
@@ -102,7 +117,9 @@ void main() {
     vec3 ambient = uSkyAmbient * (0.10 + 0.90 * skyL) + vec3(0.035, 0.04, 0.05);
     vec3 torch = vec3(1.35, 0.95, 0.55) * (blockL * blockL * 1.6);
 
-    // per-vertex ambient occlusion darkens concave corners smoothly (occluded -> 55%)
-    float ao = 0.55 + 0.45 * vAO;
+    // per-vertex ambient occlusion darkens concave corners smoothly (occluded -> 68%).
+    // every terrace step is a concave corner, so a deep AO stacks with the face shading
+    // and contributes its own dark line to the banding — kept subtler for that reason
+    float ao = 0.68 + 0.32 * vAO;
     outColor = vec4(albedo * kShade[vDir] * (direct + ambient + torch) * ao, 1.0);
 }

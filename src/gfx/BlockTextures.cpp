@@ -70,12 +70,23 @@ Rgba genGrassTop(int x, int y) {
 }
 
 Rgba genGrassSide(int x, int y) {
-    // dirt with a grassy fringe on top (y is top-down; small y = top)
-    const int fringe = 3 + int(h01(x, 0, 8) * 3.0f);
+    // Dirt with a grassy fringe on top (y is top-down; small y = top). The fringe is
+    // deliberately deep and fades rather than ending on a hard line: seen from above,
+    // terraced ground is a stack of these side faces alternating with grass tops, and a
+    // mostly-brown side made every one-block step read as a stripe. A greener average
+    // closes the gap between the two, and unlike a shader overlay it survives being
+    // minified down to a couple of pixels out at distance.
+    const int fringe = 6 + int(h01(x, 0, 8) * 3.0f);
     if (y < fringe)
         return genGrassTop(x, y);
-    if (y == fringe && h01(x, y, 9) > 0.5f)
-        return genGrassTop(x, y);
+    const int fade = 4;
+    if (y < fringe + fade) {
+        const Rgba g = genGrassTop(x, y);
+        const Rgba d = genDirt(x, y);
+        // dither between the two so the transition breaks up instead of banding
+        const float t = float(y - fringe) / float(fade);
+        return h01(x, y, 9) > t ? g : d;
+    }
     return genDirt(x, y);
 }
 
