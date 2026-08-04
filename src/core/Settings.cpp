@@ -82,6 +82,7 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
         else if (key == "crosshairB") readFloat(val, fx.crosshair[2]);
         else if (key == "crosshairA") readFloat(val, fx.crosshair[3]);
         else if (key == "volume") readFloat(val, fx.volume);
+        else if (key == "renderScale") readFloat(val, fx.renderScale);
         else if (key == "vsync") readBool(val, vsync);
         else if (key == "caveCull") readBool(val, caveCull);
         else if (key == "radius") readInt(val, radius);
@@ -100,6 +101,7 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
     for (float& c : fx.crosshair)
         c = std::clamp(c, 0.0f, 1.0f);
     fx.volume = std::clamp(fx.volume, 0.0f, 1.0f);
+    fx.renderScale = std::clamp(fx.renderScale, 0.5f, 1.0f);
     return applied > 0;
 }
 
@@ -136,6 +138,7 @@ bool save(const std::filesystem::path& file, const FxToggles& fx, bool vsync, bo
         << "crosshairB=" << fx.crosshair[2] << "\n"
         << "crosshairA=" << fx.crosshair[3] << "\n"
         << "volume=" << fx.volume << "\n"
+        << "renderScale=" << fx.renderScale << "\n"
         << "vsync=" << b(vsync) << "\n"
         << "caveCull=" << b(caveCull) << "\n"
         << "radius=" << radius << "\n"

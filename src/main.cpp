@@ -168,20 +168,25 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
                  const glm::vec3& selMinCamRel = glm::vec3(0.0f), bool underwater = false,
                  TaaState* taa = nullptr, float fogEnd = 1e9f) {
     const float aspect = float(fbW) / float(fbH);
+    // internal render size; the final tonemap still runs at fbW x fbH and upscales. the
+    // aspect is unchanged because both axes scale together.
+    const int rw = std::max(1, int(float(fbW) * fx.renderScale + 0.5f));
+    const int rh = std::max(1, int(float(fbH) * fx.renderScale + 0.5f));
     const bool useTaa = fx.taa && taa != nullptr;
     const bool useMotion = fx.motionBlur && taa != nullptr;
     const bool useReproj = useTaa || useMotion; // both need last frame's view-proj + cam pos
     glm::vec2 jitter(0.0f);
     if (useTaa) {
         const int idx = taa->frame % 8 + 1; // halton is 1-indexed
-        jitter = {(halton(idx, 2) - 0.5f) * 2.0f / float(fbW),
-                  (halton(idx, 3) - 0.5f) * 2.0f / float(fbH)};
+        // jitter is a sub-pixel shift of the RENDER target, not the window
+        jitter = {(halton(idx, 2) - 0.5f) * 2.0f / float(rw),
+                  (halton(idx, 3) - 0.5f) * 2.0f / float(rh)};
     }
     const CameraFrame cam = buildCameraFrame(camera, fbW, fbH, jitter);
     const SkyLight sky = computeSky(fx.timeOfDay);
     const glm::vec3 sunL = sky.dir;
 
-    rc.postfx.resize(fbW, fbH);
+    rc.postfx.resize(rw, rh);
 
     if (timers) timers->shadow.begin();
     if (fx.shadows) {
@@ -729,6 +734,7 @@ int runBenchmark(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
 
     VX_INFO("bench: %dx%d, radius %d, shadows+ssao+vol+bloom+ssgi on, taa off", w, h, radius);
     double totShadow = 0, totScene = 0, totPost = 0, totFrame = 0;
+    double totScaledFrame = 0;
 
     for (const View& v : views) {
         camera.position = v.pos;
@@ -780,12 +786,38 @@ int runBenchmark(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                 "%d chunks %lld quads",
                 v.name, mSh, mSc, mPo, mFr, int(di.size()),
                 static_cast<long long>(world.stats().totalQuads));
+
+        // same view again at 70% internal resolution — shows what render scale buys
+        vx::FxToggles scaled = fx;
+        scaled.renderScale = 0.7f;
+        std::vector<double> sh2, sc2, po2, fr2;
+        for (int i = 0; i < kWarm + kFrames; ++i) {
+            const auto t0 = std::chrono::steady_clock::now();
+            rc.renderer.beginFrame();
+            renderFrame(rc, camera, scaled, true, w, h, fbo, 0.6f, &ft);
+            rc.renderer.endFrame();
+            glFinish();
+            const double cpuMs =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+                    .count();
+            if (i >= kWarm) {
+                sh2.push_back(ft.shadow.milliseconds());
+                sc2.push_back(ft.scene.milliseconds());
+                po2.push_back(ft.post.milliseconds());
+                fr2.push_back(cpuMs);
+            }
+        }
+        VX_INFO("   @0.70x  | shadow %5.2f | scene %5.2f | post %5.2f | frame %6.2f ms",
+                median(sh2), median(sc2), median(po2), median(fr2));
+        totScaledFrame += median(fr2);
     }
 
     const double n = double(std::size(views));
     VX_INFO("bench TOTAL   | shadow %5.2f | scene %5.2f | post %5.2f | frame %6.2f ms (mean "
             "of %d views)",
             totShadow / n, totScene / n, totPost / n, totFrame / n, int(n));
+    VX_INFO("bench TOTAL   | render scale 0.70x -> frame %6.2f ms (%.0f%% of native)",
+            totScaledFrame / n, 100.0 * (totScaledFrame / n) / std::max(totFrame / n, 1e-6));
 
     glDeleteFramebuffers(1, &fbo);
     glDeleteRenderbuffers(1, &color);

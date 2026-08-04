@@ -27,6 +27,10 @@ struct FxToggles {
     // same struct so the settings menu and the settings file only have one thing to carry.
     float crosshair[4] = {1.0f, 1.0f, 1.0f, 0.85f};
     float volume = 0.7f; // master audio volume, same reason as crosshair: one struct
+    // Internal render resolution as a fraction of the window. The whole HDR chain (scene,
+    // ssao, ssgi, volumetrics, bloom, taa) runs at this size and only the final tonemap
+    // pass runs at native, so it scales nearly everything that costs fill rate. 1.0 = off.
+    float renderScale = 1.0f;
 };
 
 // The HDR post stack: scene renders into an RGBA16F target with a depth texture, then
