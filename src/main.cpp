@@ -552,6 +552,66 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                 broken ? "PASS" : "FAIL");
         if (!placed || !broken)
             return 1;
+
+        // Batch edits, the path a fluid/falling-block sim will drive. Deliberately spans
+        // a chunk border and repeats a voxel, because those are the two things the batch
+        // path has to get right that the single-edit path never exercises: one remesh per
+        // chunk however many edits hit it, and last-wins ordering within the batch.
+        const int surf = world.generator().surfaceHeight(30, 18) + 6;
+        std::vector<vx::ChunkManager::BlockEdit> batch;
+        for (int i = 0; i < 8; ++i) // 28..35 crosses the x=32 chunk boundary
+            batch.push_back({{28 + i, surf, 18}, vx::blocks::Stone});
+        batch.push_back({{30, surf, 18}, vx::blocks::Glow}); // overwrite one, last wins
+        const int applied = world.setBlocks(rc.renderer, light, batch);
+        bool batchOk = applied == 9;
+        for (int i = 0; i < 8; ++i) {
+            const vx::BlockId want =
+                (28 + i) == 30 ? vx::blocks::Glow : vx::blocks::Stone;
+            batchOk = batchOk && world.blockAtWorld({28 + i, surf, 18}) == want;
+        }
+        // the glow block must have lit its neighbourhood, i.e. light settled after the
+        // whole batch rather than being skipped
+        const bool batchLit = (light.lightAt({30, surf + 1, 18}) & 15) > 0;
+        VX_INFO("edits: batch %d/9 applied, values %s, light %s", applied,
+                batchOk ? "PASS" : "FAIL", batchLit ? "PASS" : "FAIL");
+        if (!batchOk || !batchLit)
+            return 1;
+
+        std::vector<vx::ChunkManager::BlockEdit> undo;
+        for (int i = 0; i < 8; ++i)
+            undo.push_back({{28 + i, surf, 18}, vx::blocks::Air});
+        world.setBlocks(rc.renderer, light, undo);
+
+        // What the batch path is actually for: the same 64 edits one at a time versus in
+        // one call. A sim tick is the second shape, and the first is what it used to cost.
+        // per-column surface, so every one of these is genuinely in air — placing into
+        // blocks that already hold the target id makes both paths no-ops and the
+        // comparison meaningless
+        std::vector<vx::ChunkManager::BlockEdit> wall, clear;
+        for (int i = 0; i < 64; ++i) {
+            const int wx = 40 + (i & 7);
+            const glm::ivec3 wp{wx, world.generator().surfaceHeight(wx, 40) + 2 + (i >> 3),
+                                40};
+            wall.push_back({wp, vx::blocks::Stone});
+            clear.push_back({wp, vx::blocks::Air});
+        }
+        const auto tOne = std::chrono::steady_clock::now();
+        for (const auto& e : wall)
+            world.setBlock(rc.renderer, light, e.pos, e.id);
+        const double oneMs =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tOne)
+                .count();
+        world.setBlocks(rc.renderer, light, clear);
+
+        const auto tBatch = std::chrono::steady_clock::now();
+        world.setBlocks(rc.renderer, light, wall);
+        const double batchMs =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                      tBatch)
+                .count();
+        world.setBlocks(rc.renderer, light, clear);
+        VX_INFO("edits: 64 blocks one-at-a-time %.2f ms vs batched %.2f ms (%.1fx)", oneMs,
+                batchMs, batchMs > 0.0 ? oneMs / batchMs : 0.0);
     }
 
     // persistence: serialize->disk->deserialize round-trip and an edit that survives a

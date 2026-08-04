@@ -773,52 +773,74 @@ void ChunkManager::remeshNow(Renderer& renderer, ChunkPos pos) {
 
 bool ChunkManager::setBlock(Renderer& renderer, LightEngine& light, const glm::ivec3& wp,
                             BlockId id) {
-    if (wp.y < 0 || wp.y >= kWorldHeight)
-        return false;
-    const ChunkPos pos{wp.x >> 5, wp.y >> 5, wp.z >> 5};
-    const auto it = m_chunks.find(pos);
-    if (it == m_chunks.end() || it->second.state == ChunkState::Generating)
-        return false;
-    Chunk* c = it->second.voxels;
-    const int lx = wp.x & 31;
-    const int ly = wp.y & 31;
-    const int lz = wp.z & 31;
-    const BlockId old = c->get(lx, ly, lz);
-    if (old == id)
-        return false;
+    const BlockEdit one{wp, id};
+    return setBlocks(renderer, light, std::span<const BlockEdit>(&one, 1)) > 0;
+}
 
-    // palette writes are not safe under a concurrent worker read; in-flight mesh jobs
-    // finish in well under a millisecond, so a bounded spin here beats copy-on-write
-    while (c->hasJobRefs()) {
-    }
-    c->set(lx, ly, lz, id);
-    it->second.dirty = true; // content changed: this chunk now needs persisting
-
-    light.onBlockChanged(wp, old, id);
-    while (!light.idle())
-        light.process(4.0); // a single edit's BFS is bounded; settle it now
-
-    // remesh this chunk, any border-adjacent neighbor, and whatever light touched
+int ChunkManager::setBlocks(Renderer& renderer, LightEngine& light,
+                            std::span<const BlockEdit> edits) {
     m_remeshScratch.clear();
+    m_remeshSeen.clear();
     const auto want = [&](ChunkPos p) {
-        for (const ChunkPos& q : m_remeshScratch)
-            if (q == p)
-                return;
-        m_remeshScratch.push_back(p);
+        if (m_remeshSeen.insert(p).second)
+            m_remeshScratch.push_back(p);
     };
-    want(pos);
-    if (lx == 0) want({pos.x - 1, pos.y, pos.z});
-    if (lx == 31) want({pos.x + 1, pos.y, pos.z});
-    if (ly == 0) want({pos.x, pos.y - 1, pos.z});
-    if (ly == 31) want({pos.x, pos.y + 1, pos.z});
-    if (lz == 0) want({pos.x, pos.y, pos.z - 1});
-    if (lz == 31) want({pos.x, pos.y, pos.z + 1});
+
+    // Pass 1: apply every voxel write and tell the light engine about each one. Nothing
+    // is meshed yet — a chunk hit by several edits in this batch must not be rebuilt once
+    // per edit, and light must not settle against a half-applied batch.
+    int applied = 0;
+    for (const BlockEdit& e : edits) {
+        if (e.pos.y < 0 || e.pos.y >= kWorldHeight)
+            continue;
+        const ChunkPos pos{e.pos.x >> 5, e.pos.y >> 5, e.pos.z >> 5};
+        const auto it = m_chunks.find(pos);
+        if (it == m_chunks.end() || it->second.state == ChunkState::Generating)
+            continue;
+        Chunk* c = it->second.voxels;
+        const int lx = e.pos.x & 31;
+        const int ly = e.pos.y & 31;
+        const int lz = e.pos.z & 31;
+        const BlockId old = c->get(lx, ly, lz);
+        if (old == e.id)
+            continue;
+
+        // palette writes are not safe under a concurrent worker read; in-flight mesh jobs
+        // finish in well under a millisecond, so a bounded spin here beats copy-on-write
+        while (c->hasJobRefs()) {
+        }
+        c->set(lx, ly, lz, e.id);
+        it->second.dirty = true; // content changed: this chunk now needs persisting
+        light.onBlockChanged(e.pos, old, e.id);
+        ++applied;
+
+        // this chunk, plus any neighbour whose mesh samples across the touched border
+        want(pos);
+        if (lx == 0) want({pos.x - 1, pos.y, pos.z});
+        if (lx == 31) want({pos.x + 1, pos.y, pos.z});
+        if (ly == 0) want({pos.x, pos.y - 1, pos.z});
+        if (ly == 31) want({pos.x, pos.y + 1, pos.z});
+        if (lz == 0) want({pos.x, pos.y, pos.z - 1});
+        if (lz == 31) want({pos.x, pos.y, pos.z + 1});
+    }
+    if (applied == 0) {
+        light.clearTouched();
+        return 0;
+    }
+
+    // Pass 2: settle the whole batch's light in one BFS. Removals and re-propagation from
+    // different edits overlap heavily, so settling once is strictly less work than
+    // settling per edit — and it means no chunk is ever meshed against half-updated light.
+    while (!light.idle())
+        light.process(4.0);
     for (const ChunkPos p : light.touched())
         want(p);
     light.clearTouched();
+
+    // Pass 3: one remesh per affected chunk, however many edits landed in it.
     for (const ChunkPos p : m_remeshScratch)
         remeshNow(renderer, p);
-    return true;
+    return applied;
 }
 
 ChunkManager::Stats ChunkManager::stats() const {

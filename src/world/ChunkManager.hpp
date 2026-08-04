@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
+#include <span>
 #include <vector>
 
 namespace vx {
@@ -72,6 +73,20 @@ public:
     // remeshes the affected chunk (plus border neighbors and anything light touched)
     // on the main thread — edit to visible in the same frame, per the spec target.
     bool setBlock(Renderer& renderer, LightEngine& light, const glm::ivec3& wp, BlockId id);
+
+    // Batch form. A simulation (flowing water, falling sand, break progress) changes many
+    // voxels per tick, and setBlock is built for one: it settles the whole light BFS and
+    // then synchronously remeshes every affected chunk, so N edits cost N settles and
+    // re-remesh the same chunks N times. This applies every edit first, settles light
+    // ONCE, then remeshes each affected chunk once. Returns how many edits took effect.
+    //
+    // Edits are applied in order, so two edits to the same voxel resolve last-wins, and
+    // light sees the finished state of every other voxel rather than an intermediate one.
+    struct BlockEdit {
+        glm::ivec3 pos;
+        BlockId id;
+    };
+    int setBlocks(Renderer& renderer, LightEngine& light, std::span<const BlockEdit> edits);
 
     const TerrainGenerator& generator() const { return m_gen; }
     RegionStore& regions() { return m_regions; }
@@ -206,6 +221,9 @@ private:
     std::vector<ChunkPos> m_genQueue; // farthest-first, pop_back serves nearest
     std::vector<ChunkPos> m_meshScratch;
     std::vector<ChunkPos> m_remeshScratch;
+    // dedup for m_remeshScratch. a linear scan is fine for one edit's handful of chunks
+    // but goes quadratic on a batch, which is exactly the case setBlocks exists for.
+    ankerl::unordered_dense::set<ChunkPos, ChunkPosHash> m_remeshSeen;
     std::vector<ChunkPos> m_evictList; // outside the ring; may wait on in-flight jobs
 
     // a detailed re-gen finished on a worker; carries its own chunk so completion doesn't
