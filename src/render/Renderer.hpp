@@ -89,7 +89,13 @@ private:
     // working set up; this leaves generous headroom over the ~8-9M live at radius 16 so
     // fragmentation during streaming churn doesn't trigger the (stalling) hardReset.
     static constexpr std::uint32_t kArenaQuads = 24u << 20;
-    static constexpr std::uint32_t kMaxChunks = 8192;
+    // Drawable chunks the GPU meta/command/visibility buffers can hold. This is a HARD
+    // cap: anything past it gets no meta entry, so it is not drawn and does not appear in
+    // the shadow cull either — invisible geometry that also casts no shadow. 8192 was
+    // already under water at the DEFAULT radius 16 (~8700 meshed chunks), so several
+    // hundred chunks were being dropped silently. Costs ~32 B/chunk across meta+water
+    // meta+commands+offsets, so 32768 is ~3 MB and covers radius 32 with room to spare.
+    static constexpr std::uint32_t kMaxChunks = 32768;
     static constexpr int kFrameRing = 3;
 
     unsigned int m_drawProgram = 0;
@@ -111,6 +117,7 @@ private:
     std::uint32_t* m_visMap = nullptr;
 
     bool m_reclaimedThisFrame = false; // reclaim blocks on the GPU: once a frame, no more
+    bool m_loggedChunkCap = false;     // kMaxChunks overflow is reported once, not per frame
     std::vector<Range> m_freeList; // sorted by first; adjacent blocks merged
     std::vector<Range> m_pendingFree[kFrameRing];
     void* m_fence[kFrameRing] = {}; // GLsync

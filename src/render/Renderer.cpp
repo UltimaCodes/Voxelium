@@ -218,6 +218,13 @@ void Renderer::beginFrame() {
 }
 
 void Renderer::updateChunkMeta(std::span<const ChunkDrawInfo> chunks) {
+    // never silently again: dropping chunks here makes them invisible AND shadowless
+    if (chunks.size() > kMaxChunks && !m_loggedChunkCap) {
+        m_loggedChunkCap = true;
+        VX_ERROR("renderer: %llu drawable chunks exceeds kMaxChunks %u — the excess is not "
+                 "drawn and casts no shadow; raise kMaxChunks",
+                 static_cast<unsigned long long>(chunks.size()), kMaxChunks);
+    }
     m_chunkCount = std::min(std::uint32_t(chunks.size()), kMaxChunks);
     auto* meta = static_cast<GpuChunkMeta*>(m_metaMap);
     for (std::uint32_t i = 0; i < m_chunkCount; ++i) {
