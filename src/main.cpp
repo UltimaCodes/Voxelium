@@ -669,16 +669,146 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
     return 0;
 }
 
+// Deterministic performance harness (--bench). The whole of Tier 1 is "make it faster",
+// and the older in-smoke benchmark averages 32 frames while the world is still churning,
+// which is why it could report negative deltas. This one settles the world completely
+// first, holds a fixed camera and a fixed time of day, and reports the MEDIAN over many
+// frames — medians shrug off the odd scheduling spike that wrecks a mean.
+//
+// TAA is off on purpose: its history makes consecutive frames cost different amounts,
+// which is exactly the variance we're trying to measure through.
+int runBenchmark(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
+                 vx::LightEngine& light, vx::FlyCamera& camera, vx::Window& window,
+                 int radius) {
+    struct View {
+        const char* name;
+        glm::dvec3 pos;
+        float yaw, pitch;
+    };
+    // one looking across the surface (shadow + terrain heavy), one high looking down
+    // (maximum chunk count in frame), one at ground level in trees (overdraw)
+    const View views[] = {
+        {"surface", {16.0, 110.0, 16.0}, -35.0f, -15.0f},
+        {"aerial", {16.0, 190.0, 16.0}, -35.0f, -55.0f},
+        {"ground", {96.0, 96.0, 96.0}, 25.0f, -2.0f},
+    };
+
+    world.radius = radius;
+    int w = 0;
+    int h = 0;
+    window.framebufferSize(w, h);
+
+    GLuint color = 0;
+    glCreateRenderbuffers(1, &color);
+    glNamedRenderbufferStorage(color, GL_RGB8, w, h);
+    GLuint depth = 0;
+    glCreateRenderbuffers(1, &depth);
+    glNamedRenderbufferStorage(depth, GL_DEPTH_COMPONENT32F, w, h);
+    GLuint fbo = 0;
+    glCreateFramebuffers(1, &fbo);
+    glNamedFramebufferRenderbuffer(fbo, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, color);
+    glNamedFramebufferRenderbuffer(fbo, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+
+    vx::FxToggles fx;
+    fx.taa = false;
+    fx.dayCycle = false;
+    fx.timeOfDay = 0.32f;
+
+    FrameTimers ft;
+    ft.shadow.init();
+    ft.scene.init();
+    ft.post.init();
+
+    const auto median = [](std::vector<double>& v) {
+        if (v.empty())
+            return 0.0;
+        const std::size_t mid = v.size() / 2;
+        std::nth_element(v.begin(), v.begin() + std::ptrdiff_t(mid), v.end());
+        return v[mid];
+    };
+
+    VX_INFO("bench: %dx%d, radius %d, shadows+ssao+vol+bloom+ssgi on, taa off", w, h, radius);
+    double totShadow = 0, totScene = 0, totPost = 0, totFrame = 0;
+
+    for (const View& v : views) {
+        camera.position = v.pos;
+        camera.yawDeg = v.yaw;
+        camera.pitchDeg = v.pitch;
+
+        // settle completely: every claim below is about steady-state cost, not streaming
+        for (int i = 0; i < 40000; ++i) {
+            window.pollEvents();
+            rc.renderer.beginFrame();
+            world.update(jobs, rc.renderer, light, camera.position);
+            rc.renderer.endFrame();
+            if (i > 200 && !world.busy() && light.idle())
+                break;
+        }
+        std::vector<vx::ChunkDrawInfo> di;
+        std::vector<vx::ChunkDrawInfo> wi;
+        world.collectDrawInfo(di, wi);
+        rc.renderer.updateChunkMeta(di);
+        rc.renderer.updateWaterMeta(wi);
+        world.updateVisibilityIfNeeded(rc.renderer, camera.position, true);
+
+        constexpr int kWarm = 20;
+        constexpr int kFrames = 140;
+        std::vector<double> sh, sc, po, fr;
+        sh.reserve(kFrames);
+        for (int i = 0; i < kWarm + kFrames; ++i) {
+            const auto t0 = std::chrono::steady_clock::now();
+            rc.renderer.beginFrame();
+            renderFrame(rc, camera, fx, true, w, h, fbo, 0.6f, &ft);
+            rc.renderer.endFrame();
+            glFinish(); // benchmark only: we want the whole frame's GPU work accounted for
+            const double cpuMs =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+                    .count();
+            if (i >= kWarm) {
+                sh.push_back(ft.shadow.milliseconds());
+                sc.push_back(ft.scene.milliseconds());
+                po.push_back(ft.post.milliseconds());
+                fr.push_back(cpuMs);
+            }
+        }
+        const double mSh = median(sh), mSc = median(sc), mPo = median(po), mFr = median(fr);
+        totShadow += mSh;
+        totScene += mSc;
+        totPost += mPo;
+        totFrame += mFr;
+        VX_INFO("bench %-8s | shadow %5.2f | scene %5.2f | post %5.2f | frame %6.2f ms | "
+                "%d chunks %lld quads",
+                v.name, mSh, mSc, mPo, mFr, int(di.size()),
+                static_cast<long long>(world.stats().totalQuads));
+    }
+
+    const double n = double(std::size(views));
+    VX_INFO("bench TOTAL   | shadow %5.2f | scene %5.2f | post %5.2f | frame %6.2f ms (mean "
+            "of %d views)",
+            totShadow / n, totScene / n, totPost / n, totFrame / n, int(n));
+
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &color);
+    glDeleteRenderbuffers(1, &depth);
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     bool smoke = false;
+    bool bench = false;
+    int benchRadius = 16;
     std::filesystem::path smokeOut = "smoke.bmp";
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--smoke") == 0) {
             smoke = true;
             if (i + 1 < argc)
                 smokeOut = argv[++i];
+        } else if (std::strcmp(argv[i], "--bench") == 0) {
+            bench = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-')
+                benchRadius = std::atoi(argv[++i]);
         }
     }
 
@@ -692,7 +822,7 @@ int main(int argc, char** argv) {
         .width = 1280,
         .height = 720,
         .title = "Voxelium",
-        .visible = !smoke,
+        .visible = !smoke && !bench,
         .debugContext = debugContext,
     });
     if (!window)
@@ -768,6 +898,16 @@ int main(int argc, char** argv) {
     if (!hud.init(window->handle()))
         return 1;
     window->hookScroll();
+
+    if (bench) {
+        const int rcB = runBenchmark(rc, *world, *jobs, *light, camera, *window, benchRadius);
+        hud.shutdown();
+        overlay.shutdown();
+        postfx.shutdown();
+        shadowMap.shutdown();
+        renderer.shutdown();
+        return rcB;
+    }
 
     if (smoke) {
         const int rc2 = runSmokeTest(rc, *world, *jobs, *light, camera, hud, *window, smokeOut);
