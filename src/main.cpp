@@ -735,6 +735,7 @@ int runBenchmark(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
     VX_INFO("bench: %dx%d, radius %d, shadows+ssao+vol+bloom+ssgi on, taa off", w, h, radius);
     double totShadow = 0, totScene = 0, totPost = 0, totFrame = 0;
     double totScaledFrame = 0;
+    double totMoveShadow = 0, totMoveFrame = 0, totMovePeak = 0;
 
     for (const View& v : views) {
         camera.position = v.pos;
@@ -810,12 +811,55 @@ int runBenchmark(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         VX_INFO("   @0.70x  | shadow %5.2f | scene %5.2f | post %5.2f | frame %6.2f ms",
                 median(sh2), median(sc2), median(po2), median(fr2));
         totScaledFrame += median(fr2);
+
+        // Same view with the camera walking forward at ~8 units/s. A stationary camera is
+        // the best possible case for cascade caching, so measuring only that would be
+        // dishonest — this is what the cost actually looks like while you play.
+        const glm::dvec3 startPos = camera.position;
+        // fast flight, not a stroll: cascade 2 only re-anchors after ~68 units of travel,
+        // so a slow walk over 140 frames would never trigger one and the test would prove
+        // nothing.
+        const glm::dvec3 step = glm::dvec3(camera.forward()) * (40.0 / 60.0);
+        std::vector<double> sh3, fr3;
+        for (int i = 0; i < kWarm + kFrames; ++i) {
+            camera.position = startPos + step * double(i);
+            const auto t0 = std::chrono::steady_clock::now();
+            rc.renderer.beginFrame();
+            renderFrame(rc, camera, fx, true, w, h, fbo, 0.6f, &ft);
+            rc.renderer.endFrame();
+            glFinish();
+            const double cpuMs =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+                    .count();
+            if (i >= kWarm) {
+                sh3.push_back(ft.shadow.milliseconds());
+                fr3.push_back(cpuMs);
+            }
+        }
+        camera.position = startPos;
+        // MEAN and MAX here, not median: caching trades a steady per-frame cost for a
+        // periodic redraw, and a median would simply hide the spike that costs.
+        double meanSh = 0.0, maxSh = 0.0, maxFr = 0.0;
+        for (double v : sh3) {
+            meanSh += v;
+            maxSh = std::max(maxSh, v);
+        }
+        meanSh /= double(sh3.size());
+        for (double v : fr3)
+            maxFr = std::max(maxFr, v);
+        VX_INFO("   moving   | shadow mean %5.2f peak %5.2f | frame med %6.2f peak %6.2f ms",
+                meanSh, maxSh, median(fr3), maxFr);
+        totMoveShadow += meanSh;
+        totMoveFrame += median(fr3);
+        totMovePeak = std::max(totMovePeak, maxFr);
     }
 
     const double n = double(std::size(views));
     VX_INFO("bench TOTAL   | shadow %5.2f | scene %5.2f | post %5.2f | frame %6.2f ms (mean "
             "of %d views)",
             totShadow / n, totScene / n, totPost / n, totFrame / n, int(n));
+    VX_INFO("bench MOVING  | shadow mean %5.2f | frame med %6.2f | worst frame %6.2f ms",
+            totMoveShadow / n, totMoveFrame / n, totMovePeak);
     VX_INFO("bench TOTAL   | render scale 0.70x -> frame %6.2f ms (%.0f%% of native)",
             totScaledFrame / n, 100.0 * (totScaledFrame / n) / std::max(totFrame / n, 1e-6));
 
@@ -1131,6 +1175,8 @@ int main(int argc, char** argv) {
             world->collectDrawInfo(drawInfo, waterInfo);
             renderer.updateChunkMeta(drawInfo);
             renderer.updateWaterMeta(waterInfo);
+            // geometry changed, so cached cascades are holding stale casters
+            shadowMap.invalidate();
         }
         world->updateVisibilityIfNeeded(renderer, camera.position, caveCull);
         everBusy = everBusy || world->busy();

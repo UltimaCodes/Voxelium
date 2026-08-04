@@ -32,6 +32,10 @@ public:
     // chunks aren't drawn into the tight near cascades.
     void render(Renderer& renderer, const glm::ivec3& cameraChunk, const glm::vec3& cameraFrac);
 
+    // The world changed (block edit, chunks meshed/unloaded): cached cascades hold stale
+    // geometry, so force every one to redraw next frame.
+    void invalidate() { m_forceAll = true; }
+
     const glm::mat4* cascadeVp() const { return m_vp; }
     glm::vec3 cascadeTexelWorld() const { return m_texelWorld; }
     unsigned int texture() const { return m_depthArray; }
@@ -46,6 +50,25 @@ private:
     unsigned int m_fbo = 0;
     glm::mat4 m_vp[kCascades] = {};
     glm::vec3 m_texelWorld{0.0f};
+
+    // --- cascade caching -------------------------------------------------------------
+    // A cascade's depth map only depends on its WORLD-space light frustum. Anchoring that
+    // frustum to a fixed world point means it stays valid while the camera moves, so the
+    // cascade doesn't have to be redrawn every frame — and cascades 1+2 are 96% of all
+    // shadow draws. m_vp is still rebuilt every frame from (anchor - cameraPos) so the
+    // matrix handed to the lighting shader is always correct camera-relative space; only
+    // the *redraw* is skipped. The anchor is kept in doubles so precision doesn't degrade
+    // far from the origin, same reason the rest of the renderer is camera-relative.
+    //
+    // Cascades are inflated by kSlack so the sphere they must cover is still inside the
+    // frustum after the camera has drifted by that much — the cost is slightly coarser
+    // texels, the payoff is redrawing a few times a second instead of 60.
+    static constexpr float kSlack = 0.18f;
+    glm::dvec3 m_anchorWorld[kCascades] = {};
+    glm::vec3 m_anchorSun[kCascades] = {};
+    float m_radius[kCascades] = {};
+    bool m_dirty[kCascades] = {true, true, true};
+    bool m_forceAll = true;
 };
 
 } // namespace vx

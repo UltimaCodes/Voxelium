@@ -65,30 +65,49 @@ void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& forward,
     for (int c = 0; c < kCascades; ++c) {
         const float nearD = c == 0 ? 0.1f : kSplits[c - 1];
         const float farD = kSplits[c];
-        // bounding sphere of the frustum slice: fixed radius = stable shadows
+        // bounding sphere of the frustum slice, inflated by the drift we allow before
+        // re-anchoring, so a cached cascade still covers what it needs to
         const float tc = (nearD + farD) * 0.5f;
-        const float radius = glm::length(
-            glm::vec3(tanW * farD, tanH * farD, farD - tc));
+        const float radius =
+            glm::length(glm::vec3(tanW * farD, tanH * farD, farD - tc)) * (1.0f + kSlack);
         const float texel = radius * 2.0f / float(kResolution);
         m_texelWorld[c] = texel;
 
-        // sphere center in absolute world coords, snapped to the texel grid in light
-        // space — double precision so the snap is exact anywhere in the world
-        const glm::dvec3 centerWorld = cameraPos + glm::dvec3(forward) * double(tc);
-        double cx = glm::dot(lx, centerWorld);
-        double cy = glm::dot(ly, centerWorld);
-        const double cz = glm::dot(lz, centerWorld);
-        cx = std::floor(cx / texel) * texel;
-        cy = std::floor(cy / texel) * texel;
-        const glm::dvec3 snappedWorld = lx * cx + ly * cy + lz * cz;
-        const glm::vec3 centerRel(snappedWorld - cameraPos); // back to camera-relative
+        const glm::dvec3 idealWorld = cameraPos + glm::dvec3(forward) * double(tc);
 
-        const glm::mat4 view = glm::lookAt(centerRel - sunL * (radius + 120.0f), centerRel,
-                                           glm::vec3(ly));
-        const glm::mat4 proj =
-            glm::ortho(-radius, radius, -radius, radius, 0.1f, 2.0f * radius + 160.0f);
+        // Cascade 0 always re-anchors: it's only ~130 chunks and contact shadows are the
+        // ones you'd notice lagging. The far two re-anchor only once the ideal centre has
+        // drifted past the slack, or the sun has actually moved.
+        const double drift = glm::length(idealWorld - m_anchorWorld[c]);
+        const bool sunMoved = glm::dot(m_anchorSun[c], sunL) < 0.99995f;
+        const bool reanchor = m_forceAll || c == 0 || m_radius[c] == 0.0f ||
+                              drift > double(radius * kSlack) || sunMoved;
+
+        if (reanchor) {
+            // snap the centre to the texel grid in light space — double precision so the
+            // snap is exact anywhere in the world and shadows never swim
+            double cx = glm::dot(lx, idealWorld);
+            double cy = glm::dot(ly, idealWorld);
+            const double cz = glm::dot(lz, idealWorld);
+            cx = std::floor(cx / texel) * texel;
+            cy = std::floor(cy / texel) * texel;
+            m_anchorWorld[c] = lx * cx + ly * cy + lz * cz;
+            m_anchorSun[c] = sunL;
+            m_radius[c] = radius;
+            m_dirty[c] = true;
+        }
+
+        // rebuilt every frame regardless: the depth map is anchored in WORLD space, but
+        // the matrix the lighting shader samples with has to be camera-relative to THIS
+        // frame's camera
+        const float r = m_radius[c];
+        const glm::vec3 centerRel(m_anchorWorld[c] - cameraPos);
+        const glm::mat4 view = glm::lookAt(centerRel - m_anchorSun[c] * (r + 120.0f),
+                                           centerRel, glm::vec3(ly));
+        const glm::mat4 proj = glm::ortho(-r, r, -r, r, 0.1f, 2.0f * r + 160.0f);
         m_vp[c] = proj * view;
     }
+    m_forceAll = false;
 }
 
 void ShadowMap::render(Renderer& renderer, const glm::ivec3& cameraChunk,
@@ -101,6 +120,9 @@ void ShadowMap::render(Renderer& renderer, const glm::ivec3& cameraChunk,
     glCullFace(GL_FRONT); // closed voxel shells: front-culling trades acne for nothing
 
     for (int c = 0; c < kCascades; ++c) {
+        if (!m_dirty[c])
+            continue; // still anchored where it was drawn: the depth map is still valid
+        m_dirty[c] = false;
         // cull to this cascade's ortho box: the near cascade draws a handful of chunks
         // instead of the whole world. cave culling stays off here — a chunk hidden from
         // the camera can still cast a shadow the camera sees
