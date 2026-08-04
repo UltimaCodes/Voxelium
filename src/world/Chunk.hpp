@@ -91,19 +91,28 @@ public:
     // read while the main-thread BFS writes — relaxed loads/stores are plain MOVs on
     // x86, so this costs nothing and is formally race-free. A stale read only means the
     // chunk gets remeshed again when the light engine marks it touched.
+    //
+    // The array is allocated lazily (32 KB a chunk is far too much to hand every chunk
+    // up front), so the POINTER is raced on too, not just the bytes: a worker can be in
+    // lightAt() while the main thread's first setLight() allocates. It is published with
+    // release / read with acquire so a worker that sees the pointer also sees the filled
+    // array — otherwise it could read uninitialized heap. Same reason m_uniformLight is
+    // atomic: it is the value lightAt() returns before the array exists.
     std::uint8_t lightAt(int x, int y, int z) const {
-        return m_light ? m_light[std::size_t(index(x, y, z))].load(std::memory_order_relaxed)
-                       : m_uniformLight;
+        const auto* l = m_light.load(std::memory_order_acquire);
+        return l ? l[std::size_t(index(x, y, z))].load(std::memory_order_relaxed)
+                 : m_uniformLight.load(std::memory_order_relaxed);
     }
     void setLight(int x, int y, int z, std::uint8_t v) {
         ensureLightArray();
-        m_light[std::size_t(index(x, y, z))].store(v, std::memory_order_relaxed);
+        m_light.load(std::memory_order_relaxed)[std::size_t(index(x, y, z))].store(
+            v, std::memory_order_relaxed);
     }
     void fillLight(std::uint8_t v) {
-        m_uniformLight = v;
-        if (m_light)
+        m_uniformLight.store(v, std::memory_order_relaxed);
+        if (auto* l = m_light.load(std::memory_order_acquire))
             for (int i = 0; i < kChunkSize3; ++i)
-                m_light[std::size_t(i)].store(v, std::memory_order_relaxed);
+                l[std::size_t(i)].store(v, std::memory_order_relaxed);
     }
 
     bool paletteHas(BlockId id) const {
@@ -134,20 +143,27 @@ private:
     std::uint32_t paletteIndexOf(BlockId id); // adds the id, growing bits if needed
     void repackTo(int newBits);
 
+    // Only ever called from the main thread (setLight); readers may be workers, so the
+    // array is filled BEFORE the pointer is published.
     void ensureLightArray() {
-        if (m_light)
+        if (m_light.load(std::memory_order_relaxed))
             return;
-        m_light = std::make_unique<std::atomic<std::uint8_t>[]>(kChunkSize3);
+        auto arr = std::make_unique<std::atomic<std::uint8_t>[]>(kChunkSize3);
+        const std::uint8_t fill = m_uniformLight.load(std::memory_order_relaxed);
         for (int i = 0; i < kChunkSize3; ++i)
-            m_light[std::size_t(i)].store(m_uniformLight, std::memory_order_relaxed);
+            arr[std::size_t(i)].store(fill, std::memory_order_relaxed);
+        m_lightOwn = std::move(arr);
+        m_light.store(m_lightOwn.get(), std::memory_order_release);
     }
 
     std::vector<BlockId> m_palette; // [0] doubles as the uniform id when bits == 0
     std::vector<std::uint64_t> m_indices;
     int m_bits = 0;
-    // light array survives pool reuse (fillLight resets values, never frees)
-    std::unique_ptr<std::atomic<std::uint8_t>[]> m_light;
-    std::uint8_t m_uniformLight = 0;
+    // light array survives pool reuse (fillLight resets values, never frees). m_lightOwn
+    // holds it; m_light is the published view workers read.
+    std::unique_ptr<std::atomic<std::uint8_t>[]> m_lightOwn;
+    std::atomic<std::atomic<std::uint8_t>*> m_light{nullptr};
+    std::atomic<std::uint8_t> m_uniformLight{0};
     mutable std::atomic<std::uint32_t> m_jobRefs{0};
 };
 

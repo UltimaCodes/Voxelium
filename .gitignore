@@ -1,6 +1,7 @@
 build/
 out/
 saves/
+vxsave_smoke/
 .vs/
 .cache/
 .idea/
