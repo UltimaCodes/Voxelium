@@ -61,14 +61,19 @@ void Overlay::drawSelection(const glm::mat4& viewProj, const glm::vec3& camRelMi
     glDepthMask(GL_TRUE);
 }
 
-void Overlay::drawCrosshair(int fbWidth, int fbHeight) const {
+void Overlay::drawCrosshair(int fbWidth, int fbHeight, const glm::vec4& color) const {
     const glm::vec2 invRes(1.0f / float(fbWidth), 1.0f / float(fbHeight));
     glProgramUniform2fv(m_crossProg, 0, 1, &invRes.x);
+    glProgramUniform4fv(m_crossProg, 1, 1, &color.x);
     glUseProgram(m_crossProg);
     glBindVertexArray(m_vao);
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
-    glBlendFunc(GL_ONE_MINUS_DST_COLOR, GL_ZERO); // invert the background
+    // Straight alpha, not the old GL_ONE_MINUS_DST_COLOR invert. Destination-colour
+    // blending against an sRGB target makes NVIDIA patch and recompile the fragment
+    // shader on first use (the "program is being recompiled based on GL state" warning),
+    // and a fixed colour is what the user actually wants to be able to pick.
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDrawArrays(GL_TRIANGLES, 0, 12);
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);

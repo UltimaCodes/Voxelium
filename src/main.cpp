@@ -278,7 +278,8 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     // gameplay HUD on top of the final tonemapped image
     glBindFramebuffer(GL_FRAMEBUFFER, targetFbo);
     glViewport(0, 0, fbW, fbH);
-    rc.overlay.drawCrosshair(fbW, fbH);
+    rc.overlay.drawCrosshair(fbW, fbH, glm::vec4(fx.crosshair[0], fx.crosshair[1],
+                                                 fx.crosshair[2], fx.crosshair[3]));
 }
 
 int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
@@ -543,6 +544,8 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
             wrote.motionBlur = true;
             wrote.timeOfDay = 0.77f;
             wrote.exposure = 1.85f;
+            wrote.crosshair[0] = 0.20f;
+            wrote.crosshair[3] = 0.60f;
             vx::Settings::save(sf, wrote, true, false, 24, 95.0f);
 
             vx::FxToggles read; // all defaults; load must overwrite each one
@@ -554,7 +557,9 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
             const bool ok = got && !read.shadows && !read.ssgi && read.taa &&
                             read.motionBlur && std::abs(read.timeOfDay - 0.77f) < 0.001f &&
                             std::abs(read.exposure - 1.85f) < 0.001f && vsyncR &&
-                            !caveCullR && radiusR == 24 && std::abs(fovR - 95.0f) < 0.001f;
+                            !caveCullR && radiusR == 24 && std::abs(fovR - 95.0f) < 0.001f &&
+                            std::abs(read.crosshair[0] - 0.20f) < 0.001f &&
+                            std::abs(read.crosshair[3] - 0.60f) < 0.001f;
             std::error_code sec;
             std::filesystem::remove(sf, sec);
             VX_INFO("persistence: settings round-trip %s", ok ? "PASS" : "FAIL");

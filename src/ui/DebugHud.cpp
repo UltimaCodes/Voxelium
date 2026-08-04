@@ -150,6 +150,9 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     ImGui::SliderFloat("fov", &fovDeg, 50.0f, 110.0f, "%.0f deg");
     ImGui::SetNextItemWidth(-110.0f);
     ImGui::SliderFloat("exposure", &fx.exposure, 0.4f, 2.5f, "%.2f");
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::ColorEdit4("crosshair", fx.crosshair,
+                      ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_AlphaPreviewHalf);
 
     ImGui::SeparatorText("sky & time");
     ImGui::Checkbox("day/night cycle", &fx.dayCycle);

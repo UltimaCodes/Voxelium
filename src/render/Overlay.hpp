@@ -19,9 +19,9 @@ public:
     // so it occludes correctly. Call inside the HDR scene pass.
     void drawSelection(const glm::mat4& viewProj, const glm::vec3& camRelMin) const;
 
-    // Inverted screen-space crosshair at the centre of the current framebuffer. Call
-    // after post, on the final image.
-    void drawCrosshair(int fbWidth, int fbHeight) const;
+    // Screen-space crosshair at the centre of the current framebuffer, in `color`
+    // (straight alpha). Call after post, on the final image.
+    void drawCrosshair(int fbWidth, int fbHeight, const glm::vec4& color) const;
 
     // Minecraft-style hotbar along the bottom: a panel, block-texture icons for each of
     // `blockIds`, and a frame on the selected slot. Samples `blockTexArray` for icons.

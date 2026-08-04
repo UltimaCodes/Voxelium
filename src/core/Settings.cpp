@@ -77,6 +77,10 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
         else if (key == "dayLengthSec") readFloat(val, fx.dayLengthSec);
         else if (key == "exposure") readFloat(val, fx.exposure);
         else if (key == "bloomStrength") readFloat(val, fx.bloomStrength);
+        else if (key == "crosshairR") readFloat(val, fx.crosshair[0]);
+        else if (key == "crosshairG") readFloat(val, fx.crosshair[1]);
+        else if (key == "crosshairB") readFloat(val, fx.crosshair[2]);
+        else if (key == "crosshairA") readFloat(val, fx.crosshair[3]);
         else if (key == "vsync") readBool(val, vsync);
         else if (key == "caveCull") readBool(val, caveCull);
         else if (key == "radius") readInt(val, radius);
@@ -92,6 +96,8 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
     fx.dayLengthSec = std::clamp(fx.dayLengthSec, 20.0f, 1200.0f);
     fx.exposure = std::clamp(fx.exposure, 0.4f, 2.5f);
     fx.bloomStrength = std::clamp(fx.bloomStrength, 0.0f, 1.5f);
+    for (float& c : fx.crosshair)
+        c = std::clamp(c, 0.0f, 1.0f);
     return applied > 0;
 }
 
@@ -123,6 +129,10 @@ bool save(const std::filesystem::path& file, const FxToggles& fx, bool vsync, bo
         << "dayLengthSec=" << fx.dayLengthSec << "\n"
         << "exposure=" << fx.exposure << "\n"
         << "bloomStrength=" << fx.bloomStrength << "\n"
+        << "crosshairR=" << fx.crosshair[0] << "\n"
+        << "crosshairG=" << fx.crosshair[1] << "\n"
+        << "crosshairB=" << fx.crosshair[2] << "\n"
+        << "crosshairA=" << fx.crosshair[3] << "\n"
         << "vsync=" << b(vsync) << "\n"
         << "caveCull=" << b(caveCull) << "\n"
         << "radius=" << radius << "\n"
