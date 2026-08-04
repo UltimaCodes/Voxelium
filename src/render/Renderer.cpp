@@ -118,18 +118,25 @@ bool Renderer::reclaimPendingFrees() {
     for (int i = 0; i < kFrameRing; ++i) {
         if (m_pendingFree[i].empty())
             continue;
-        if (m_fence[i]) {
-            // Short cap per slot. Waiting is only worth it while it stays cheaper than
-            // the hard reset it's avoiding — an unbounded wait just trades one freeze for
-            // another (a 1s cap measured as a 170 ms stall in a bad frame).
-            const GLenum state =
-                glClientWaitSync(static_cast<GLsync>(m_fence[i]), GL_SYNC_FLUSH_COMMANDS_BIT,
-                                 GLuint64(20'000'000)); // 20 ms
-            if (state != GL_ALREADY_SIGNALED && state != GL_CONDITION_SATISFIED)
-                continue; // still in use: leave it fenced, the caller can hard reset
-            glDeleteSync(static_cast<GLsync>(m_fence[i]));
-            m_fence[i] = nullptr;
-        }
+        // NO fence means we cannot prove the GPU is done with these ranges, so they are
+        // untouchable — never "no fence, therefore free". Two slots look like that: the
+        // current one (beginFrame dropped its fence and this frame's frees are still
+        // piling into it while the GPU renders off them) and any slot whose fence came
+        // back unsignaled (beginFrame drops the fence but deliberately keeps the frees).
+        // Recycling either hands live memory back to the allocator, the next upload
+        // memcpys over quads the GPU is still reading, and the world renders as garbage.
+        if (!m_fence[i])
+            continue;
+        // Short cap per slot. Waiting is only worth it while it stays cheaper than the
+        // hard reset it's avoiding — an unbounded wait just trades one freeze for another
+        // (a 1s cap measured as a 170 ms stall in a bad frame).
+        const GLenum state =
+            glClientWaitSync(static_cast<GLsync>(m_fence[i]), GL_SYNC_FLUSH_COMMANDS_BIT,
+                             GLuint64(20'000'000)); // 20 ms
+        if (state != GL_ALREADY_SIGNALED && state != GL_CONDITION_SATISFIED)
+            continue; // still in use: leave it fenced, the caller can hard reset
+        glDeleteSync(static_cast<GLsync>(m_fence[i]));
+        m_fence[i] = nullptr;
         for (const Range r : m_pendingFree[i]) {
             recycle(r);
             any = true;
