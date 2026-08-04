@@ -28,9 +28,14 @@ struct GreedyStats {
 // Two output layers: opaque and transparent water (see the .cpp for the culling rules).
 class GreedyMesher {
 public:
+    // coarseNeighbors: bit per face dir, set when that neighbour is meshed at a COARSER
+    // LOD than this chunk. Those borders don't get culled against the neighbour's real
+    // voxels (it isn't drawing them — it's drawing a downsampled surface), so the border
+    // faces are emitted as a skirt that plugs the step between the two resolutions.
     GreedyStats mesh(const Chunk& chunk, const Chunk* const* neighbors,
                      std::vector<std::uint64_t>& outOpaque,
-                     std::vector<std::uint64_t>& outWater, int lod = 0);
+                     std::vector<std::uint64_t>& outWater, int lod = 0,
+                     std::uint8_t coarseNeighbors = 0);
 
 private:
     struct Plane {
@@ -68,6 +73,7 @@ private:
     std::vector<Plane> m_planes;
     bool m_hasWater = false;
     bool m_smoothAO = false; // LOD 0 only: distant chunks don't bother (pad is air anyway)
+    std::uint8_t m_coarseNeighbors = 0; // faces meshed as a cross-LOD skirt
 };
 
 } // namespace vx

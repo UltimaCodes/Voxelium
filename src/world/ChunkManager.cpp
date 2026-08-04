@@ -55,6 +55,38 @@ int lodForDist2(std::int64_t d2) {
 // it detailed. caves cost ~4x gen/mesh/quads, so skipping them far out is the big win.
 constexpr int kCoarseLod = 2;
 
+constexpr int kFaceOffsets[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                    {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+
+// Faces whose neighbour meshes coarser than we do. The mesher skirts those borders
+// instead of culling against voxels the neighbour isn't actually drawing — see
+// GreedyMesher::mesh. LOD comes from horizontal distance alone, so the two vertical
+// faces always match and never end up in the mask.
+//
+// The neighbour is judged from a distance nudged OUTWARD by kSkirtMargin, which makes the
+// answer deliberately pessimistic: we start skirting a border a couple of chunks before
+// that neighbour actually coarsens. That is what lets the mask go stale harmlessly. A
+// mesh is built against one camera centre and keeps that mask until the chunk re-meshes
+// for its own reasons, so an exact mask would need every LOD change to invalidate its
+// finer neighbours — and after a teleport (where half the world re-LODs) that cost 4.5x
+// the frames to re-stream. Over-skirting only leaves a hidden wall behind the neighbour's
+// geometry; under-skirting leaves a hole, so this errs to the side that can't be seen.
+// The margin is safe because neighbours are one chunk apart: by the time the camera has
+// receded far enough for a neighbour to coarsen, this chunk has crossed its own band too.
+constexpr double kSkirtMargin = 2.0;
+
+std::uint8_t coarseNeighborMask(ChunkPos pos, int lod, ChunkPos center) {
+    std::uint8_t mask = 0;
+    for (int f = 0; f < 6; ++f) {
+        const ChunkPos n{pos.x + kFaceOffsets[f][0], pos.y + kFaceOffsets[f][1],
+                         pos.z + kFaceOffsets[f][2]};
+        const double d = std::sqrt(double(horizontalDist2(n, center))) + kSkirtMargin;
+        if (lodForDist2(std::int64_t(d * d)) > lod)
+            mask |= std::uint8_t(1u << f);
+    }
+    return mask;
+}
+
 } // namespace
 
 const Chunk* ChunkManager::voxelsAt(ChunkPos pos) const {
@@ -297,9 +329,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             continue;
         }
         bool ready = true;
-        static constexpr int kOffsets[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
-                                               {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
-        for (const auto& o : kOffsets) {
+        for (const auto& o : kFaceOffsets) {
             const ChunkPos n{item.first.x + o[0], item.first.y + o[1], item.first.z + o[2]};
             if (n.y < 0 || n.y >= kWorldChunksY)
                 continue; // outside the world counts as present (air)
@@ -331,6 +361,8 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         // (a re-LOD keeps state Meshed so the old mesh stays drawn meanwhile)
         e.meshingLod = std::int8_t(lod);
 
+        const std::uint8_t skirt = coarseNeighborMask(pos, lod, center);
+
         std::array<const Chunk*, 6> nb{
             voxelsAt({pos.x + 1, pos.y, pos.z}), voxelsAt({pos.x - 1, pos.y, pos.z}),
             voxelsAt({pos.x, pos.y + 1, pos.z}), voxelsAt({pos.x, pos.y - 1, pos.z}),
@@ -344,14 +376,14 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         ++m_jobsInFlight;
         --m_pendingMesh;
         Chunk* voxels = e.voxels;
-        jobs.submit([this, voxels, nb, pos, lod] {
+        jobs.submit([this, voxels, nb, pos, lod, skirt] {
             // one mesher + scratch per worker thread, reused across jobs
             thread_local GreedyMesher mesher;
             thread_local std::vector<std::uint64_t> quadScratch;
             thread_local std::vector<std::uint64_t> waterScratch;
             const auto t0 = Clock::now();
             const GreedyStats stats =
-                mesher.mesh(*voxels, nb.data(), quadScratch, waterScratch, lod);
+                mesher.mesh(*voxels, nb.data(), quadScratch, waterScratch, lod, skirt);
             const std::uint16_t connectivity = computeConnectivity(*voxels);
             m_meshNanos.fetch_add(nsSince(t0), std::memory_order_relaxed);
             m_meshCount.fetch_add(1, std::memory_order_relaxed);
@@ -452,9 +484,10 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         // accept a first mesh (Meshing) or a re-LOD whose result still matches what we
         // asked for (Meshed, meshingLod == r.lod); a stale re-LOD result is dropped and
         // the next scan re-submits at the current desired LOD
+        const bool firstMesh = it != m_chunks.end() && it->second.state == ChunkState::Meshing;
         const bool accept =
             it != m_chunks.end() &&
-            (it->second.state == ChunkState::Meshing ||
+            (firstMesh ||
              (it->second.state == ChunkState::Meshed && it->second.meshingLod == r.lod));
         if (it != m_chunks.end())
             it->second.meshingLod = -1;
@@ -631,8 +664,10 @@ void ChunkManager::remeshNow(Renderer& renderer, ChunkPos pos) {
         voxelsAt({pos.x, pos.y + 1, pos.z}), voxelsAt({pos.x, pos.y - 1, pos.z}),
         voxelsAt({pos.x, pos.y, pos.z + 1}), voxelsAt({pos.x, pos.y, pos.z - 1}),
     };
-    const GreedyStats stats =
-        m_mesher.mesh(*e.voxels, neighbors, m_quadScratch, m_waterScratch);
+    // edits are always on full-detail chunks, but one can still border a coarser ring
+    const GreedyStats stats = m_mesher.mesh(*e.voxels, neighbors, m_quadScratch,
+                                            m_waterScratch, 0,
+                                            coarseNeighborMask(pos, 0, m_center));
     e.connectivity = computeConnectivity(*e.voxels);
 
     if (e.range.count != 0) {

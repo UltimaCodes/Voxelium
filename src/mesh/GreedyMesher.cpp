@@ -25,6 +25,14 @@ constexpr int kCornerCY[6][4] = {{0, 1, 1, 0}, {0, 1, 1, 0}, {0, 1, 1, 0},
 } // namespace
 
 std::uint32_t GreedyMesher::faceAO(int ax, int ay, int az, int dir) const {
+    // skirt faces sit against a coarser neighbour — mostly buried in it, and where they
+    // do show they're plugging a hole. shading them per-corner would only cost quads
+    // (an occluded corner blocks merging), so report them fully lit and let them merge.
+    if ((m_coarseNeighbors >> dir) & 1) {
+        const int outer = (dir >> 1) == 0 ? ax : ((dir >> 1) == 1 ? ay : az);
+        if (outer == ((dir & 1) ? -1 : kChunkSize))
+            return 0xFFu;
+    }
     const auto opaque = [&](int gx, int gy, int gz) {
         return blocks::opaque(m_grid[gi(gx, gy, gz)]) ? 1 : 0;
     };
@@ -85,6 +93,10 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
                 }
         // copy the six neighbour border planes into the pad so seam faces cull correctly
         const auto pad = [&](int face, int px, int py, int pz, int nx, int ny, int nz) {
+            // coarser neighbour: leave the pad air. culling against voxels it isn't
+            // actually drawing is what opens the cross-LOD cracks.
+            if ((m_coarseNeighbors >> face) & 1)
+                return;
             const Chunk* n = neighbors ? neighbors[face] : nullptr;
             if (!n)
                 return;
@@ -278,13 +290,16 @@ void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, Greedy
 
 GreedyStats GreedyMesher::mesh(const Chunk& chunk, const Chunk* const* neighbors,
                                std::vector<std::uint64_t>& outOpaque,
-                               std::vector<std::uint64_t>& outWater, int lod) {
+                               std::vector<std::uint64_t>& outWater, int lod,
+                               std::uint8_t coarseNeighbors) {
     outOpaque.clear();
     outWater.clear();
     GreedyStats stats;
     if (chunk.uniform() && chunk.uniformId() == blocks::Air)
         return stats;
 
+    // only the LOD 0 path pads from neighbours at all, so a skirt is only ever needed there
+    m_coarseNeighbors = lod == 0 ? coarseNeighbors : 0;
     m_smoothAO = (lod == 0); // near chunks only; far LOD pads with air so AO would be wrong
     fillGrid(chunk, neighbors, lod);
     buildColumns();
