@@ -69,8 +69,15 @@ RegionStore::Region& RegionStore::ensureLoaded(RegionKey key) {
                                       std::istreambuf_iterator<char>());
         const std::size_t headerSize = 12;
         const std::size_t dirSize = std::size_t(kSlots) * 8;
-        if (buf.size() >= headerSize + dirSize && std::memcmp(buf.data(), kMagic, 4) == 0 &&
-            read32(buf.data() + 4) == kVersion && int(read32(buf.data() + 8)) == kSlots) {
+        // Slot count is in the header because it encodes kWorldChunksY: a taller world
+        // repartitions every region file. Rejecting the file is right, but say WHY —
+        // "corrupt" sent someone hunting a disk problem when the real cause was that the
+        // world got taller, which is a legitimate thing to change (see kWorldChunksY).
+        const bool bigEnough = buf.size() >= headerSize + dirSize;
+        const bool magicOk = buf.size() >= 4 && std::memcmp(buf.data(), kMagic, 4) == 0;
+        const bool versionOk = buf.size() >= 8 && read32(buf.data() + 4) == kVersion;
+        const bool slotsOk = buf.size() >= 12 && int(read32(buf.data() + 8)) == kSlots;
+        if (bigEnough && magicOk && versionOk && slotsOk) {
             const std::size_t dataStart = headerSize + dirSize;
             for (int s = 0; s < kSlots; ++s) {
                 const std::uint8_t* e = buf.data() + headerSize + std::size_t(s) * 8;
@@ -84,6 +91,13 @@ RegionStore::Region& RegionStore::ensureLoaded(RegionKey key) {
                                                         buf.begin() +
                                                             std::ptrdiff_t(begin + len));
             }
+        } else if (magicOk && versionOk && buf.size() >= 12) {
+            const int fileSlots = int(read32(buf.data() + 8));
+            const int perColumn = RegionStore::kRegionSize * RegionStore::kRegionSize;
+            VX_ERROR("region %s was written with a world %d chunks tall, this build is %d — "
+                     "ignoring it (the terrain regenerates; edits in it are lost)",
+                     regionPath(key).string().c_str(),
+                     perColumn > 0 ? fileSlots / perColumn : 0, kWorldChunksY);
         } else {
             VX_ERROR("region %s is corrupt or wrong version — ignoring",
                      regionPath(key).string().c_str());

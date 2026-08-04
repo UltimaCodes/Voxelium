@@ -9,6 +9,7 @@
 #include "audio/AudioEngine.hpp"
 #include "core/Settings.hpp"
 #include "io/ChunkSerializer.hpp"
+#include "io/RegionStore.hpp"
 #include "jobs/JobSystem.hpp"
 #include "light/LightEngine.hpp"
 #include "mesh/GreedyMesher.hpp"
@@ -37,6 +38,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <vector>
 
@@ -698,6 +700,38 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         VX_INFO("persistence: edit present after evict + reload from disk %s",
                 live ? "PASS" : "FAIL");
         if (!live)
+            return 1;
+
+        // A region file records how many chunk slots a column has, which encodes
+        // kWorldChunksY. Raising the world height is a legitimate change (M22 wants it and
+        // it does NOT require cubic chunks), so what matters is that an old save is
+        // rejected rather than read with the wrong stride. Forge a header from a
+        // differently-tall world and check load() refuses it.
+        const std::filesystem::path badDir = outPath.parent_path() / "vxsave_height";
+        std::error_code bec;
+        std::filesystem::remove_all(badDir, bec);
+        std::filesystem::create_directories(badDir, bec);
+        {
+            constexpr int kOtherHeight = vx::kWorldChunksY * 2;
+            const int slots = 16 * 16 * kOtherHeight; // kRegionSize is 16
+            std::vector<std::uint8_t> f{'V', 'X', 'R', 'G'};
+            const auto put32 = [&](std::uint32_t v) {
+                for (int i = 0; i < 4; ++i)
+                    f.push_back(std::uint8_t(v >> (8 * i)));
+            };
+            put32(1); // version
+            put32(std::uint32_t(slots));
+            f.resize(f.size() + std::size_t(slots) * 8, 0); // empty slot directory
+            std::ofstream out(badDir / "r.0.0.vxr", std::ios::binary);
+            out.write(reinterpret_cast<const char*>(f.data()), std::streamsize(f.size()));
+        }
+        vx::RegionStore probe(badDir);
+        vx::Chunk scratch;
+        const bool rejected = !probe.load({0, 0, 0}, scratch);
+        VX_INFO("persistence: region from a %d-tall world rejected %s", vx::kWorldChunksY * 2,
+                rejected ? "PASS" : "FAIL");
+        std::filesystem::remove_all(badDir, bec);
+        if (!rejected)
             return 1;
     }
 
