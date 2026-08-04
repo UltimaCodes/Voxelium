@@ -384,6 +384,7 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
     // hitch check: teleport 16 chunks east and re-stream the world
     camera.position.x += 512.0;
     world.resetPhasePeak();
+    const auto restreamStart = std::chrono::steady_clock::now();
     double worstMs = 0.0;
     int frames = 0;
     for (; frames < 20000; ++frames) {
@@ -398,8 +399,16 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         if (frames > 0 && !world.busy())
             break;
     }
-    VX_INFO("stress: re-streamed after teleport in %d updates, worst main-thread cost %.2f ms",
-            frames, worstMs);
+    // Wall clock, not update count: the loop spins as fast as it can, so a cheaper main
+    // thread just means MORE iterations. Only elapsed time says whether streaming actually
+    // finished sooner.
+    const double restreamMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                  restreamStart)
+            .count();
+    VX_INFO("stress: re-streamed after teleport in %.0f ms / %d updates, worst main-thread "
+            "cost %.2f ms",
+            restreamMs, frames, worstMs);
     {
         const auto pk = world.phasePeak();
         VX_INFO("stress: worst phase ms — rescan %.2f, evict %.2f, seed %.2f, propagate "
@@ -810,9 +819,11 @@ int runBenchmark(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         totScene += mSc;
         totPost += mPo;
         totFrame += mFr;
+        // drawn, not loaded: what survives frustum + cave culling is what an occlusion
+        // pass would have left to remove, so this is the ceiling on #6
         VX_INFO("bench %-8s | shadow %5.2f | scene %5.2f | post %5.2f | frame %6.2f ms | "
-                "%d chunks %lld quads",
-                v.name, mSh, mSc, mPo, mFr, int(di.size()),
+                "%d of %d chunks drawn, %lld quads",
+                v.name, mSh, mSc, mPo, mFr, rc.renderer.gpuVisibleChunks(), int(di.size()),
                 static_cast<long long>(world.stats().totalQuads));
 
         // same view again at 70% internal resolution — shows what render scale buys
