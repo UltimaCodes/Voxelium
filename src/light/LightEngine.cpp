@@ -20,12 +20,27 @@ ChunkPos chunkOf(const glm::ivec3& wp) {
 
 } // namespace
 
+Chunk* LightEngine::lookupChunk(ChunkPos p) const {
+    ChunkCacheEntry& e = m_chunkCache[cacheSlot(p)];
+    if (!e.valid || !(e.key == p)) {
+        e.key = p;
+        e.value = m_world.chunkDataMutable(p);
+        e.valid = true;
+    }
+    return e.value;
+}
+
+void LightEngine::resetChunkCache() {
+    for (ChunkCacheEntry& e : m_chunkCache)
+        e.valid = false;
+}
+
 BlockId LightEngine::blockAt(const glm::ivec3& wp) const {
     if (wp.y >= kWorldTop)
         return blocks::Air;
     if (wp.y < 0)
         return blocks::Stone;
-    const Chunk* c = m_world.chunkData(chunkOf(wp));
+    const Chunk* c = lookupChunk(chunkOf(wp));
     if (!c)
         return blocks::Stone; // unloaded = opaque; light stops at the loaded edge
     return c->get(wp.x & 31, wp.y & 31, wp.z & 31);
@@ -36,7 +51,7 @@ int LightEngine::getLevel(const glm::ivec3& wp, int channel) const {
         return channel == Sky ? 15 : 0;
     if (wp.y < 0)
         return 0;
-    const Chunk* c = m_world.chunkData(chunkOf(wp));
+    const Chunk* c = lookupChunk(chunkOf(wp));
     if (!c)
         return 0;
     const std::uint8_t v = c->lightAt(wp.x & 31, wp.y & 31, wp.z & 31);
@@ -46,7 +61,7 @@ int LightEngine::getLevel(const glm::ivec3& wp, int channel) const {
 void LightEngine::setLevel(const glm::ivec3& wp, int channel, int level) {
     if (wp.y < 0 || wp.y >= kWorldTop)
         return;
-    Chunk* c = m_world.chunkDataMutable(chunkOf(wp));
+    Chunk* c = lookupChunk(chunkOf(wp));
     if (!c)
         return;
     const int x = wp.x & 31;
@@ -66,10 +81,8 @@ void LightEngine::markTouched(const glm::ivec3& wp) {
     const auto add = [this](ChunkPos p) {
         if (p.y < 0 || p.y >= kWorldChunksY)
             return;
-        for (const ChunkPos& t : m_touched)
-            if (t == p)
-                return;
-        m_touched.push_back(p);
+        if (m_touchedSet.insert(p).second)
+            m_touched.push_back(p);
     };
     const ChunkPos base = chunkOf(wp);
     add(base);
@@ -98,6 +111,7 @@ bool LightEngine::seedStackValid(Chunk** stack) const {
 }
 
 void LightEngine::beginSeedColumn(std::int32_t chunkX, std::int32_t chunkZ) {
+    resetChunkCache();
     m_seed.chunkX = chunkX;
     m_seed.chunkZ = chunkZ;
     m_seed.cursor = 0;
@@ -116,6 +130,7 @@ void LightEngine::beginSeedColumn(std::int32_t chunkX, std::int32_t chunkZ) {
 }
 
 bool LightEngine::stepSeedColumn(double budgetMs) {
+    resetChunkCache();
     if (m_seed.phase == SeedPhase::Idle)
         return true;
 
@@ -135,8 +150,9 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
     constexpr int kCells = kChunkSize * kChunkSize;
     // How often to read the clock, per phase, because the phases are wildly different
     // costs per cell. Descent is a straight pointer walk. Spread can climb 256 voxels
-    // doing six HASHED world lookups each, so it needs a much tighter leash — checking it
-    // as rarely as the descent let the 2 ms budget run to 8-10 ms.
+    // doing six world lookups each, so it needs a much tighter leash — checking it as
+    // rarely as the descent let the 2 ms budget run to 8-10 ms. (Those lookups go through
+    // the chunk cache now and are far cheaper, but the ratio between the phases holds.)
     constexpr int kDescentCheck = 32;
     constexpr int kSpreadCheck = 4;
 
@@ -263,6 +279,7 @@ void LightEngine::removeStep(int channel, Removal r) {
 }
 
 void LightEngine::onBlockChanged(const glm::ivec3& wp, BlockId oldId, BlockId newId) {
+    resetChunkCache();
     const int oldLum = blocks::luminance(oldId);
     const int newLum = blocks::luminance(newId);
 
@@ -299,6 +316,7 @@ void LightEngine::onBlockChanged(const glm::ivec3& wp, BlockId oldId, BlockId ne
 }
 
 void LightEngine::process(double budgetMs) {
+    resetChunkCache();
     const auto t0 = std::chrono::steady_clock::now();
     const auto over = [&] {
         return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
@@ -341,6 +359,9 @@ void LightEngine::process(double budgetMs) {
 }
 
 std::uint8_t LightEngine::lightAt(const glm::ivec3& wp) const {
+    // debug/verification only, and callers reach it at arbitrary times — never trust a
+    // cache filled by whatever ran last
+    const_cast<LightEngine*>(this)->resetChunkCache();
     return std::uint8_t((getLevel(wp, Sky) << 4) | getLevel(wp, Block));
 }
 

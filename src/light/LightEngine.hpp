@@ -51,7 +51,13 @@ public:
                m_removal[1].empty();
     }
 
-    std::vector<ChunkPos>& touched() { return m_touched; } // drained by the manager
+    // Drained by the manager. Clearing goes through clearTouched() rather than handing
+    // out a mutable vector, because the dedup set has to be dropped with it.
+    const std::vector<ChunkPos>& touched() const { return m_touched; }
+    void clearTouched() {
+        m_touched.clear();
+        m_touchedSet.clear();
+    }
 
     // debug/verification
     std::uint8_t lightAt(const glm::ivec3& wp) const;
@@ -67,6 +73,34 @@ private:
         glm::ivec3 pos;
         std::uint8_t oldLevel;
     };
+
+    // Direct-mapped chunk lookup cache. The BFS probes six neighbours per voxel and
+    // nearly all of them land in the chunk it just read, yet every probe went through a
+    // wyhash of the chunk coords plus a map lookup — up to nineteen of them per voxel
+    // once blockAt, getLevel and setLevel are counted. Slotting on the low coord bits
+    // makes that an index and a compare instead. A 4x4 horizontal by 8 vertical block of
+    // chunks maps to distinct slots, which is wider than a BFS front ever spans, so the
+    // hot working set never collides with itself.
+    //
+    // Caching a null is the point as much as caching a hit: probes off the loaded edge
+    // are common and used to pay a full lookup each time to be told "nothing there".
+    //
+    // Only valid within one main-thread entry point. Between calls the chunk set moves —
+    // eviction, and the coarse->detailed re-gen swapping a chunk's voxels out — so a
+    // pointer held across one would be the same use-after-free seedStackValid refetches
+    // to avoid. Every public entry point drops the cache on the way in.
+    static constexpr int kChunkCacheSize = 128;
+    struct ChunkCacheEntry {
+        ChunkPos key{};
+        Chunk* value = nullptr;
+        bool valid = false;
+    };
+    static int cacheSlot(ChunkPos p) {
+        return (p.x & 3) | ((p.z & 3) << 2) | ((p.y & 7) << 4);
+    }
+    mutable ChunkCacheEntry m_chunkCache[kChunkCacheSize];
+    Chunk* lookupChunk(ChunkPos p) const;
+    void resetChunkCache();
 
     BlockId blockAt(const glm::ivec3& wp) const;
     int getLevel(const glm::ivec3& wp, int channel) const;
@@ -96,7 +130,13 @@ private:
     std::vector<Removal> m_removal[2];
     std::size_t m_queueHead[2] = {0, 0};
     std::size_t m_removalHead[2] = {0, 0};
+    // Every light write that changes a value marks its chunk, plus a neighbour per border
+    // face — up to seven membership tests per write. That was a linear scan of m_touched,
+    // which grows to hundreds of chunks over a streaming frame, so the dedup cost rose
+    // with the number of chunks already touched. The set makes it flat; the vector stays
+    // because the manager wants a stable order to walk.
     std::vector<ChunkPos> m_touched;
+    ankerl::unordered_dense::set<ChunkPos, ChunkPosHash> m_touchedSet;
 };
 
 } // namespace vx

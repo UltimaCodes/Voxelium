@@ -314,7 +314,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             m_meshScanDirty = true;
         }
     }
-    light.touched().clear();
+    light.clearTouched();
     const double propagateMs = msSince(propStart);
     m_phase.propagateMs = std::max(m_phase.propagateMs, propagateMs);
     m_phaseSum.propagateMs += propagateMs;
@@ -815,7 +815,7 @@ bool ChunkManager::setBlock(Renderer& renderer, LightEngine& light, const glm::i
     if (lz == 31) want({pos.x, pos.y, pos.z + 1});
     for (const ChunkPos p : light.touched())
         want(p);
-    light.touched().clear();
+    light.clearTouched();
     for (const ChunkPos p : m_remeshScratch)
         remeshNow(renderer, p);
     return true;
