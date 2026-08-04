@@ -419,6 +419,19 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                 tot.seedMs + tot.propagateMs, wall,
                 100.0 * (tot.seedMs + tot.propagateMs) / std::max(wall, 1e-6),
                 (tot.seedMs + tot.propagateMs) / n);
+        // Worker-side cost and arena health after the worst churn the engine ever sees.
+        // The arena line is the reason there is no defrag scheduler: if the biggest free
+        // block still holds nearly all the free space after this, there is nothing to
+        // compact and a defrag pass would be pure code.
+        const vx::ChunkManager::Stats ws = world.stats();
+        const vx::Renderer::ArenaStats as = rc.renderer.arenaStats();
+        VX_INFO("stress: worker gen %.3f ms/chunk, mesh %.3f ms/chunk", ws.genMsAvg,
+                ws.meshMsAvg);
+        VX_INFO("stress: arena %u/%u quads, %d free blocks, largest holds %.0f%% of free space",
+                as.usedQuads, as.capacityQuads, as.freeBlocks,
+                as.capacityQuads > as.usedQuads
+                    ? 100.0 * as.largestFreeBlock / double(as.capacityQuads - as.usedQuads)
+                    : 100.0);
     }
     camera.position.x -= 512.0;
     drain();
