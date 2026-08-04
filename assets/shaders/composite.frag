@@ -38,6 +38,89 @@ vec3 viewRay() {
 
 float starHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 
+// Cube-face parameterisation of a direction: pick the dominant axis and divide by it, so
+// every face gets an evenly spaced 2D grid. Folding a 3D direction into 2D any other way
+// (e.g. dir.xy + dir.z) makes whole families of directions share a cell, and the stars
+// come out as streaks instead of points.
+vec2 cubeFaceUv(vec3 dir, out float face) {
+    vec3 a = abs(dir);
+    if (a.x >= a.y && a.x >= a.z) {
+        face = dir.x > 0.0 ? 0.0 : 1.0;
+        return dir.zy / a.x;
+    }
+    if (a.y >= a.z) {
+        face = dir.y > 0.0 ? 2.0 : 3.0;
+        return dir.xz / a.y;
+    }
+    face = dir.z > 0.0 ? 4.0 : 5.0;
+    return dir.xy / a.z;
+}
+
+// One star per grid cell, placed at a random point inside it and drawn as a round dot
+// with a soft edge. Most cells are empty; brightness and colour vary so the field reads
+// as a sky rather than a regular dot screen.
+vec3 starField(vec3 dir, float night) {
+    float face;
+    vec2 uv = cubeFaceUv(dir, face) * 90.0;
+    vec2 cell = floor(uv);
+    vec2 f = uv - cell;
+    vec2 key = cell + face * 311.0;
+
+    float pick = starHash(key);
+    if (pick < 0.960)
+        return vec3(0.0);
+
+    vec2 centre = vec2(starHash(key + 11.3), starHash(key + 23.7)) * 0.7 + 0.15;
+    float d = length(f - centre);
+    float mag = starHash(key + 41.1);            // most stars faint, a few bright
+    float radius = mix(0.055, 0.13, mag * mag);
+    float dot0 = smoothstep(radius, 0.0, d);
+    // slow, per-star twinkle
+    float tw = 0.72 + 0.28 * sin(uTime * 1.7 + pick * 90.0);
+    // colour: cool white through faint gold
+    vec3 tint = mix(vec3(0.78, 0.85, 1.0), vec3(1.0, 0.92, 0.78), starHash(key + 57.9));
+    return tint * dot0 * tw * (0.55 + 1.35 * mag * mag) * night;
+}
+
+// smooth value noise — the blocky floor() cells of a raw hash were visible as squares
+// across something as small on screen as the moon
+float vnoise2(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = p - i;
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(starHash(i), starHash(i + vec2(1.0, 0.0)), f.x),
+               mix(starHash(i + vec2(0.0, 1.0)), starHash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+
+// A moon that reads as a sphere, not a white disc: cratered surface, curvature shading
+// toward the limb, and a soft halo. Kept deliberately dim in HDR — pushed much above 1
+// the tonemapper crushes the whole surface to flat white, which is what made it look
+// like a small sun.
+vec3 moonDisc(vec3 dir, vec3 moonDir, float night) {
+    const float kRadius = 0.030; // angular radius
+    float md = dot(dir, moonDir);
+    if (md <= 0.0)
+        return vec3(0.0);
+
+    vec3 mx = normalize(cross(moonDir, vec3(0.0, 1.0, 0.0)) + vec3(1e-4, 0.0, 0.0));
+    vec3 my = cross(mx, moonDir);
+    vec2 mc = vec2(dot(dir, mx), dot(dir, my)) / kRadius; // -1..1 across the face
+    float r = length(mc);
+
+    vec3 halo = vec3(0.22, 0.26, 0.38) * pow(max(md, 0.0), 1400.0) * night * 0.7;
+    if (r >= 1.0)
+        return halo;
+
+    float limb = sqrt(max(1.0 - r * r, 0.0)); // sphere normal's z: darkens toward the edge
+    // maria + craters, a few octaves over the face
+    float m = vnoise2(mc * 2.1 + 3.0) * 0.55 + vnoise2(mc * 5.3 + 11.0) * 0.30 +
+              vnoise2(mc * 12.0 + 23.0) * 0.15;
+    vec3 surface =
+        mix(vec3(0.34, 0.36, 0.42), vec3(0.88, 0.88, 0.83), smoothstep(0.30, 0.78, m));
+    float edge = smoothstep(1.0, 0.93, r); // antialias the silhouette
+    return (surface * (0.45 + 0.55 * limb) * night * edge) + halo;
+}
+
 vec3 skyColor(vec3 dir) {
     float up = clamp(dir.y, 0.0, 1.0);
     float alt = uSunL.y;                             // sun altitude, -1..1
@@ -58,14 +141,12 @@ vec3 skyColor(vec3 dir) {
     col += vec3(1.0, 0.55, 0.28) * pow(sd, 8.0) * 0.6 * above;             // glow
     col += uSunColor * smoothstep(0.9986, 0.9995, sd) * 3.2 * above;       // sun disc
 
-    float night = 1.0 - day;
-    if (night > 0.01) {
-        vec2 g = floor(dir.xy * 130.0 + dir.z * 41.0);
-        float star = step(0.992, starHash(g)) * step(0.0, dir.y);
-        col += vec3(0.9, 0.92, 1.0) * star * night * 0.9;
-        float md = max(dot(dir, -uSunL), 0.0);                            // moon opposite sun
-        col += vec3(0.75, 0.78, 0.9) * smoothstep(0.9990, 0.9997, md) * night * 2.2;
-        col += vec3(0.2, 0.24, 0.36) * pow(md, 250.0) * night;            // moon halo
+    // Stars fade out well before the sky is properly light — a linear 1-day left them
+    // visible as bright specks through dawn and dusk.
+    float night = pow(1.0 - day, 2.2);
+    if (night > 0.004) {
+        col += starField(dir, night) * step(-0.02, dir.y); // none below the horizon
+        col += moonDisc(dir, -uSunL, night);               // moon rides opposite the sun
     }
     return col;
 }
