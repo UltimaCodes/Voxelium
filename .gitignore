@@ -7,3 +7,7 @@ vxsave_smoke/
 .idea/
 cmake-build-*/
 *.bmp
+
+# user-supplied audio: only the README is tracked
+sounds/*
+!sounds/README.md

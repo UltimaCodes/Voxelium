@@ -62,11 +62,25 @@ FetchContent_Declare(stb
     SYSTEM
 )
 
-FetchContent_MakeAvailable(glfw glm imgui unordered_dense fastnoise2 stb)
+# --- miniaudio 0.11.21 (audio playback; single header, public domain) -----------------
+# Chosen because it is one header with no external deps and decodes wav/flac/mp3 itself,
+# so adding sound costs nothing at configure time on a fresh clone.
+FetchContent_Declare(miniaudio
+    GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+    GIT_TAG        0.11.21
+    GIT_SHALLOW    ON
+    SYSTEM
+)
+
+FetchContent_MakeAvailable(glfw glm imgui unordered_dense fastnoise2 stb miniaudio)
 
 # stb ships no CMake — expose it as a header-only interface target.
 add_library(stb INTERFACE)
 target_include_directories(stb SYSTEM INTERFACE ${stb_SOURCE_DIR})
+
+# miniaudio's own CMakeLists builds tests/examples we don't want — take the header only.
+add_library(miniaudio INTERFACE)
+target_include_directories(miniaudio SYSTEM INTERFACE ${miniaudio_SOURCE_DIR})
 
 # imgui ships no CMakeLists — build the core + the two backends we use as a static lib.
 add_library(imgui STATIC

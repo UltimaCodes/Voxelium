@@ -17,6 +17,7 @@ add_executable(voxelium
     src/core/Log.cpp
     src/core/Paths.cpp
     src/core/Settings.cpp
+    src/audio/AudioEngine.cpp
     src/gfx/BlockTextures.cpp
     src/gfx/GlDebug.cpp
     src/gfx/GpuTimer.cpp
@@ -42,7 +43,7 @@ add_executable(voxelium
 )
 
 target_include_directories(voxelium PRIVATE src)
-target_link_libraries(voxelium PRIVATE glad glfw glm::glm imgui unordered_dense::unordered_dense FastNoise stb)
+target_link_libraries(voxelium PRIVATE glad glfw glm::glm imgui unordered_dense::unordered_dense FastNoise stb miniaudio)
 
 # GLFW must not drag in the system GL headers; glad owns all GL declarations.
 # GLM depth range 0..1 to match glClipControl(GL_ZERO_TO_ONE) — we run reversed-Z.

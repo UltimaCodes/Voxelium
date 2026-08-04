@@ -1,177 +1,138 @@
-# Build Prompt: High-Performance Voxel Engine in C++
+# Voxelium — roadmap
+
+A from-scratch C++20 / OpenGL 4.6 (core profile, DSA everywhere) voxel engine. Not a
+Minecraft clone — a good looking, heavily optimized voxel renderer.
+
+The original M1–M12 milestone spec is finished; it lives in git history, with per-milestone
+notes in `docs/M1..M12`. This file is the forward roadmap.
 
 ---
 
-## Context
+## Tier 0 — Broken / half-built
 
-I'm building a voxel engine in C++ from scratch — a Minecraft-like game, but engineered properly. Minecraft's implementation is a case study in what not to do: whole-chunk remeshes on single block edits, no face merging, a naive lighting engine, single-threaded meshing for most of its life, and GC pressure from Java. I want the opposite of that. The target is a machine that renders a large voxel world at high framerate on weak hardware.
+All closed.
 
-I'm a solo developer. I want to understand every design decision, not just have working code handed to me. Explain your reasoning as you go, and if I've specified something below that's wrong or suboptimal, say so and argue for the alternative before writing it.
+| # | Item | Status | Notes |
+|---|---|---|---|
+| 1 | Teardown heap corruption | done\* | Did NOT reproduce in 52 runs (40 Release + 12 with `_GLIBCXX_ASSERTIONS`). Ruled out the palette straddle math, the arena free-list, and both chunk-meta writes. No libasan in this toolchain. Fixed a real data race on chunk light publication found while looking. Left open as unreproducible. |
+| 2 | Wire up world persistence | done | **Was not dead code.** Already fully wired: load on gen, save on evict, `saveDirty()` at teardown, round-trip smoke test. Verified, nothing to do. |
+| 3 | Cross-LOD seam skirts | done | Mesher takes a coarse-neighbour face mask and leaves those pads air. The mask is deliberately pessimistic (+2 chunks) so a stale one over-skirts instead of leaving a hole — that avoids needing a remesh cascade. +0.29% quads. |
+| 4 | Teleport re-LOD hitch | done | Profiled first: the 1004 ms freeze was the arena doing `glFinish` + full rebuild. Now reclaims the fence ring before hard-resetting. Also killed a quadratic seed-queue deferral and two budgets that only checked their clock between large slices. Worst main-thread cost 6.8–11.5 ms, no hard resets. |
+| 5 | Settings don't persist | done | `saves/settings.cfg`, flat key=value, clamped on load. `--smoke` deliberately ignores it so the reference image can't drift. |
 
----
+Found and fixed along the way, not on the original list:
 
-## Hard constraints
-
-- **C++20.** Use concepts, `std::span`, designated initializers, `std::jthread`. No exceptions in hot paths.
-- **OpenGL 4.6 core profile with DSA** (Direct State Access). Not Vulkan — I want to ship, not spend three months before drawing a triangle. Design so a Vulkan backend is possible later, but do not abstract preemptively for it.
-- **No game engine.** No Unity, Unreal, Godot, or bgfx.
-- **Dependencies (ask before adding any others):**
-  - GLFW — windowing/input
-  - glad — GL loader (4.6 core, DSA)
-  - GLM — math
-  - stb_image — texture loading
-  - FastNoise2 — SIMD noise
-  - Dear ImGui — debug UI only
-  - `ankerl::unordered_dense` — flat hash map
-- **CMake** build. Must compile clean on Windows/MSVC and Linux/GCC with `-Wall -Wextra` and no warnings.
-- **Zero heap allocation in the render loop.** Arenas, pools, and pre-sized buffers. If you need a scratch buffer during meshing, it's thread-local and reused.
-- **Data-oriented.** No deep inheritance, no virtual dispatch anywhere near a per-voxel or per-frame path. A block is an integer ID indexing into a flat block registry, not an object.
-
-## Performance targets
-
-| Metric | Target |
-|---|---|
-| Render distance | 32 chunks minimum |
-| Frame time (mid GPU, e.g. RTX 2070S) | < 4 ms at 32 chunks, shaders on |
-| Frame time (integrated graphics) | < 16 ms at 12 chunks, shaders off |
-| Chunk mesh time | < 1 ms per 32³ chunk, worker thread |
-| Block edit → visible | < 1 frame, remesh affected chunk only |
-| Per-frame CPU cost per visible chunk | ~0 (GPU-driven culling) |
-| Memory | < 2 GB at 32 chunk render distance |
-
-Build the debug HUD (frame time graph, draw calls, triangles, quads, chunk states, meshing queue depth, VRAM usage) in **milestone 2**, not at the end. I want to be able to prove every optimization.
+- **`kMaxChunks` was 8192** while the *default* radius 16 produces ~8700 meshed chunks.
+  Everything past the cap got no meta entry — not drawn, and not in the shadow cull. This
+  was the "some chunks have no shadows" and "chunks glitch out while moving". Now 32768,
+  and it logs on overflow instead of truncating silently.
+- **No seam skirts on water** — the skirt's air pad is shared by both mesh layers, so water
+  grew vertical walls at chunk borders across every lake. Self-inflicted, from #3.
+- **Stars were streaks, the moon was a small sun** — the star field folded a 3D direction
+  into 2D via `dir.xy + dir.z`, so whole families of directions shared a cell. Now
+  cube-face parameterised round dots; the moon is a sphere with maria and limb darkening.
+- **Terraced ground read as corduroy** — `kShade` contrast, AO depth, and the actual cause:
+  `grass_side` was mostly dirt, so risers were brown against green tops.
+- **Incremental light seeding** — a column was one uninterruptible 5–10 ms unit.
+- **Crosshair colour is configurable**, which also removed the driver shader recompile
+  caused by `GL_ONE_MINUS_DST_COLOR` blending into an sRGB target.
 
 ---
 
-## Architecture requirements
+## Tier 1 — Performance
 
-### Chunk storage
-
-- **32³ chunks.** Power-of-two indexing so all coordinate math is shifts and masks, never `div`/`mod`.
-- **Palette compression.** Each chunk stores a palette of unique block IDs plus a bit-packed index array at `ceil(log2(palette.size()))` bits per voxel. A chunk with 8 distinct block types costs 3 bits per voxel, not 16. Repack when the palette grows past a power-of-two boundary.
-- **Uniform chunks allocate nothing.** All-air and all-stone chunks store a single value and no index array. Most of a world is air; it must cost near-zero.
-- **World storage:** `ankerl::unordered_dense::map<ChunkPos, Chunk*>` with a proper spatial hash. Never `std::map`.
-- Chunks live in a pool allocator. Unloading returns to the pool; it doesn't call the allocator.
-
-### Meshing — binary greedy meshing
-
-This is the core of the engine. Get it right.
-
-1. Build **binary bitmasks** of solidity: for each of the 3 axes, each row of the chunk is a bitfield. Use `uint64_t` rows with one bit of neighbor padding on each side so face culling works correctly across chunk borders. (32 voxels + 2 padding = 34 bits in a 64-bit word. This wastes half the word — if you'd rather argue for 62³ chunks to use the full `uint64`, make the case, but note the remesh cost on edit.)
-2. **Face culling with bit ops:** a face exists where a solid voxel is adjacent to a non-solid one, i.e. `faces = col & ~(col >> 1)` and `col & ~(col << 1)` for the two directions along each axis. Six passes, one per face direction.
-3. **Greedy merge** the resulting binary planes into maximal quads using `std::countr_zero` / `std::countr_one` to find runs, then expand vertically while rows match. No nested per-voxel loops.
-4. **Merge key must include** block ID, face direction, light level, and AO values — quads can only merge if all of those match, or you get visible seams.
-
-### Vertex format — vertex pulling, no VBO
-
-Do **not** emit expanded vertices into a vertex buffer. Instead:
-
-- Pack each quad into a **single `uint64_t`** (or two `uint32_t`):
-  - x, y, z: 6 bits each (0–32 inclusive) = 18 bits
-  - width, height: 6 bits each = 12 bits
-  - face direction: 3 bits
-  - texture layer: 12 bits
-  - AO, 4 corners × 2 bits = 8 bits
-  - light (block + sky, 4 bits each) = 8 bits
-  - Total ~61 bits. Document the exact layout in a header with named constants and static asserts.
-- Store quads in an **SSBO**. Bind no vertex array attributes at all.
-- Draw with `glDrawArrays(GL_TRIANGLES, 0, quadCount * 6)`. In the vertex shader, `gl_VertexID / 6` is the quad index and `gl_VertexID % 6` is the corner; unpack the quad from the SSBO and reconstruct the world position.
-- Texture tiling across a merged quad: scale UVs by the quad's width/height and rely on `GL_REPEAT` per array layer.
-
-### Ambient occlusion
-
-- Per-vertex AO using the standard 3-neighbor test (0fps.net "Ambient occlusion for Minecraft-like worlds").
-- **Flip the quad's triangulation diagonal** when the AO values are anisotropic (`a00 + a11 > a01 + a10`), or you get the classic diagonal seam artifact. This is two lines and everyone forgets it.
-
-### Rendering pipeline
-
-- **One persistent-mapped buffer** as a global quad arena, with a sub-allocator (free list or buddy allocator) handing out ranges to chunks. Defragment lazily when fragmentation exceeds a threshold.
-- **`glMultiDrawArraysIndirect`** — one draw call for all opaque chunk geometry per frame.
-- **GPU-driven culling:** a compute shader reads the chunk list, does frustum culling against per-chunk AABBs, and writes the indirect draw command buffer. Zero CPU per-chunk work per frame.
-- **Cave culling (do not skip this).** For each chunk, precompute at mesh time which of the 6 faces are connected to each other through non-solid voxels (flood fill → 15 face-pair bits). At render time, flood-fill visibility outward from the camera's chunk, only traversing into a chunk through a face-pair that's actually connected and within the frustum. Underground and in dense terrain this culls the overwhelming majority of chunks. Reference: Tommo's "advanced cave culling algorithm."
-- **Transparent pass** separate from opaque: back-to-front sorted, depth write off, rendered after.
-- **Textures:** `GL_TEXTURE_2D_ARRAY`, never an atlas — atlases bleed at mip boundaries and force you to disable mipmapping. `NEAREST` magnification for the pixel-art look, mipmapped + anisotropic minification.
-
-### Threading
-
-- Job system with a thread pool of `hardware_concurrency() - 1` workers (`std::jthread`).
-- Pipeline stages: **generate → light → mesh → upload.** Only upload touches the GL context, on the main thread, budgeted (e.g. max 2 ms of uploads per frame) so a burst of chunks never stalls a frame.
-- Per-chunk state machine driven by `std::atomic`. The main thread never blocks on a worker.
-- A block edit remeshes **only** the containing chunk, plus the 1–3 neighbors if the edit touches a chunk border. Never the column, never the region.
-
-### Lighting
-
-- 4 bits block light + 4 bits sky light per voxel, stored in a parallel nibble array.
-- **BFS flood-fill propagation** with an explicit queue — no recursion.
-- **Incremental updates on block change.** Light *removal* is the part people get wrong: it needs its own BFS pass that clears the affected region and enqueues boundary lights for re-propagation. Implement both add and remove properly.
-- Sky light propagates straight down at full strength with no attenuation, spreads horizontally with attenuation.
-
-### Terrain generation
-
-- FastNoise2, fractal simplex with domain warping.
-- 3D noise caves plus "noodle" caves (thin winding tunnels from ridged noise).
-- Biomes from temperature/humidity noise mapped through splines.
-- **Fully deterministic from a seed, and chunk-independent** — generating chunk (5, 3) must not require chunk (4, 3) to exist. Structures that cross chunk borders go through a deferred structure queue, not neighbor lookups.
-
-### Shaders
-
-Forward rendering with a depth prepass (deferred makes MSAA and the transparent water pass painful for marginal gain here). Implement in this order:
-
-1. Cascaded shadow maps, 3–4 cascades, PCF filtering, stabilized cascades so shadows don't swim when the camera moves.
-2. SSAO or GTAO layered on top of the per-vertex AO.
-3. Water: normal-mapped waves, depth-based refraction, screen-space reflections.
-4. Volumetric light scattering raymarched through the shadow map.
-5. Bloom via the downsample/upsample chain (Jimenez, *Next Generation Post Processing in Call of Duty*), not a naive Gaussian.
-6. ACES filmic tonemapping, sRGB framebuffer, exposure control.
-7. *(Stretch)* TAA with jittered projection and reprojection.
-
-Every effect gets a runtime toggle in the debug UI and a documented frame-time cost.
+| # | Item | Impact | Status |
+|---|---|---|---|
+| 6 | HiZ occlusion culling — depth pyramid from last frame, test chunk AABBs in `cull.comp`. Complements the existing flood-fill cave cull | High | todo |
+| 7 | Render-scale + upscale (FSR-style) — render at 70%, upscale in `final.frag` | High | todo |
+| 8 | Persistent-mapped SSBO uploads | High | **already done** — the quad arena is already `GL_MAP_PERSISTENT_BIT` with a 3-frame fence ring and a free-list sub-allocator. Nothing to do. |
+| 9 | Shadow-pass LOD bias — render cascades one LOD coarser | High | todo |
+| 10 | Shadow cascade caching — cascades 1–2 re-render every N frames | Med | todo |
+| 11 | GPU light propagation — flood-fill in a compute shader | Med | todo |
+| 12 | Sub-chunk (meshlet) culling — cull 8³ groups, not whole 32³ chunks | Med | todo |
+| 13 | Arena defrag scheduling — amortize compaction instead of on-demand | Med | todo |
+| 14 | Depth pre-pass — cuts overdraw for the heavy chunk fragment shader | Low–Med | todo |
+| 15 | Async shader compile + pipeline cache | Low | todo |
+| 16 | Chunk unload → disk instead of re-gen | Med | todo |
 
 ---
 
-## Milestones
+## Tier 2 — World & simulation
 
-Each one must build, run, and be independently demoable. **Do not start the next until I confirm.**
-
-1. **Window + GL context.** GLFW, glad, DSA, a clear color, a spinning triangle. CMake building on both platforms.
-2. **Debug infrastructure.** ImGui overlay, frame time graph, GL debug callback (`glDebugMessageCallback`) wired to a logger, free-fly camera.
-3. **One chunk, dumb mesh.** 32³ chunk, naive cube-per-voxel meshing, hidden faces culled. Slow and correct. Record the numbers — this is the baseline everything gets measured against.
-4. **Binary greedy meshing + vertex pulling.** Replace stage 3's mesher. Show me the before/after triangle count and mesh time.
-5. **World of chunks.** Chunk manager, load/unload by distance, palette-compressed storage, frustum culling on the CPU.
-6. **Threading.** Job system, generation and meshing moved to workers, budgeted uploads. Flying at speed must not hitch.
-7. **Indirect rendering + GPU culling.** Persistent-mapped arena, sub-allocator, `glMultiDrawArraysIndirect`, compute-shader frustum culling. Target: draw call count for the whole world = 1.
-8. **Cave culling.** Connectivity graph + visibility flood fill. Measure chunks-drawn underground before and after.
-9. **Lighting.** Block and sky light, flood fill, incremental add and remove on edits.
-10. **Terrain + interaction.** FastNoise2 world gen, biomes, caves, raycast block placing/breaking, collision and player physics.
-11. **Shaders.** The list above, in order, one at a time.
-12. **Persistence.** Region file format, chunk serialization, compressed on disk.
+| # | Item | Status |
+|---|---|---|
+| 17 | Flowing water (fluid sim, no lava) | todo |
+| 18 | Colored / RGB block light — needs the 4+4 light nibble widened | todo |
+| 19 | Particles — block break, splash, footstep puffs | todo |
+| 20 | Falling sand / gravel | todo |
+| 21 | Sound engine + `sounds/` dir you populate (none bundled) | done |
+| 22 | Exponential terrain height (2^noise) | todo |
+| 23 | Better caves — worm + cheese caves | todo |
+| 24 | Ore generation | todo |
+| 25 | Foliage billboards — grass tufts, flowers | todo |
+| 26 | Block break progress + animation | todo |
+| 27 | Cubic chunks / no height limit — structural fork, `kWorldChunksY = 8` is hardcoded | todo |
 
 ---
 
-## Explicitly do not
+## Tier 3 — Graphics polish
 
-- Re-mesh a whole chunk column, region, or world on a single block edit.
-- Use a texture atlas.
-- Issue one draw call per chunk.
-- Use `std::map`, `std::list`, or `std::shared_ptr` in any hot path.
-- Put virtual functions on blocks, voxels, or anything touched per-frame.
-- Call `glGetError()` or `glFinish()` outside of a debug build.
-- Block the main thread on chunk generation, meshing, or disk I/O.
-- Write an ECS. There is nothing to put in it yet.
-- Build a "generic reusable engine." Build this specific game. Generality is earned, not assumed.
-- Optimize anything without profiling it first and showing me the numbers.
+| # | Item | Status |
+|---|---|---|
+| 28 | Auto-exposure / eye adaptation — cave↔surface transitions blow out | todo |
+| 29 | Weather — rain/snow particles + wet-surface darkening | todo |
+| 30 | Water caustics + underwater god rays | todo |
+| 31 | Volumetric raymarched clouds — replace the 2D cloud layer | todo |
+| 32 | Cloud shadows on terrain | todo |
+| 33 | Color grading LUT + subtle vignette/grain | todo |
+| 34 | Sun disc + lens flare | todo |
+| 35 | Screen-space contact shadows — fills PCSS's near-contact gap | todo |
+| 36 | Proper atmosphere LUT (Hillaire) instead of the analytic sky | todo |
+| 37 | Leaf subsurface scattering | todo |
+| 38 | Normal maps / parallax on blocks — needs texture authoring | todo |
+| 39 | Emissive bloom tuning for glow blocks | todo |
+
+---
+
+## Tier 4 — Demo packaging
+
+| # | Item | Status |
+|---|---|---|
+| 40 | Main menu / title screen + seed input | todo |
+| 41 | Loading screen instead of popping into a half-built world | todo |
+| 42 | Quality presets (Low/Med/High/Ultra) | todo |
+| 43 | Screenshot key + `screenshots/` | todo |
+| 44 | Cinematic free-cam / flythrough path — for recording | todo |
+| 45 | Benchmark mode — deterministic flythrough, perf regression numbers | todo |
+| 46 | Packaged release — zip with DLLs + assets, icon, window title | todo |
+| 47 | README with GIFs | todo |
+| 48 | Crash handler / minidump | todo |
 
 ---
 
 ## How I want you to work
 
-- **One milestone at a time.** Stop and wait for me at each boundary.
-- **Explain the why.** For every non-obvious decision, tell me what the alternatives were and why this one wins. If a bit-twiddling trick isn't obvious, comment the intent, not the mechanics.
-- **Small files, clear ownership.** No god classes. `Chunk`, `ChunkMesher`, `ChunkManager`, `Renderer`, `LightEngine`, `TerrainGenerator`, `JobSystem` are separate units with explicit interfaces.
-- **Profile before you optimize.** Show me the measurement that justifies the change.
-- **Ask before adding a dependency.**
-- **Write it so I could have written it.** I need to be able to defend and modify every line without you.
+- One change per go-ahead unless I give a broad one. Commit locally after each, lowercase
+  `TODO:` / `DONE:` / `FIX:` messages. **Never push.**
+- Verify with the `mingw` preset AND run `voxelium --smoke` on **both** Release and Debug.
+  Debug's container assertions catch data races Release silently tolerates.
+- Profile before you optimize, and show me the numbers.
+- Explain the why. For a non-obvious decision, say what the alternatives were and why this
+  one wins. Comment the intent, not the mechanics.
+- Small files, clear ownership. No god classes.
+- Ask before adding a dependency.
+- Write it so I could have written it — I need to be able to defend and modify every line.
+- No copyrighted assets, ever. Textures and sounds are procedural or user-supplied.
 
-Start with milestone 1. Before you write any code, tell me the repo layout you're proposing and flag anything in this spec you disagree with.
+### Invariants that must not break
 
-https://www.youtube.com/watch?v=CJ94gOzKqsM&t=613s USE THIS AS A GOOD INSPIRATION
+- The startup mesher oracle must pass.
+- The `--smoke` suite stays green (light, physics, edits, persistence round-trip + reload).
+- `src/mesh/QuadFormat.hpp` stays in sync with `chunk.vert`, `shadow.vert` and `cull.comp`.
+- `JobSystem` is declared after `ChunkManager` in `main` (teardown ordering).
+- Never call `glGetError()` or `glFinish()` outside a debug build.
+- Never block the main thread on generation, meshing, or disk I/O.
+- Benchmarks swing ~20% run to run. Always measure a change back-to-back against HEAD,
+  never against a number from earlier in the session.
+
+Inspiration: <https://www.youtube.com/watch?v=CJ94gOzKqsM&t=613s>

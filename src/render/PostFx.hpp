@@ -26,6 +26,7 @@ struct FxToggles {
     // crosshair tint (RGBA, straight alpha). not a post effect, but it rides along in the
     // same struct so the settings menu and the settings file only have one thing to carry.
     float crosshair[4] = {1.0f, 1.0f, 1.0f, 0.85f};
+    float volume = 0.7f; // master audio volume, same reason as crosshair: one struct
 };
 
 // The HDR post stack: scene renders into an RGBA16F target with a depth texture, then

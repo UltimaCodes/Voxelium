@@ -6,6 +6,7 @@
 #include "gfx/GlDebug.hpp"
 #include "gfx/GpuTimer.hpp"
 #include "gfx/Shader.hpp"
+#include "audio/AudioEngine.hpp"
 #include "core/Settings.hpp"
 #include "io/ChunkSerializer.hpp"
 #include "jobs/JobSystem.hpp"
@@ -799,6 +800,10 @@ int main(int argc, char** argv) {
     bool walkMode = false;
     bool vsync = false;
     bool caveCull = true;
+    // sounds/ next to the assets dir; nothing ships in it, the user fills it themselves
+    vx::AudioEngine audio;
+    audio.init(assets.parent_path() / "sounds");
+    double stepAccum = 0.0; // distance walked since the last footstep
     // live app only — a smoke run renders from fixed defaults, never a machine's saved
     // settings, or the reference image would move under it
     const std::filesystem::path settingsFile = "saves/settings.cfg";
@@ -890,8 +895,27 @@ int main(int argc, char** argv) {
                 if (window->keyDown(GLFW_KEY_D)) in.strafe += 1.0f;
                 if (window->keyDown(GLFW_KEY_A)) in.strafe -= 1.0f;
                 in.jump = window->keyDown(GLFW_KEY_SPACE);
+                const glm::dvec3 before = player.position;
                 player.step(*world, in);
                 physAccum -= vx::Player::kTickDt;
+                // footsteps are paced by distance, not time, so they don't machine-gun
+                // when you sprint or stall when you walk into a wall
+                if (player.onGround) {
+                    const glm::dvec3 d = player.position - before;
+                    stepAccum += std::sqrt(d.x * d.x + d.z * d.z);
+                    if (stepAccum > 2.2) {
+                        stepAccum = 0.0;
+                        const glm::ivec3 under(glm::floor(player.position.x),
+                                               glm::floor(player.position.y) - 1,
+                                               glm::floor(player.position.z));
+                        const int id = world->blockAtWorld(under);
+                        if (!audio.playIfPresent("step_" + std::to_string(id),
+                                                 player.position, 0.5f))
+                            audio.playAt("step", player.position, 0.5f);
+                    }
+                } else {
+                    stepAccum = 0.0;
+                }
             }
             camera.position = player.eye();
         } else {
@@ -907,16 +931,28 @@ int main(int argc, char** argv) {
                         return vx::blocks::opaque(world->blockAtWorld(p));
                     });
                 if (hit.hit) {
-                    if (lmb && !lmbHeld)
+                    // sound names follow the block id so a user can be as specific as they
+                    // like: break_3 for grass, or just break for everything
+                    const glm::dvec3 at(hit.voxel);
+                    if (lmb && !lmbHeld) {
+                        const int id = world->blockAtWorld(hit.voxel);
                         world->setBlock(renderer, *light, hit.voxel, vx::blocks::Air);
-                    else
+                        if (!audio.playIfPresent("break_" + std::to_string(id), at))
+                            audio.playAt("break", at);
+                    } else {
                         world->setBlock(renderer, *light, hit.voxel + hit.normal,
                                         vx::BlockId(placeBlock));
+                        if (!audio.playIfPresent("place_" + std::to_string(placeBlock), at))
+                            audio.playAt("place", at);
+                    }
                 }
             }
             lmbHeld = lmb;
             mmbHeld = mmb;
         }
+
+        audio.setListener(camera.position, camera.forward());
+        audio.setMasterVolume(fx.volume);
 
         world->update(*jobs, renderer, *light, camera.position);
         if (world->consumeDirty()) {
@@ -1008,6 +1044,7 @@ int main(int argc, char** argv) {
 
     VX_INFO("window closed, shutting down");
     vx::Settings::save(settingsFile, fx, vsync, caveCull, world->radius, camera.fovYDeg);
+    audio.shutdown();
     world->saveDirty(); // persist edits before teardown (workers join after this)
     hud.shutdown();
     overlay.shutdown();
