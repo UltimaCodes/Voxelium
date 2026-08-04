@@ -94,6 +94,52 @@ Renderer::Range Renderer::alloc(std::span<const std::uint64_t> quads) {
     const std::uint32_t need = std::uint32_t(quads.size());
     if (need == 0)
         return {};
+    if (const Range r = tryAlloc(quads, need); r.count != 0)
+        return r;
+    // Nothing fit. Before making the caller rebuild the whole arena, take back the frees
+    // that are only waiting on the fence ring — during a teleport the world re-meshes far
+    // faster than 3 frames, so the space is almost always already free in practice, just
+    // not recyclable yet. This stalls on the GPU, but a hard reset does that AND
+    // re-uploads every chunk, which measured as a ~1 second freeze.
+    // At most one reclaim a frame. It blocks on the GPU, and once the arena is genuinely
+    // full (not merely fence-delayed) every subsequent alloc would pay that wait again —
+    // hundreds of allocs in a streaming frame turned into seconds of stall, which is
+    // exactly the freeze this was meant to remove.
+    if (m_reclaimedThisFrame)
+        return {};
+    m_reclaimedThisFrame = true;
+    if (reclaimPendingFrees())
+        return tryAlloc(quads, need);
+    return {};
+}
+
+bool Renderer::reclaimPendingFrees() {
+    bool any = false;
+    for (int i = 0; i < kFrameRing; ++i) {
+        if (m_pendingFree[i].empty())
+            continue;
+        if (m_fence[i]) {
+            // Short cap per slot. Waiting is only worth it while it stays cheaper than
+            // the hard reset it's avoiding — an unbounded wait just trades one freeze for
+            // another (a 1s cap measured as a 170 ms stall in a bad frame).
+            const GLenum state =
+                glClientWaitSync(static_cast<GLsync>(m_fence[i]), GL_SYNC_FLUSH_COMMANDS_BIT,
+                                 GLuint64(20'000'000)); // 20 ms
+            if (state != GL_ALREADY_SIGNALED && state != GL_CONDITION_SATISFIED)
+                continue; // still in use: leave it fenced, the caller can hard reset
+            glDeleteSync(static_cast<GLsync>(m_fence[i]));
+            m_fence[i] = nullptr;
+        }
+        for (const Range r : m_pendingFree[i]) {
+            recycle(r);
+            any = true;
+        }
+        m_pendingFree[i].clear();
+    }
+    return any;
+}
+
+Renderer::Range Renderer::tryAlloc(std::span<const std::uint64_t> quads, std::uint32_t need) {
     for (std::size_t i = 0; i < m_freeList.size(); ++i) {
         Range& block = m_freeList[i];
         if (block.count < need)
@@ -146,6 +192,7 @@ void Renderer::hardReset() {
 }
 
 void Renderer::beginFrame() {
+    m_reclaimedThisFrame = false;
     m_slot = (m_slot + 1) % kFrameRing;
     if (m_fence[m_slot]) {
         const GLenum state =

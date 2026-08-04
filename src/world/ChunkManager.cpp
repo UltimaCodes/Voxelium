@@ -178,13 +178,17 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                           const glm::dvec3& cameraPos) {
     const ChunkPos center{int(std::floor(cameraPos.x / kChunkSize)), 0,
                           int(std::floor(cameraPos.z / kChunkSize))};
+    const auto phase0 = Clock::now();
     if (center != m_center || radius != m_lastRadius) {
         m_center = center;
         m_lastRadius = radius;
         rescan(center);
     }
+    m_phase.rescanMs = std::max(m_phase.rescanMs, msSince(phase0));
 
+    const auto phase1 = Clock::now();
     processEvictions(renderer);
+    m_phase.evictMs = std::max(m_phase.evictMs, msSince(phase1));
 
     // drain finished generations (cheap: a state flip per chunk)
     {
@@ -237,24 +241,48 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     // count/frame was far too slow once the default radius grew — columns backed up and
     // their chunks sat dark/unmeshed for seconds.
     const auto seedStart = Clock::now();
-    for (int seeded = 0, deferred = 0; deferred < int(m_seedQueue.size());) {
-        if (seeded > 0 && msSince(seedStart) > 2.0)
-            break;
-        const ChunkPos col = m_seedQueue.back();
-        m_seedQueue.pop_back();
-        if (!neighborhoodSettled(col)) {
-            m_seedQueue.insert(m_seedQueue.begin(), col); // retry once neighbors settle
-            ++deferred;
-            continue;
+    {
+        const std::size_t queued = m_seedQueue.size();
+        for (std::size_t examined = 0; examined < queued; ++examined) {
+            // Two things bind here. The budget has to apply even when nothing seeds —
+            // right after a teleport every column's neighbourhood is still mid-generation,
+            // and the old "only check the clock once something seeded" walked the whole
+            // queue every frame for no useful work. And a column can't be interrupted
+            // once started, so we refuse to begin one we can't afford: measured cost is
+            // ~1-3 ms, and starting a 3 ms column with 0.1 ms left is what turned a 2 ms
+            // budget into a 5 ms frame.
+            if (examined > 0 && msSince(seedStart) + m_seedCostMs > kSeedBudgetMs)
+                break;
+            const ChunkPos col = m_seedQueue.back();
+            m_seedQueue.pop_back();
+            if (!neighborhoodSettled(col)) {
+                m_seedDeferred.push_back(col); // retry once neighbours settle
+                continue;
+            }
+            const auto colStart = Clock::now();
+            light.seedColumn(col.x, col.z);
+            // EMA, not a max: tracking the worst ever seen let one heavy column sit above
+            // the whole budget and throttle seeding to a crawl for a hundred frames after
+            m_seedCostMs = m_seedCostMs * 0.9 + msSince(colStart) * 0.1;
+            for (int cy = 0; cy < kWorldChunksY; ++cy)
+                if (const auto cit = m_chunks.find({col.x, cy, col.z}); cit != m_chunks.end())
+                    cit->second.lit = true;
+            m_meshScanDirty = true; // newly lit -> meshable
         }
-        light.seedColumn(col.x, col.z);
-        for (int cy = 0; cy < kWorldChunksY; ++cy)
-            if (const auto cit = m_chunks.find({col.x, cy, col.z}); cit != m_chunks.end())
-                cit->second.lit = true;
-        m_meshScanDirty = true; // newly lit -> meshable
-        ++seeded;
+        // Put deferred columns back at the front so they're retried only after everything
+        // else (pop_back serves the tail). One splice a frame, not one memmove of the
+        // whole vector per deferral, which is what made this quadratic.
+        if (!m_seedDeferred.empty()) {
+            m_seedQueue.insert(m_seedQueue.begin(), m_seedDeferred.begin(),
+                               m_seedDeferred.end());
+            m_seedDeferred.clear();
+        }
     }
-    light.process(1.5);
+    m_phase.seedMs = std::max(m_phase.seedMs, msSince(seedStart));
+    // one shared deadline for the whole light phase: if seeding ran long, propagation
+    // gives way rather than stacking a second overshoot on top of the first
+    const auto propStart = Clock::now();
+    light.process(std::max(0.25, kLightBudgetMs - msSince(seedStart)));
     for (const ChunkPos pos : light.touched()) {
         const auto it = m_chunks.find(pos);
         if (it != m_chunks.end() && it->second.state == ChunkState::Meshed) {
@@ -263,9 +291,11 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         }
     }
     light.touched().clear();
+    m_phase.propagateMs = std::max(m_phase.propagateMs, msSince(propStart));
 
     // keep enough jobs in flight to feed the workers without racing miles ahead of
     // the camera — stale far-away work is wasted work when it moves
+    const auto scanStart = Clock::now();
     const int inflightCap = std::max(8, jobs.workerCount() * 6);
 
     while (m_jobsInFlight < inflightCap && !m_genQueue.empty()) {
@@ -475,6 +505,8 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             m_uploads.push_back(std::move(r));
         m_meshDone.clear();
     }
+    m_phase.scanMs = std::max(m_phase.scanMs, msSince(scanStart));
+
     const auto uploadStart = Clock::now();
     std::size_t uploaded = 0;
     for (auto& r : m_uploads) {
@@ -534,6 +566,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     }
     m_uploads.erase(m_uploads.begin(), m_uploads.begin() + std::ptrdiff_t(uploaded));
     m_uploadMsLast = msSince(uploadStart);
+    m_phase.uploadMs = std::max(m_phase.uploadMs, m_uploadMsLast);
 }
 
 void ChunkManager::collectDrawInfo(std::vector<ChunkDrawInfo>& out,

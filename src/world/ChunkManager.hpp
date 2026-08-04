@@ -98,9 +98,26 @@ public:
     void updateVisibilityIfNeeded(Renderer& renderer, const glm::dvec3& cameraPos,
                                   bool enabled);
 
+    // worst single-frame cost of each main-thread phase since the last reset. only used
+    // to find where a streaming hitch actually is, rather than guessing at it.
+    struct PhasePeak {
+        double rescanMs = 0.0;
+        double evictMs = 0.0;
+        double scanMs = 0.0;
+        double seedMs = 0.0;
+        double propagateMs = 0.0;
+        double uploadMs = 0.0;
+    };
+    PhasePeak phasePeak() const { return m_phase; }
+    void resetPhasePeak() { m_phase = {}; }
+
     bool busy() const {
+        // the seed queue counts: a column that hasn't been light-seeded yet is unlit and
+        // therefore unmeshed, so the world is not done streaming no matter how empty the
+        // mesh side looks. leaving it out let "re-streamed" report a finish while chunks
+        // were still dark.
         return !m_genQueue.empty() || m_jobsInFlight > 0 || !m_uploads.empty() ||
-               m_pendingMesh > 0;
+               m_pendingMesh > 0 || !m_seedQueue.empty();
     }
     Stats stats() const;
     void logSummary() const;
@@ -157,10 +174,15 @@ private:
     const Chunk* voxelsAt(ChunkPos pos) const;
 
     static constexpr double kUploadBudgetMs = 2.0;
+    // sky/emissive column seeding, then the whole light phase (seed + propagate). one
+    // deadline for both so their overshoots can't stack.
+    static constexpr double kSeedBudgetMs = 2.0;
+    static constexpr double kLightBudgetMs = 3.5;
 
     ankerl::unordered_dense::map<ChunkPos, Entry, ChunkPosHash> m_chunks;
     ankerl::unordered_dense::set<ChunkPos, ChunkPosHash> m_seededColumns; // y always 0
     std::vector<ChunkPos> m_seedQueue; // columns with full data, waiting for light seed
+    std::vector<ChunkPos> m_seedDeferred; // this frame's not-yet-settled columns
     Pool<Chunk> m_pool;
     TerrainGenerator m_gen{20260721};
     RegionStore m_regions;
@@ -224,6 +246,8 @@ private:
     // cleared once scanned. when the world is idle there is provably nothing to mesh.
     bool m_meshScanDirty = true;
     double m_uploadMsLast = 0.0;
+    double m_seedCostMs = 1.0; // observed worst cost of one seedColumn, decayed
+    PhasePeak m_phase;
 
     std::atomic<std::uint64_t> m_genNanos{0};
     std::atomic<std::uint64_t> m_meshNanos{0};

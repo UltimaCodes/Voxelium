@@ -43,6 +43,9 @@ public:
 
     // Uploads into the arena (memcpy into the persistent map). count == 0 on failure —
     // the caller rebuilds the arena from its CPU copies (hardReset + realloc all).
+    // Before reporting failure it reclaims the deferred frees still sitting in the fence
+    // ring, which is usually all it takes: a streaming burst frees plenty, it's just not
+    // recyclable for 3 frames yet.
     Range alloc(std::span<const std::uint64_t> quads);
     void free(Range range);
 
@@ -79,6 +82,8 @@ public:
 
 private:
     void recycle(Range range);
+    Range tryAlloc(std::span<const std::uint64_t> quads, std::uint32_t need);
+    bool reclaimPendingFrees(); // wait out the fence ring, recycle everything in it
 
     // 24M quads = 192 MB. taller terrain (256-block world, bigger mountains) pushes the
     // working set up; this leaves generous headroom over the ~8-9M live at radius 16 so
@@ -105,6 +110,7 @@ private:
     const std::uint32_t* m_readbackMap = nullptr;
     std::uint32_t* m_visMap = nullptr;
 
+    bool m_reclaimedThisFrame = false; // reclaim blocks on the GPU: once a frame, no more
     std::vector<Range> m_freeList; // sorted by first; adjacent blocks merged
     std::vector<Range> m_pendingFree[kFrameRing];
     void* m_fence[kFrameRing] = {}; // GLsync

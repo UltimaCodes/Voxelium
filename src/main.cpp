@@ -376,6 +376,7 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
 
     // hitch check: teleport 16 chunks east and re-stream the world
     camera.position.x += 512.0;
+    world.resetPhasePeak();
     double worstMs = 0.0;
     int frames = 0;
     for (; frames < 20000; ++frames) {
@@ -392,6 +393,12 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
     }
     VX_INFO("stress: re-streamed after teleport in %d updates, worst main-thread cost %.2f ms",
             frames, worstMs);
+    {
+        const auto pk = world.phasePeak();
+        VX_INFO("stress: worst phase ms — rescan %.2f, evict %.2f, seed %.2f, propagate "
+                "%.2f, scan %.2f, upload %.2f",
+                pk.rescanMs, pk.evictMs, pk.seedMs, pk.propagateMs, pk.scanMs, pk.uploadMs);
+    }
     camera.position.x -= 512.0;
     drain();
 

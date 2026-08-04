@@ -239,13 +239,16 @@ void LightEngine::process(double budgetMs) {
                    .count() > budgetMs;
     };
 
+    // Slices are deliberately small: the clock is only read between them, so a slice is
+    // how far past the budget this can run. Big slices made light propagation the largest
+    // single overshoot in a streaming frame.
     int slice = 0;
     while (!over() || slice == 0) {
         ++slice;
         bool didWork = false;
         // removals first: re-propagation seeds they emit must see the cleared state
         for (int ch = 0; ch < 2; ++ch) {
-            for (int n = 0; n < 256 && m_removalHead[ch] < m_removal[ch].size(); ++n) {
+            for (int n = 0; n < 128 && m_removalHead[ch] < m_removal[ch].size(); ++n) {
                 removeStep(ch, m_removal[ch][m_removalHead[ch]++]);
                 didWork = true;
             }
@@ -257,7 +260,7 @@ void LightEngine::process(double budgetMs) {
         for (int ch = 0; ch < 2; ++ch) {
             if (!m_removal[ch].empty())
                 continue; // finish removal before spreading this channel again
-            for (int n = 0; n < 1024 && m_queueHead[ch] < m_queue[ch].size(); ++n) {
+            for (int n = 0; n < 256 && m_queueHead[ch] < m_queue[ch].size(); ++n) {
                 propagateStep(ch, m_queue[ch][m_queueHead[ch]++]);
                 didWork = true;
             }
