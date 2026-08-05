@@ -266,6 +266,18 @@ public:
         return false;
     }
 
+    // Does this chunk contain ANY emitter? The light seeder uses it to skip the per-voxel
+    // scan for the overwhelming majority of chunks. Asking the predicate rather than a
+    // specific id matters: this was `paletteHas(Glow)`, so the moment a second kind of
+    // emitter existed every chunk holding only the new one was skipped and its lamps
+    // silently never lit.
+    bool paletteHasEmissive() const {
+        for (const BlockId b : m_palette)
+            if (blocks::emissive(b))
+                return true;
+        return false;
+    }
+
     int paletteBits() const { return m_bits; }
     std::size_t paletteSize() const { return m_palette.size(); }
     std::size_t storageBytes() const {

@@ -100,11 +100,18 @@ public:
     // many voxels and one-at-a-time would settle light and remesh per voxel.
     int stepFluid(Renderer& renderer, LightEngine& light, const glm::dvec3& around);
 
-    // One gravity step for sand and gravel near `around`. Same batched path as the fluid:
-    // a tick moves many voxels and doing them one at a time would settle light and remesh
-    // per voxel. Scanned bottom-up so the lowest block of a column moves first and the
-    // stack collapses downward a layer per tick instead of the whole column teleporting.
-    int stepFalling(Renderer& renderer, LightEngine& light, const glm::dvec3& around);
+    // One gravity step for sand and gravel, over the DISTURBED set only. Same batched path
+    // as the fluid: a tick moves many voxels and doing them one at a time would settle
+    // light and remesh per voxel.
+    //
+    // Event-driven, not a scan. A box scan looked simpler and was unusable: the box is
+    // ~118k cells of hash lookups per tick, and worse, terrain generates gravel inside
+    // stone that caves then undercut — so a scan finds thousands of unsupported blocks the
+    // moment a world loads and never stops moving them, remeshing continuously. Gravel
+    // that nobody has touched staying put is also the behaviour you want.
+    int stepFalling(Renderer& renderer, LightEngine& light);
+    // A voxel worth re-testing for falling: the block itself, and whatever sits on it.
+    void queueFallCheck(const glm::ivec3& p);
 
     const TerrainGenerator& generator() const { return m_gen; }
     RegionStore& regions() { return m_regions; }
@@ -262,6 +269,11 @@ private:
     ankerl::unordered_dense::set<ChunkPos, ChunkPosHash> m_provisionalColumns;
     bool columnPresent(ChunkPos col) const;
     std::vector<ChunkPos> m_evictList; // outside the ring; may wait on in-flight jobs
+    // Voxels disturbed since the last falling tick. Duplicates are allowed: the tick
+    // re-checks each one against the world anyway, so a repeat is a no-op and that is far
+    // cheaper than hashing every push.
+    std::vector<glm::ivec3> m_fallQueue;
+    std::vector<glm::ivec3> m_fallScratch;
 
     // a detailed re-gen finished on a worker; carries its own chunk so completion doesn't
     // depend on the entry still existing (it's released if the entry went away)

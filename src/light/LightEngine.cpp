@@ -227,7 +227,7 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
         const int cy = m_seed.cursor;
         ++m_seed.cursor;
         const Chunk* c = stack[cy];
-        if (!c->paletteHas(blocks::Glow))
+        if (!c->paletteHasEmissive())
             continue;
         for (int y = 0; y < kChunkSize; ++y)
             for (int z = 0; z < kChunkSize; ++z)

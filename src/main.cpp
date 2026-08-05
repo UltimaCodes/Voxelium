@@ -678,8 +678,7 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                 setup.push_back({{sx, floorY + 5 + i, sz}, vx::blocks::Sand});
             world.setBlocks(rc.renderer, light, setup);
 
-            const glm::dvec3 near{double(sx), double(floorY), double(sz)};
-            world.stepFalling(rc.renderer, light, near);
+            world.stepFalling(rc.renderer, light);
             // One tick moves the LOWEST block of the column only. Checked on the column
             // itself rather than on the returned edit count: the scan box is 49 blocks
             // across and catches natural sand and gravel elsewhere in the world, so the
@@ -689,7 +688,7 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                                 world.blockAtWorld({sx, floorY + 6, sz}) == vx::blocks::Sand;
             int settleTick = 1;
             for (; settleTick < 40; ++settleTick)
-                if (world.stepFalling(rc.renderer, light, near) == 0)
+                if (world.stepFalling(rc.renderer, light) == 0)
                     break;
             int stack = 0;
             for (int dy = 1; dy <= 4; ++dy)
@@ -1624,12 +1623,13 @@ int main(int argc, char** argv) {
             world->stepFluid(renderer, *light, camera.position);
         }
         // Falling runs faster than water: 6 Hz makes a collapsing pile look like it is
-        // being dragged down a step at a time, where gravity should read as quick.
+        // being dragged down a step at a time, where gravity should read as quick. Costs
+        // nothing when nothing has been disturbed — the queue is empty and it returns.
         static double fallClock = 0.0;
         fallClock += dt;
         if (fallClock >= 1.0 / 12.0) {
             fallClock = 0.0;
-            world->stepFalling(renderer, *light, camera.position);
+            world->stepFalling(renderer, *light);
         }
         if (world->consumeDirty()) {
             world->collectDrawInfo(drawInfo, waterInfo);
