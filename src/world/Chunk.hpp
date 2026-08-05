@@ -12,10 +12,12 @@ using BlockId = std::uint16_t;
 inline constexpr int kChunkSize = 32;
 inline constexpr int kChunkSize3 = kChunkSize * kChunkSize * kChunkSize;
 
-// World height in chunks. 8 => 256 blocks of vertical range so terrain isn't capped so
-// low. Most vertical chunks are uniform air (above) or uniform stone (below), which cost
+// World height in chunks. 12 => 384 blocks. Exponential relief (M22) puts peaks at
+// spline 240 + up to 74 of amplitude, and a 256-block world clamped everything above 248
+// flat — mountains came out as plateaus because they were being sheared off against the
+// ceiling, not because that was their shape. Most vertical chunks are uniform air (above) or uniform stone (below), which cost
 // nothing, so this barely moves memory or quad counts — only the surface band meshes.
-inline constexpr int kWorldChunksY = 8;
+inline constexpr int kWorldChunksY = 12;
 inline constexpr int kWorldHeight = kWorldChunksY * kChunkSize;
 
 namespace blocks {

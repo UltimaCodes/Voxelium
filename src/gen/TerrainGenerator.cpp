@@ -31,10 +31,11 @@ float reliefAmplitude(float c) {
 }
 
 float heightSpline(float c) {
-    // taller peaks now that the world is 256 blocks — deep valleys near sea level up to
-    // real mountains around 190
+    // 384-block world: valleys near sea level up to real mountains around 240, which with
+    // the exponential amplitude on top reaches ~314 — comfortably under the 376 ceiling so
+    // a peak is shaped by the noise rather than sheared off by the clamp.
     static constexpr float kX[] = {-1.0f, -0.5f, 0.0f, 0.45f, 1.0f};
-    static constexpr float kY[] = {50.0f, 64.0f, 82.0f, 120.0f, 190.0f};
+    static constexpr float kY[] = {50.0f, 64.0f, 82.0f, 130.0f, 240.0f};
     if (c <= kX[0])
         return kY[0];
     for (int i = 1; i < 5; ++i)
@@ -74,7 +75,7 @@ constexpr int kSeaLevel = 62;   // air at or below this over the seafloor become
 constexpr int kCaveDepth = 56;  // caves only within this many blocks below the surface
 constexpr int kTreeCell = 7;    // one tree candidate per 7x7 column cell
 constexpr int kTreeCanopyR = 4; // scan overlap: >= the widest canopy so no tree is missed
-constexpr int kSnowLine = 150;  // peaks at/above this get snow (jittered per column)
+constexpr int kSnowLine = 205;  // peaks at/above this get snow (jittered per column)
 
 // glow-lit test room kept from M9 as the lighting regression anchor; a 1-block stone
 // shell is re-solidified around it so no cave can crack it open
