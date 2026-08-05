@@ -960,6 +960,55 @@ int ChunkManager::setBlocks(Renderer& renderer, LightEngine& light,
     return applied;
 }
 
+int ChunkManager::stepFluid(Renderer& renderer, LightEngine& light,
+                            const glm::dvec3& around) {
+    // Radius is small on purpose: fluid only has to be right where it can be seen moving,
+    // and the cost is a scan of every cell in the box. Water far away is already settled.
+    constexpr int kR = 40;
+    const glm::ivec3 c{int(std::floor(around.x)), int(std::floor(around.y)),
+                       int(std::floor(around.z))};
+    const int y0 = std::max(c.y - kR / 2, 0);
+    const int y1 = std::min(c.y + kR / 2, kWorldHeight - 1);
+
+    m_fluidEdits.clear();
+    for (int y = y1; y >= y0; --y) // top-down: water falls this tick rather than next
+        for (int z = c.z - kR; z <= c.z + kR; ++z)
+            for (int x = c.x - kR; x <= c.x + kR; ++x) {
+                const glm::ivec3 p{x, y, z};
+                const BlockId here = blockAtWorld(p);
+                const int level = blocks::waterLevel(here);
+                if (level == 8)
+                    continue; // source: never decays, never recomputed
+                if (here != blocks::Air && level == 0)
+                    continue; // solid
+
+                // Fed from directly above at near-full depth (a falling column stays a
+                // column), otherwise from the deepest horizontal neighbour minus one.
+                int want = 0;
+                if (blocks::isWater(blockAtWorld({x, y + 1, z}))) {
+                    want = 7;
+                } else {
+                    static constexpr int kSide[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+                    for (const auto& d : kSide)
+                        want = std::max(want,
+                                        blocks::waterLevel(blockAtWorld({x + d[0], y, z + d[1]})) - 1);
+                    // water only spreads sideways once it has something to sit on
+                    if (want > 0 && !blocks::opaque(blockAtWorld({x, y - 1, z})) &&
+                        !blocks::isWater(blockAtWorld({x, y - 1, z})))
+                        want = std::min(want, 7);
+                }
+                if (want == level)
+                    continue;
+                const BlockId next = blocks::waterForLevel(want);
+                if (next != here)
+                    m_fluidEdits.push_back({p, next});
+            }
+
+    if (m_fluidEdits.empty())
+        return 0;
+    return setBlocks(renderer, light, m_fluidEdits);
+}
+
 ChunkManager::Stats ChunkManager::stats() const {
     Stats s;
     s.loaded = int(m_chunks.size());

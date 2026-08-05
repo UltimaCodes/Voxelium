@@ -92,6 +92,14 @@ public:
     };
     int setBlocks(Renderer& renderer, LightEngine& light, std::span<const BlockEdit> edits);
 
+    // One fluid step over the water near `around`. Cellular, not particle-based: every
+    // non-source water cell recomputes its depth from its neighbours, so the field is
+    // stateless and self-correcting — no per-cell velocity to keep consistent, and an
+    // interrupted or budget-truncated tick just resolves on the next one. Returns the
+    // number of voxels that changed. Drives the batched edit path, because a tick changes
+    // many voxels and one-at-a-time would settle light and remesh per voxel.
+    int stepFluid(Renderer& renderer, LightEngine& light, const glm::dvec3& around);
+
     const TerrainGenerator& generator() const { return m_gen; }
     RegionStore& regions() { return m_regions; }
 
@@ -227,6 +235,7 @@ private:
 
     std::vector<ChunkPos> m_genQueue; // farthest-first, pop_back serves nearest
     std::vector<ChunkPos> m_meshScratch;
+    std::vector<BlockEdit> m_fluidEdits;
     std::vector<ChunkPos> m_remeshScratch;
     // dedup for m_remeshScratch. a linear scan is fine for one edit's handful of chunks
     // but goes quadratic on a batch, which is exactly the case setBlocks exists for.

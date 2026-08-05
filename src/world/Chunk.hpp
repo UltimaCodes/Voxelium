@@ -33,7 +33,14 @@ inline constexpr BlockId Planks = 10;
 inline constexpr BlockId Bricks = 11;
 inline constexpr BlockId CoalOre = 12;
 inline constexpr BlockId IronOre = 13;
-inline constexpr int kBlockCount = 14;
+// Flowing water. There is no per-voxel metadata in this engine, so a fluid's depth is
+// carried by its block id: Water is a full source, WaterL1..L7 are the shallower steps
+// (L1 is the thinnest film). Seven ids is cheap - the palette stores whatever a chunk
+// actually uses - and it keeps fluid depth inside the existing voxel storage, the
+// serializer and the region format with no format change anywhere.
+inline constexpr BlockId WaterL1 = 14;
+inline constexpr BlockId WaterL7 = 20;
+inline constexpr int kBlockCount = 21;
 
 inline constexpr int luminance(BlockId id) { return id == Glow ? 14 : 0; }
 
@@ -50,8 +57,27 @@ inline constexpr bool emissive(BlockId id) {
 
 // opaque = blocks light and hides faces behind it. water is see-through (renders in the
 // transparent pass, lets light through); leaves are opaque for cheap "fast" foliage.
-inline constexpr bool opaque(BlockId id) { return id != Air && id != Water; }
-inline constexpr bool isWater(BlockId id) { return id == Water; }
+inline constexpr bool isWater(BlockId id) {
+    return id == Water || (id >= WaterL1 && id <= WaterL7);
+}
+inline constexpr bool opaque(BlockId id) { return id != Air && !isWater(id); }
+
+// 8 = full source, 1 = thinnest film, 0 = not water. The source level never decays; every
+// other level is recomputed from its neighbours each fluid tick.
+inline constexpr int waterLevel(BlockId id) {
+    if (id == Water)
+        return 8;
+    if (id >= WaterL1 && id <= WaterL7)
+        return 1 + int(WaterL7 - id);
+    return 0;
+}
+inline constexpr BlockId waterForLevel(int level) {
+    if (level >= 8)
+        return Water;
+    if (level <= 0)
+        return Air;
+    return BlockId(WaterL7 - (level - 1));
+}
 // solid = collides with the player. water is swim-through (no collision).
 inline constexpr bool solid(BlockId id) { return opaque(id); }
 } // namespace blocks

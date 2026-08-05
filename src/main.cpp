@@ -601,6 +601,45 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                 return 1;
         }
 
+        // M17: a source on flat ground must spread outward with decaying depth and stop,
+        // not flood forever. cellular, so ticking it repeatedly has to converge.
+        {
+            // Build a sealed stone basin first. On real terrain a source just runs
+            // downhill forever, which is correct behaviour but tests nothing about
+            // convergence — a flat floor with a rim is what has a settled state to reach.
+            const int sx = 60, sz = 60;
+            const int sy = world.generator().surfaceHeight(sx, sz) + 6;
+            std::vector<vx::ChunkManager::BlockEdit> basin;
+            for (int dx = -6; dx <= 6; ++dx)
+                for (int dz = -6; dz <= 6; ++dz) {
+                    basin.push_back({{sx + dx, sy - 1, sz + dz}, vx::blocks::Stone});
+                    const bool rim = std::abs(dx) == 6 || std::abs(dz) == 6;
+                    for (int dy = 0; dy < 3; ++dy)
+                        basin.push_back({{sx + dx, sy + dy, sz + dz},
+                                         rim ? vx::blocks::Stone : vx::blocks::Air});
+                }
+            world.setBlocks(rc.renderer, light, basin);
+            world.setBlock(rc.renderer, light, {sx, sy, sz}, vx::blocks::Water);
+            int changed = 0;
+            for (int t = 0; t < 12; ++t)
+                changed = world.stepFluid(rc.renderer, light, {double(sx), double(sy), double(sz)});
+            int spread = 0, deepest = 0;
+            for (int dx = -5; dx <= 5; ++dx)
+                for (int dz = -5; dz <= 5; ++dz) {
+                    const int l = vx::blocks::waterLevel(world.blockAtWorld({sx + dx, sy, sz + dz}));
+                    if (l > 0 && (dx || dz)) {
+                        ++spread;
+                        deepest = std::max(deepest, l);
+                    }
+                }
+            // spread happened, decayed below source depth, settled (a further tick is a no-op)
+            const bool flowOk = spread > 4 && deepest < 8 && changed == 0;
+            VX_INFO("fluid: source spread to %d cells, deepest %d, settled=%d -> %s", spread,
+                    deepest, changed == 0 ? 1 : 0, flowOk ? "PASS" : "FAIL");
+            if (!flowOk)
+                return 1;
+        }
+
         const glm::ivec3 ep{18, world.generator().surfaceHeight(18, 18) + 6, 18};
         world.setBlock(rc.renderer, light, ep, vx::blocks::Stone);
         const bool placed = world.blockAtWorld(ep) == vx::blocks::Stone;
@@ -1505,6 +1544,17 @@ int main(int argc, char** argv) {
         audio.setMasterVolume(fx.volume);
 
         world->update(*jobs, renderer, *light, camera.position);
+
+        // Fluid runs on its own slow clock, not per frame: water moving at 60 Hz looks
+        // like a nervous twitch rather than a flow, and each tick is a batched edit that
+        // remeshes whatever it touched. 6 Hz reads as liquid and keeps the cost off most
+        // frames entirely.
+        static double fluidClock = 0.0;
+        fluidClock += dt;
+        if (fluidClock >= 1.0 / 6.0) {
+            fluidClock = 0.0;
+            world->stepFluid(renderer, *light, camera.position);
+        }
         if (world->consumeDirty()) {
             world->collectDrawInfo(drawInfo, waterInfo);
             renderer.updateChunkMeta(drawInfo);

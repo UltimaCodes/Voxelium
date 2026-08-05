@@ -40,12 +40,19 @@ void main() {
     else                pos += vec3(uv.x, uv.y, 0.0);
 
     vec3 world = pos + uOffsets[gl_DrawID].xyz;
+    // Flowing water carries its depth in the block id (Water = 8 = full source, 14..20 are
+    // L7..L1). A shallower cell sits lower in its voxel, so a spreading sheet visibly
+    // thins out toward its edge instead of every cell being a full block of water.
+    uint blockId = q.y & 255u;
+    float level = blockId == 5u ? 8.0 : (blockId >= 14u && blockId <= 20u
+                                             ? float(1u + (20u - blockId))
+                                             : 8.0);
     if (dir == 2u) { // top surface: drop under the block top, organic bob
         vec2 p = world.xz;
         float wave = 0.055 * sin(dot(vec2(0.80, 0.20), p) * 0.28 + uTime * 1.1) +
                      0.040 * sin(dot(vec2(-0.30, 0.95), p) * 0.41 + uTime * 1.5) +
                      0.024 * sin(dot(vec2(0.55, -0.72), p) * 0.67 + uTime * 2.1);
-        world.y -= 0.10 - wave;
+        world.y -= (0.10 + (8.0 - level) * 0.105) - wave;
     }
 
     vWorldRel = world;
