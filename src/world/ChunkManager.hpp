@@ -152,8 +152,11 @@ public:
         // therefore unmeshed, so the world is not done streaming no matter how empty the
         // mesh side looks. leaving it out let "re-streamed" report a finish while chunks
         // were still dark.
+        // m_meshScanDirty counts too: a chunk just sent back for a relight has no job and
+        // no queue entry until the next scan finds it, so leaving it out reports "settled"
+        // one frame early — with stale light still baked into the quads on screen.
         return !m_genQueue.empty() || m_jobsInFlight > 0 || !m_uploads.empty() ||
-               m_pendingMesh > 0 || !m_seedQueue.empty() || m_seedActive;
+               m_pendingMesh > 0 || !m_seedQueue.empty() || m_seedActive || m_meshScanDirty;
     }
     Stats stats() const;
     void logSummary() const;
@@ -171,6 +174,11 @@ private:
         int waterQuads = 0;
         ChunkState state = ChunkState::Generating;
         bool lit = false;      // sky/emissive seeding done; meshing waits for it
+        // Light moved after a mesh job for this chunk was already in flight, so the quads
+        // it is producing bake values that are stale before they land. The state flip that
+        // normally sends a chunk back round can't be used here — the landing result would
+        // overwrite it — so the intent is parked until the drain can act on it.
+        bool lightDirty = false;
         // any face reached by sky light. false = sealed underground, so the shadow pass
         // skips it entirely (it can never be the surface nearest the sun)
         bool sunlit = true;

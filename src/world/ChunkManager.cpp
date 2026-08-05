@@ -307,7 +307,11 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                     // chunk kept its stale baked light until some unrelated edit forced
                     // one - that is the lighting that looks frozen until you break a block
                     // next to it. Meshes bake light, so a re-seed has to invalidate them.
-                    if (cit->second.state == ChunkState::Meshed)
+                    // ...and a mesh job already in flight can't be invalidated by a state
+                    // flip, because its result lands afterwards and puts it straight back.
+                    if (cit->second.meshingLod >= 0)
+                        cit->second.lightDirty = true;
+                    else if (cit->second.state == ChunkState::Meshed)
                         cit->second.state = ChunkState::Ready;
                 }
             m_meshScanDirty = true; // newly lit -> meshable
@@ -393,8 +397,17 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     light.process(std::max(0.25, kLightBudgetMs - msSince(seedStart)));
     for (const ChunkPos pos : light.touched()) {
         const auto it = m_chunks.find(pos);
-        if (it != m_chunks.end() && it->second.state == ChunkState::Meshed) {
-            it->second.state = ChunkState::Ready; // back through the mesh pipeline
+        if (it == m_chunks.end())
+            continue;
+        Entry& e = it->second;
+        // A mesh job reading this chunk right now sampled the light as it was when it
+        // started, and its result lands after this loop — so flipping the state here would
+        // just be overwritten and the change lost until an unrelated edit forced a remesh.
+        // That race is why the same seed settled to a different quad count run to run.
+        if (e.meshingLod >= 0)
+            e.lightDirty = true;
+        else if (e.state == ChunkState::Meshed) {
+            e.state = ChunkState::Ready; // back through the mesh pipeline
             m_meshScanDirty = true;
         }
     }
@@ -713,6 +726,16 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             e.state = ChunkState::Meshed;
             m_dirty = true;
             m_visDirty = true;
+        }
+        // Light moved while this job was out. The geometry it brought back is still the
+        // newest there is, so keep it and send the chunk round once more rather than
+        // leaving quads that baked light the world has since moved past. Handled here
+        // rather than inside accept so a dropped stale result clears the flag too.
+        if (it != m_chunks.end() && it->second.lightDirty) {
+            it->second.lightDirty = false;
+            if (it->second.state == ChunkState::Meshed)
+                it->second.state = ChunkState::Ready;
+            m_meshScanDirty = true;
         }
         --m_jobsInFlight;
         ++uploaded;
