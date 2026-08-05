@@ -9,7 +9,7 @@
 
 in vec3 vWorldRel; // camera-relative world position
 flat in uint vDir;
-flat in float vSky;
+in float vSky; // per-corner now, so a shaded lake edge ramps instead of stepping
 
 layout(location = 0) out vec4 outColor;
 

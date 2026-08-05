@@ -10,7 +10,7 @@ layout(location = 4) uniform float uTime;
 
 out vec3 vWorldRel;
 flat out uint vDir;
-flat out float vSky;
+out float vSky; // interpolated: water gets the same per-corner shade the opaque pass does
 
 const int kTri[6] = int[6](0, 1, 2, 0, 2, 3);
 const vec2 kCorner[6][4] = vec2[6][4](
@@ -57,6 +57,11 @@ void main() {
 
     vWorldRel = world;
     vDir = dir;
-    vSky = float((q.y >> 28) & 15u) / 15.0; // sky is the top nibble of the light word
+    // sky is the top nibble of the light word, scaled by this corner's shade (4 corners x
+    // 3 bits, low byte in hi 8..15 + high nibble in lo 28..31 — see mesh/QuadFormat.hpp).
+    // Water never merged across differing light either, so this costs it nothing.
+    uint shade12 = ((q.y >> 8u) & 255u) | (((q.x >> 28u) & 15u) << 8u);
+    float shade = float((shade12 >> (uint(corner) * 3u)) & 7u) / 7.0;
+    vSky = (float((q.y >> 28) & 15u) / 15.0) * shade;
     gl_Position = uViewProj * vec4(world, 1.0);
 }

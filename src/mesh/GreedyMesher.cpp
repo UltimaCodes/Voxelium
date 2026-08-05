@@ -13,7 +13,7 @@ constexpr int kStep[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
                              {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
 
 // in-plane U/V world axes per face dir, and the 4 corners' (cx,cy) in kCorner order — must
-// match chunk.vert so the packed AO lines up with the emitted vertices.
+// match chunk.vert so the packed shade lines up with the emitted vertices.
 constexpr int kUAxis[6][3] = {{0, 0, 1}, {0, 0, 1}, {1, 0, 0},
                               {1, 0, 0}, {1, 0, 0}, {1, 0, 0}};
 constexpr int kVAxis[6][3] = {{0, 1, 0}, {0, 1, 0}, {0, 0, 1},
@@ -24,32 +24,85 @@ constexpr int kCornerCY[6][4] = {{0, 1, 1, 0}, {0, 1, 1, 0}, {0, 1, 1, 0},
                                  {0, 0, 1, 1}, {0, 0, 1, 1}, {0, 0, 1, 1}};
 } // namespace
 
-std::uint32_t GreedyMesher::faceAO(int ax, int ay, int az, int dir) const {
+std::uint32_t GreedyMesher::cornerShade(int ax, int ay, int az, int dir,
+                                        std::uint16_t& outLight) const {
+    outLight = m_gridLight[gi(ax, ay, az)];
     // skirt faces sit against a coarser neighbour — mostly buried in it, and where they
     // do show they're plugging a hole. shading them per-corner would only cost quads
-    // (an occluded corner blocks merging), so report them fully lit and let them merge.
+    // (a varying corner blocks merging), so report them fully lit and let them merge.
+    // The pad behind them is left air with no light, so a real average would read them
+    // as pitch black anyway.
     if ((m_coarseNeighbors >> dir) & 1) {
         const int outer = (dir >> 1) == 0 ? ax : ((dir >> 1) == 1 ? ay : az);
         if (outer == ((dir & 1) ? -1 : kChunkSize))
-            return 0xFFu;
+            return kQuadShadeFull;
     }
     const auto opaque = [&](int gx, int gy, int gz) {
         return blocks::opaque(m_grid[gi(gx, gy, gz)]) ? 1 : 0;
     };
-    std::uint32_t packed = 0;
+
+    int ao[4];
+    int cr[4], cg[4], cb[4], cs[4];
+    int maxR = 0, maxG = 0, maxB = 0, maxS = 0;
     for (int i = 0; i < 4; ++i) {
         const int su = kCornerCX[dir][i] ? 1 : -1;
         const int sv = kCornerCY[dir][i] ? 1 : -1;
-        const int s1 = opaque(ax + su * kUAxis[dir][0], ay + su * kUAxis[dir][1],
-                              az + su * kUAxis[dir][2]);
-        const int s2 = opaque(ax + sv * kVAxis[dir][0], ay + sv * kVAxis[dir][1],
-                              az + sv * kVAxis[dir][2]);
-        const int cn = opaque(ax + su * kUAxis[dir][0] + sv * kVAxis[dir][0],
-                              ay + su * kUAxis[dir][1] + sv * kVAxis[dir][1],
-                              az + su * kUAxis[dir][2] + sv * kVAxis[dir][2]);
+        const int ux = ax + su * kUAxis[dir][0], uy = ay + su * kUAxis[dir][1],
+                  uz = az + su * kUAxis[dir][2];
+        const int vx = ax + sv * kVAxis[dir][0], vy = ay + sv * kVAxis[dir][1],
+                  vz = az + sv * kVAxis[dir][2];
+        const int dx = ux + sv * kVAxis[dir][0], dy = uy + sv * kVAxis[dir][1],
+                  dz = uz + sv * kVAxis[dir][2];
+        const int s1 = opaque(ux, uy, uz);
+        const int s2 = opaque(vx, vy, vz);
+        const int cn = opaque(dx, dy, dz);
         // two flanking solids fully occlude the corner; otherwise darken per solid neighbour
-        const int ao = (s1 && s2) ? 0 : (3 - s1 - s2 - cn);
-        packed |= std::uint32_t(ao) << (i * 2);
+        ao[i] = (s1 && s2) ? 0 : (3 - s1 - s2 - cn);
+
+        // average the light of the four voxels touching this corner, skipping the opaque
+        // ones — they carry no light of their own and would drag every lit corner toward
+        // black. The face's own outer voxel is transparent by construction, so the count
+        // is never zero. A corner boxed in by two solids can't see the diagonal at all.
+        int n = 1, r = light::red(outLight), g = light::green(outLight),
+            b = light::blue(outLight), s = light::sky(outLight);
+        const auto take = [&](int gx, int gy, int gz, int solid) {
+            if (solid)
+                return;
+            const std::uint16_t l = m_gridLight[gi(gx, gy, gz)];
+            r += light::red(l);
+            g += light::green(l);
+            b += light::blue(l);
+            s += light::sky(l);
+            ++n;
+        };
+        take(ux, uy, uz, s1);
+        take(vx, vy, vz, s2);
+        take(dx, dy, dz, (s1 && s2) ? 1 : cn);
+        cr[i] = r / n;
+        cg[i] = g / n;
+        cb[i] = b / n;
+        cs[i] = s / n;
+        maxR = std::max(maxR, cr[i]);
+        maxG = std::max(maxG, cg[i]);
+        maxB = std::max(maxB, cb[i]);
+        maxS = std::max(maxS, cs[i]);
+    }
+
+    outLight = light::pack(maxR, maxG, maxB, maxS);
+    const int total = maxR + maxG + maxB + maxS;
+    std::uint32_t packed = 0;
+    for (int i = 0; i < 4; ++i) {
+        // Ratio against the stored light, not against the brightest corner, so a corner
+        // renders at the brightness it actually computed rather than slightly over it.
+        // A face with no light at all stays uniform and merges instead of striping.
+        const float ratio = total > 0 ? float(cr[i] + cg[i] + cb[i] + cs[i]) / float(total)
+                                      : 1.0f;
+        // AO keeps the weight it had when chunk.frag applied it as 0.68 + 0.32 * ao,
+        // so folding the two terms together doesn't quietly deepen every crevice
+        const float shade = ratio * (0.68f + 0.32f * float(ao[i]) / 3.0f);
+        const int level = std::clamp(int(shade * float(kQuadShadeMax) + 0.5f), 0,
+                                     int(kQuadShadeMax));
+        packed |= std::uint32_t(level) << (i * kQuadShadeBits);
     }
     return packed;
 }
@@ -241,15 +294,17 @@ void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, Greedy
                     const int ay = y + kStep[dir][1];
                     const int az = z + kStep[dir][2];
                     const BlockId block = m_grid[gi(x, y, z)];
-                    const std::uint16_t lv = m_gridLight[gi(ax, ay, az)];
+                    std::uint16_t lv = m_gridLight[gi(ax, ay, az)];
                     if (!water && light::sky(lv) != 0)
                         stats.sunlit = true; // some sky reaches this face
-                    // a face with any corner occlusion carries per-corner AO and can't be
-                    // merged (its AO would smear); emit it 1x1. fully-lit faces merge.
+                    // A face whose corners differ — in occlusion or in light — carries
+                    // per-corner shade and can't be merged (interpolating across a merged
+                    // span would smear it), so emit it 1x1. Uniform faces stay mergeable,
+                    // which is why open terrain and solid rock cost the same as before.
                     if (m_smoothAO) {
-                        const std::uint32_t ao = faceAO(ax, ay, az, dir);
-                        if (ao != 0xFFu) {
-                            out.push_back(packQuad(x, y, z, 1, 1, dir, block, ao, lv));
+                        const std::uint32_t shade = cornerShade(ax, ay, az, dir, lv);
+                        if (shade != kQuadShadeFull) {
+                            out.push_back(packQuad(x, y, z, 1, 1, dir, block, shade, lv));
                             if (water)
                                 ++stats.waterQuads;
                             else {
@@ -259,6 +314,7 @@ void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, Greedy
                             continue;
                         }
                     }
+                    // merge on the light the quad will actually store
                     addFace(dir, s, b, a, block, lv);
                 }
             };
@@ -291,7 +347,8 @@ void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, Greedy
                     case 1: x = u0, y = p.slice, z = v; break;
                     default: x = u0, y = v, z = p.slice; break;
                 }
-                out.push_back(packQuad(x, y, z, w, h, p.dir, p.block, 0xFFu, p.light));
+                out.push_back(
+                    packQuad(x, y, z, w, h, p.dir, p.block, kQuadShadeFull, p.light));
                 if (water) {
                     ++stats.waterQuads;
                 } else {

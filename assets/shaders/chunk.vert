@@ -13,8 +13,8 @@ out vec3 vWorldRel;
 out vec2 vUv;         // tiling texture coords (0..w, 0..h)
 flat out uint vLayer; // texture-array layer
 flat out uint vDir;
-flat out vec4 vLight; // block light r,g,b then sky (0..1)
-out float vAO;        // per-corner ambient occlusion, interpolated -> smooth corner shading
+flat out vec4 vLight; // block light r,g,b then sky (0..1), the quad's brightest corner
+out float vShade;     // per-corner AO x light, interpolated -> smooth corner shading
 
 const int kTri[6] = int[6](0, 1, 2, 0, 2, 3);
 const vec2 kCorner[6][4] = vec2[6][4](
@@ -75,9 +75,11 @@ void main() {
         world.y += 0.03 * sin(uTime * 2.2 + ph * 0.7);
     }
 
-    // per-corner AO (bits 8..15 of the hi word, 2 bits per corner, 3 = lit)
-    uint aoCorner = ((q.y >> 8u) >> (uint(corner) * 2u)) & 3u;
-    vAO = float(aoCorner) / 3.0;
+    // Per-corner vertex brightness: 4 corners x 3 bits, 7 = full. The only field that
+    // spans both words — low byte in hi bits 8..15, high nibble in lo bits 28..31 — so it
+    // has to be stitched before indexing. mesh/QuadFormat.hpp asserts these exact shifts.
+    uint shade12 = ((q.y >> 8u) & 255u) | (((q.x >> 28u) & 15u) << 8u);
+    vShade = float((shade12 >> (uint(corner) * 3u)) & 7u) / 7.0;
 
     vWorldRel = world;
     vUv = c * vec2(w, h); // tile once per block, GL_REPEAT wraps it

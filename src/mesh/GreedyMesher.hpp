@@ -60,9 +60,15 @@ private:
     void buildColumns();
     void meshLayer(bool water, std::vector<std::uint64_t>& out, GreedyStats& stats);
     void addFace(int dir, int slice, int u, int v, BlockId block, std::uint16_t light);
-    // per-corner ambient occlusion (4 corners x 2 bits, 3 = lit) for a face whose outer
-    // (air) voxel is (ax,ay,az). 0xFF = fully lit -> the face can still greedy-merge.
-    std::uint32_t faceAO(int ax, int ay, int az, int dir) const;
+    // Per-corner vertex brightness (4 corners x 3 bits, 7 = full) for a face whose outer
+    // (air) voxel is (ax,ay,az): ambient occlusion times the corner's own light relative
+    // to the brightest corner. Each corner averages the light of the four voxels touching
+    // it, skipping opaque ones, which is what turns a hard quad-to-quad step into a ramp.
+    //
+    // outLight receives the per-channel brightest corner light — the value the quad
+    // stores, so every corner's 0..7 only ever scales it down. kQuadShadeFull means the
+    // face has no corner variation to lose and can still greedy-merge.
+    std::uint32_t cornerShade(int ax, int ay, int az, int dir, std::uint16_t& outLight) const;
 
     BlockId m_grid[kPad * kPad * kPad];
     std::uint16_t m_gridLight[kPad * kPad * kPad];

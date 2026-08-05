@@ -5,7 +5,7 @@ in vec2 vUv;
 flat in uint vLayer;
 flat in uint vDir;
 flat in vec4 vLight;
-in float vAO; // interpolated per-corner ambient occlusion
+in float vShade; // interpolated per-corner brightness: AO x this corner's share of vLight
 
 layout(location = 0) out vec4 outColor; // HDR
 
@@ -120,9 +120,11 @@ void main() {
     // feel and let the light itself carry the hue out to its falloff.
     vec3 torch = vec3(1.12, 1.0, 0.88) * (blockRGB * blockRGB * 2.1);
 
-    // per-vertex ambient occlusion darkens concave corners smoothly (occluded -> 68%).
-    // every terrace step is a concave corner, so a deep AO stacks with the face shading
-    // and contributes its own dark line to the banding — kept subtler for that reason
-    float ao = 0.68 + 0.32 * vAO;
-    outColor = vec4(albedo * kShade[vDir] * (direct + ambient + torch) * ao, 1.0);
+    // Per-corner brightness, interpolated across the face. It already carries the old AO
+    // term (mesher bakes 0.68 + 0.32 * ao into it, so concave corners darken exactly as
+    // much as they used to) multiplied by how much of the quad's light this corner
+    // actually sees — that second half is what ramps a merged quad into its neighbour
+    // instead of stepping. A quad with uniform corners is all 7s and shades flat, so open
+    // terrain looks and costs the same as before.
+    outColor = vec4(albedo * kShade[vDir] * (direct + ambient + torch) * vShade, 1.0);
 }
