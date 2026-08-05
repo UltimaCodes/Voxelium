@@ -804,6 +804,81 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
     return 0;
 }
 
+// Visual check while the world STREAMS (--tour). --smoke renders from a settled world at
+// spawn, and --bench never calls world.update() at all, so neither can show what happens
+// while chunks are loading, re-LODing and swapping under a moving camera. This flies a
+// path, screenshots along the way, and reports what the world looks like at each stop.
+int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
+            vx::LightEngine& light, vx::FlyCamera& camera, vx::Window& window, int radius,
+            bool settle) {
+    world.radius = radius;
+    int w = 0, h = 0;
+    window.framebufferSize(w, h);
+
+    GLuint color = 0, depth = 0, fbo = 0;
+    glCreateRenderbuffers(1, &color);
+    glNamedRenderbufferStorage(color, GL_RGB8, w, h);
+    glCreateRenderbuffers(1, &depth);
+    glNamedRenderbufferStorage(depth, GL_DEPTH_COMPONENT32F, w, h);
+    glCreateFramebuffers(1, &fbo);
+    glNamedFramebufferRenderbuffer(fbo, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, color);
+    glNamedFramebufferRenderbuffer(fbo, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+
+    vx::FxToggles fx;
+    fx.taa = false;
+    fx.dayCycle = false;
+    fx.timeOfDay = 0.32f;
+
+    std::vector<std::uint8_t> pixels(std::size_t(w) * h * 3);
+    // walk outward from spawn: the report is that things degrade with distance travelled.
+    // height comes from the generator, not a guess — a fixed y buries the camera inside a
+    // hill and every screenshot then shows the inside of terrain instead of the bug.
+    const glm::dvec2 where[] = {
+        {16.0, 16.0}, {320.0, 96.0}, {700.0, 320.0}, {1200.0, 700.0}, {1800.0, 1200.0},
+    };
+    glm::dvec3 stops[std::size(where)];
+    for (int i = 0; i < int(std::size(where)); ++i)
+        stops[i] = {where[i].x,
+                    double(world.generator().surfaceHeight(int(where[i].x), int(where[i].y))) +
+                        14.0,
+                    where[i].y};
+    for (int i = 0; i < int(std::size(stops)); ++i) {
+        camera.position = stops[i];
+        camera.yawDeg = -35.0f;
+        camera.pitchDeg = -12.0f;
+        // fly in rather than teleport when not settling, so streaming is mid-flight
+        const int budget = settle ? 40000 : 240;
+        for (int f = 0; f < budget; ++f) {
+            window.pollEvents();
+            rc.renderer.beginFrame();
+            world.update(jobs, rc.renderer, light, camera.position);
+            rc.renderer.endFrame();
+            if (settle && f > 200 && !world.busy() && light.idle())
+                break;
+        }
+        std::vector<vx::ChunkDrawInfo> di, wi;
+        world.collectDrawInfo(di, wi);
+        rc.renderer.updateChunkMeta(di);
+        rc.renderer.updateWaterMeta(wi);
+        world.updateVisibilityIfNeeded(rc.renderer, camera.position, true);
+        rc.renderer.beginFrame();
+        renderFrame(rc, camera, fx, true, w, h, fbo, 0.6f, nullptr);
+        rc.renderer.endFrame();
+        glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, pixels.data());
+        char name[64];
+        std::snprintf(name, sizeof(name), "tour_%d%s.bmp", i, settle ? "" : "_moving");
+        vx::writeBmp24(name, w, h, pixels);
+        const vx::ChunkManager::Stats st = world.stats();
+        VX_INFO("tour %d @ (%.0f,%.0f,%.0f): %d chunks %d meshed, %d drawn, busy=%d -> %s",
+                i, stops[i].x, stops[i].y, stops[i].z, st.loaded, st.meshed,
+                rc.renderer.gpuVisibleChunks(), world.busy() ? 1 : 0, name);
+    }
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &color);
+    glDeleteRenderbuffers(1, &depth);
+    return 0;
+}
+
 // Deterministic performance harness (--bench). The whole of Tier 1 is "make it faster",
 // and the older in-smoke benchmark averages 32 frames while the world is still churning,
 // which is why it could report negative deltas. This one settles the world completely
@@ -1007,12 +1082,22 @@ int main(int argc, char** argv) {
     bool smoke = false;
     bool bench = false;
     int benchRadius = 16;
+    bool tour = false;
+    int tourRadius = 16;
+    bool tourSettle = true;
     std::filesystem::path smokeOut = "smoke.bmp";
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--smoke") == 0) {
             smoke = true;
             if (i + 1 < argc)
                 smokeOut = argv[++i];
+        } else if (std::strcmp(argv[i], "--tour") == 0) {
+            tour = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-')
+                tourRadius = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--tourmoving") == 0) {
+            tour = true;
+            tourSettle = false;
         } else if (std::strcmp(argv[i], "--bench") == 0) {
             bench = true;
             if (i + 1 < argc && argv[i + 1][0] != '-')
@@ -1030,7 +1115,7 @@ int main(int argc, char** argv) {
         .width = 1280,
         .height = 720,
         .title = "Voxelium",
-        .visible = !smoke && !bench,
+        .visible = !smoke && !bench && !tour,
         .debugContext = debugContext,
     });
     if (!window)
@@ -1116,6 +1201,12 @@ int main(int argc, char** argv) {
         return 1;
     window->hookScroll();
 
+    if (tour) {
+        const int rcT = runTour(rc, *world, *jobs, *light, camera, *window, tourRadius,
+                                tourSettle);
+        world->saveDirty();
+        return rcT;
+    }
     if (bench) {
         const int rcB = runBenchmark(rc, *world, *jobs, *light, camera, *window, benchRadius);
         hud.shutdown();
