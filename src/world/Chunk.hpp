@@ -43,73 +43,68 @@ inline constexpr BlockId IronOre = 13;
 inline constexpr BlockId WaterL1 = 14;
 inline constexpr BlockId WaterL7 = 20;
 inline constexpr BlockId Gravel = 21;
-// Coloured lamps. Same block-id-as-data trick the water levels use: the emitted colour is
-// a compile-time property of the id, so a hue costs an id and nothing else — no per-voxel
-// metadata, no storage change, no serializer change. Six presets rather than a free colour
-// picker for exactly that reason; arbitrary hues would need per-voxel data the engine has
-// nowhere to put.
-inline constexpr BlockId LampRed = 22;
-inline constexpr BlockId LampOrange = 23;
-inline constexpr BlockId LampGreen = 24;
-inline constexpr BlockId LampCyan = 25;
-inline constexpr BlockId LampBlue = 26;
-inline constexpr BlockId LampMagenta = 27;
-inline constexpr int kBlockCount = 28;
-inline constexpr bool isLamp(BlockId id) { return id >= LampRed && id <= LampMagenta; }
+// Coloured lamps. One lamp BLOCK as far as the player is concerned — you recolour it in
+// place — but the colour has to live somewhere, and this engine has no per-voxel metadata
+// at all. So the hue IS the id, the same block-id-as-data trick the water levels use: no
+// storage, serializer or region-format change, and a hue costs exactly one id.
+//
+// Twelve steps round the wheel is the resolution that buys. It is not arbitrary: block
+// light is 4 bits per channel, so the emitted colour is coarse before it ever leaves the
+// lamp, and finer hue steps would be quantised away by the light itself.
+inline constexpr int kLampHues = 12;
+inline constexpr BlockId LampFirst = 22;
+inline constexpr BlockId LampLast = LampFirst + kLampHues - 1;
+inline constexpr int kBlockCount = LampLast + 1;
+inline constexpr bool isLamp(BlockId id) { return id >= LampFirst && id <= LampLast; }
+
+// Saturated: one or two channels near full, the rest near zero. The three channels
+// attenuate independently, so a hue that starts near-white reads as a white pool with a
+// tinted rim — carrying the colour out to the falloff is the whole point of having three.
+inline constexpr int kLampRGB[kLampHues][3] = {
+    {15, 0, 0},  {15, 7, 0}, {15, 14, 0}, {8, 15, 0},  {0, 15, 0},  {0, 15, 8},
+    {0, 14, 14}, {0, 7, 15}, {0, 0, 15},  {8, 0, 15},  {15, 0, 14}, {15, 0, 7},
+};
 
 // Blocks with nothing under them fall. Sand and gravel only — dirt and stone staying put
-// is what keeps a cliff a cliff, and the sim scans a box every tick, so this predicate is
-// on the hot path and wants to stay a compare rather than a table lookup.
+// is what keeps a cliff a cliff.
 inline constexpr bool falls(BlockId id) { return id == Sand || id == Gravel; }
 
-inline constexpr int luminance(BlockId id) {
-    return id == Glow ? 14 : (isLamp(id) ? 14 : 0);
-}
+inline constexpr int luminance(BlockId id) { return (id == Glow || isLamp(id)) ? 14 : 0; }
 
 // Emitted colour of a light-emitting block, 0..15 per channel. The three channels
 // propagate independently, so an emitter's hue survives all the way out to its falloff
 // rather than being a white blob tinted at the end. Glow is a warm ember: red carries
 // furthest, blue dies first, so its pool goes orange at the edges the way firelight does.
-// The lamp rows keep one channel at 15 and drop the others hard, because the channels
-// attenuate independently — a hue that starts near-white just reads as a white pool with a
-// tinted rim, and the whole point of three channels is that the colour survives to the
-// falloff. This table is still the entire interface for adding an emitter.
+// This table is the entire interface for adding an emitter.
 inline constexpr int emitR(BlockId id) {
-    switch (id) {
-        case Glow: return 14;
-        case LampRed: return 15;
-        case LampOrange: return 15;
-        case LampGreen: return 1;
-        case LampCyan: return 0;
-        case LampBlue: return 2;
-        case LampMagenta: return 14;
-        default: return 0;
-    }
+    return id == Glow ? 14 : (isLamp(id) ? kLampRGB[id - LampFirst][0] : 0);
 }
 inline constexpr int emitG(BlockId id) {
-    switch (id) {
-        case Glow: return 10;
-        case LampRed: return 1;
-        case LampOrange: return 8;
-        case LampGreen: return 15;
-        case LampCyan: return 12;
-        case LampBlue: return 2;
-        case LampMagenta: return 0;
-        default: return 0;
-    }
+    return id == Glow ? 10 : (isLamp(id) ? kLampRGB[id - LampFirst][1] : 0);
 }
 inline constexpr int emitB(BlockId id) {
-    switch (id) {
-        case Glow: return 5;
-        case LampRed: return 0;
-        case LampOrange: return 0;
-        case LampGreen: return 2;
-        case LampCyan: return 15;
-        case LampBlue: return 15;
-        case LampMagenta: return 14;
-        default: return 0;
-    }
+    return id == Glow ? 5 : (isLamp(id) ? kLampRGB[id - LampFirst][2] : 0);
 }
+// Nearest lamp id to a linear rgb colour. The settings menu offers a free colour picker
+// because that is the familiar control, but only these twelve are storable, so the pick is
+// snapped here rather than pretending otherwise. Compares against the emitted colour, not
+// against the texture, because the light is what the player is actually choosing.
+inline BlockId nearestLamp(float r, float g, float b) {
+    int best = 0;
+    float bestD = 1e9f;
+    for (int i = 0; i < kLampHues; ++i) {
+        const float dr = r - float(kLampRGB[i][0]) / 15.0f;
+        const float dg = g - float(kLampRGB[i][1]) / 15.0f;
+        const float db = b - float(kLampRGB[i][2]) / 15.0f;
+        const float d = dr * dr + dg * dg + db * db;
+        if (d < bestD) {
+            bestD = d;
+            best = i;
+        }
+    }
+    return BlockId(LampFirst + best);
+}
+
 inline constexpr bool emissive(BlockId id) {
     return emitR(id) > 0 || emitG(id) > 0 || emitB(id) > 0;
 }

@@ -26,6 +26,11 @@ struct FxToggles {
     // crosshair tint (RGBA, straight alpha). not a post effect, but it rides along in the
     // same struct so the settings menu and the settings file only have one thing to carry.
     float crosshair[4] = {1.0f, 1.0f, 1.0f, 0.85f};
+    // Lamp colour to place, and to repaint an existing lamp with on middle click. Rides
+    // here for the same reason the crosshair does: it is a persisted user preference the
+    // settings menu edits. Snapped to the nearest storable hue by blocks::nearestLamp —
+    // the colour of a lamp is its block id, so only kLampHues of these actually exist.
+    float lampColour[3] = {1.0f, 0.45f, 0.0f};
     float volume = 0.7f; // master audio volume, same reason as crosshair: one struct
     // Internal render resolution as a fraction of the window. The whole HDR chain (scene,
     // ssao, ssgi, volumetrics, bloom, taa) runs at this size and only the final tonemap

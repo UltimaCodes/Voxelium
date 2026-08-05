@@ -326,10 +326,14 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
                         // it first, which is the one thing a deferred structure cannot do.
                         const int depth = heights[z][x] - (baseY + y);
                         const std::uint32_t j = voxelHash(baseX + x, 3, baseZ + z) >> 7;
-                        int hue = depth > 44 ? 4 : (depth > 30 ? 3 : (depth > 18 ? 2 : 1));
-                        if ((j & 7u) == 0u)
-                            hue = int(j >> 3) % 6;
-                        chunk.set(x, y, z, BlockId(blocks::LampRed + hue));
+                        // warm (hue 0) shallow through to cold (hue 8) deep, +-1 of jitter
+                        int hue = depth > 44 ? 8 : (depth > 34 ? 7 : (depth > 26 ? 6
+                                                 : (depth > 18 ? 4 : (depth > 10 ? 2 : 0))));
+                        hue += int(j % 3u) - 1;
+                        if ((j & 15u) == 0u) // the odd stray so a band is not one flat colour
+                            hue = int(j >> 4) % blocks::kLampHues;
+                        hue = (hue + blocks::kLampHues) % blocks::kLampHues;
+                        chunk.set(x, y, z, BlockId(blocks::LampFirst + hue));
                     }
     }
 

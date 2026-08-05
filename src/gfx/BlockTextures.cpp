@@ -1,6 +1,7 @@
 #include "gfx/BlockTextures.hpp"
 
 #include "core/Log.hpp"
+#include "world/Chunk.hpp" // lamp hue table: the texture and the light it casts share it
 
 #include <glad/gl.h>
 
@@ -16,15 +17,17 @@ namespace vx {
 namespace {
 
 constexpr int kTile = 16;
-constexpr int kLayers = 21;
+constexpr int kNamedLayers = 15;
+// the lamp hues tack onto the end, one layer each, generated from blocks::kLampRGB so
+// the face you see and the light it casts can never drift apart
+constexpr int kLampLayer0 = kNamedLayers;
+constexpr int kLayers = kNamedLayers + blocks::kLampHues;
 
 // filename (without extension) per layer, looked up in assets/textures/
-constexpr const char* kNames[kLayers] = {"stone",    "dirt",     "grass_top", "grass_side",
+constexpr const char* kNames[kNamedLayers] = {"stone",    "dirt",     "grass_top", "grass_side",
                                          "glow",     "wood_side", "wood_top", "leaves",
                                          "sand",     "snow",     "planks",    "bricks",
-                                         "coal_ore", "iron_ore", "gravel",
-                                         "lamp_red", "lamp_orange", "lamp_green",
-                                         "lamp_cyan", "lamp_blue", "lamp_magenta"};
+                                         "coal_ore", "iron_ore", "gravel"};
 
 // value hash in [0,1) — deterministic per texel so textures are identical every run
 float h01(int x, int y, int salt) {
@@ -168,17 +171,16 @@ Rgba genIronOre(int x, int y) { return oreSpeckle(x, y, 47, 0.72f, 0.56f, 0.42f)
 // Loose pebbles: a few grey tones scattered per texel rather than one tinted noise field,
 // so it reads as aggregate next to stone instead of as dirty stone.
 // Lamp faces: a bright core falling off to a darker rim, so the block reads as a fitting
-// with a lit centre rather than a flat colour swatch. Templated because six of these
-// differing only by hue would otherwise be six copies of the same six lines, and kGens
-// needs plain function pointers.
-template <int R, int G, int B>
-Rgba genLamp(int x, int y) {
+// with a lit centre rather than a flat colour swatch. Hue comes from the same table the
+// emitted light does.
+Rgba lampTexel(int hue, int x, int y) {
     const float dx = float(x) - 7.5f, dy = float(y) - 7.5f;
     const float d = std::sqrt(dx * dx + dy * dy) / 8.0f;
-    const float core = 1.0f - 0.42f * d + 0.10f * h01(x, y, 70 + R + G * 3 + B * 7);
-    // lift toward white in the middle so the centre looks like the source, not the paint
-    const float w = 0.35f * (1.0f - d);
-    const float r = float(R) / 255.0f, g = float(G) / 255.0f, b = float(B) / 255.0f;
+    const float core = 1.0f - 0.42f * d + 0.10f * h01(x, y, 70 + hue);
+    const float w = 0.35f * (1.0f - d); // lift the middle toward white: that is the source
+    const float r = float(blocks::kLampRGB[hue][0]) / 15.0f;
+    const float g = float(blocks::kLampRGB[hue][1]) / 15.0f;
+    const float b = float(blocks::kLampRGB[hue][2]) / 15.0f;
     return shade(r + w * (1.0f - r), g + w * (1.0f - g), b + w * (1.0f - b), core);
 }
 
@@ -189,14 +191,11 @@ Rgba genGravel(int x, int y) {
     return shade(tone, tone * 0.98f, tone * 0.94f, n);
 }
 
-constexpr std::array<Gen, kLayers> kGens = {genStone,    genDirt,    genGrassTop,
+constexpr std::array<Gen, kNamedLayers> kGens = {genStone,    genDirt,    genGrassTop,
                                             genGrassSide, genGlow,   genWoodSide,
                                             genWoodTop,  genLeaves,  genSand,
                                             genSnow,    genPlanks,  genBricks,
-                                            genCoalOre, genIronOre, genGravel,
-                                            genLamp<236, 46, 46>,  genLamp<240, 138, 32>,
-                                            genLamp<70, 220, 70>,  genLamp<40, 210, 214>,
-                                            genLamp<70, 110, 240>, genLamp<214, 60, 220>};
+                                            genCoalOre, genIronOre, genGravel};
 
 } // namespace
 
@@ -223,6 +222,12 @@ unsigned int createBlockTextureArray(const std::filesystem::path& textureDir) {
     int loaded = 0;
     for (int layer = 0; layer < kLayers; ++layer) {
         Rgba* slot = pixels.data() + std::size_t(layer) * kTile * kTile;
+        if (layer >= kLampLayer0) { // lamps are generated only — one per hue, no filenames
+            for (int y = 0; y < kTile; ++y)
+                for (int x = 0; x < kTile; ++x)
+                    slot[y * kTile + x] = lampTexel(layer - kLampLayer0, x, y);
+            continue;
+        }
         const std::filesystem::path png = textureDir / (std::string(kNames[layer]) + ".png");
         if (loadLayerPng(png, slot)) {
             ++loaded;

@@ -2,6 +2,7 @@
 
 #include "core/Log.hpp"
 #include "render/Camera.hpp"
+#include "world/Chunk.hpp" // lamp hue count, for the colour picker's tooltip
 
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -155,6 +156,12 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     ImGui::SetNextItemWidth(-110.0f);
     ImGui::ColorEdit4("crosshair", fx.crosshair,
                       ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_AlphaPreviewHalf);
+    ImGui::ColorEdit3("lamp colour", fx.lampColour);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Colour for placed lamps, and for repainting one you middle-click.\n"
+                          "Snapped to the nearest of %d storable hues: a lamp's colour is its\n"
+                          "block id, because voxels carry no per-block data.",
+                          vx::blocks::kLampHues);
     ImGui::SetNextItemWidth(-110.0f);
     ImGui::SliderFloat("volume", &fx.volume, 0.0f, 1.0f, "%.2f");
 

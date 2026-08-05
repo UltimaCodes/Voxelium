@@ -385,10 +385,10 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         {
             const int lx = 40, lz = 40;
             const int ly = world.generator().surfaceHeight(lx, lz) + 3;
-            world.setBlock(rc.renderer, light, {lx, ly, lz}, vx::blocks::LampBlue);
+            world.setBlock(rc.renderer, light, {lx, ly, lz}, vx::BlockId(vx::blocks::LampFirst + 8));
             const std::uint16_t bv = light.lightAt({lx, ly + 1, lz});
             const int br = vx::light::red(bv), bb = vx::light::blue(bv);
-            world.setBlock(rc.renderer, light, {lx, ly, lz}, vx::blocks::LampGreen);
+            world.setBlock(rc.renderer, light, {lx, ly, lz}, vx::BlockId(vx::blocks::LampFirst + 4));
             const std::uint16_t gv = light.lightAt({lx, ly + 1, lz});
             const int gg = vx::light::green(gv), gbl = vx::light::blue(gv);
             // and removing it has to take the colour with it, through the removal BFS
@@ -1473,9 +1473,9 @@ int main(int argc, char** argv) {
                                vx::blocks::Sand,   vx::blocks::Snow,   vx::blocks::Wood,
                                vx::blocks::Planks, vx::blocks::Bricks, vx::blocks::Leaves,
                                vx::blocks::Gravel, vx::blocks::Glow,   vx::blocks::Water,
-                               vx::blocks::LampRed,   vx::blocks::LampOrange,
-                               vx::blocks::LampGreen, vx::blocks::LampCyan,
-                               vx::blocks::LampBlue,  vx::blocks::LampMagenta};
+                               // one Lamp entry; the hue comes from the settings colour and
+                               // is resolved at placement time, so the bar stays a bar
+                               vx::blocks::LampFirst};
     constexpr int kHotbarCount = int(sizeof(kHotbar) / sizeof(kHotbar[0]));
     int hotbarSel = 0;
     int placeBlock = kHotbar[hotbarSel];
@@ -1596,10 +1596,25 @@ int main(int argc, char** argv) {
                         if (!audio.playIfPresent("break_" + std::to_string(id), at))
                             audio.playAt("break", at);
                     } else {
-                        world->setBlock(renderer, *light, hit.voxel + hit.normal,
-                                        vx::BlockId(placeBlock));
-                        if (!audio.playIfPresent("place_" + std::to_string(placeBlock), at))
-                            audio.playAt("place", at);
+                        // Middle-clicking a lamp repaints THAT lamp to the menu colour
+                        // rather than placing against it. A lamp's colour is its block id,
+                        // so recolouring is a block swap — and the emitter-swap path in the
+                        // light engine is what makes the old hue actually go away.
+                        const vx::BlockId aimed = world->blockAtWorld(hit.voxel);
+                        const vx::BlockId lamp = vx::blocks::nearestLamp(
+                            fx.lampColour[0], fx.lampColour[1], fx.lampColour[2]);
+                        if (vx::blocks::isLamp(aimed)) {
+                            if (aimed != lamp)
+                                world->setBlock(renderer, *light, hit.voxel, lamp);
+                            audio.playIfPresent("place_" + std::to_string(int(lamp)), at);
+                        } else {
+                            const int put = placeBlock == vx::blocks::LampFirst ? int(lamp)
+                                                                               : placeBlock;
+                            world->setBlock(renderer, *light, hit.voxel + hit.normal,
+                                            vx::BlockId(put));
+                            if (!audio.playIfPresent("place_" + std::to_string(put), at))
+                                audio.playAt("place", at);
+                        }
                     }
                 }
             }
