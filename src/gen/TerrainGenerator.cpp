@@ -73,6 +73,10 @@ std::int32_t floorDivI(std::int32_t a, std::int32_t b) {
 
 constexpr int kSeaLevel = 62;   // air at or below this over the seafloor becomes water
 constexpr int kCaveDepth = 56;  // caves only within this many blocks below the surface
+// Squared radius of the worm tunnels around the curve where both worm fields vanish.
+// This is the single knob for tunnel width, and it is sharp: the carved volume goes with
+// the square of it, so small changes here move the cave-air count a long way.
+constexpr float kWormR2 = 0.26f;
 constexpr int kTreeCell = 7; // one tree candidate per 7x7 column cell
 // Scan overlap. MUST be >= the widest horizontal reach of any species or trees get sliced
 // off at chunk borders — a tree is only placed by chunks that bother to consider its cell.
@@ -149,12 +153,22 @@ TerrainGenerator::TerrainGenerator(int seed) : m_seed(seed) {
     cheese->SetOctaveCount(3);
     m_cheese = cheese;
 
-    auto noodleBase = FastNoise::New<FastNoise::Simplex>();
-    noodleBase->SetScale(71.0f);
-    auto ridged = FastNoise::New<FastNoise::FractalRidged>();
-    ridged->SetSource(noodleBase);
-    ridged->SetOctaveCount(2);
-    m_noodle = ridged;
+    // Two independent low-frequency fields. Low because the tunnel a player walks is the
+    // zero-set of these, so the scale here is the length of a corridor between bends, not
+    // the width of it — width comes from the carve radius below.
+    auto wormABase = FastNoise::New<FastNoise::Simplex>();
+    wormABase->SetScale(96.0f);
+    auto wormA = FastNoise::New<FastNoise::FractalFBm>();
+    wormA->SetSource(wormABase);
+    wormA->SetOctaveCount(2);
+    m_wormA = wormA;
+
+    auto wormBBase = FastNoise::New<FastNoise::Simplex>();
+    wormBBase->SetScale(88.0f); // deliberately not 96: equal scales correlate the two
+    auto wormB = FastNoise::New<FastNoise::FractalFBm>();
+    wormB->SetSource(wormBBase);
+    wormB->SetOctaveCount(2);
+    m_wormB = wormB;
 }
 
 int TerrainGenerator::surfaceHeight(int wx, int wz) const {
@@ -255,16 +269,21 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
     // the 3d noise + carve is by far the most expensive part of gen.
     if (detailed && baseY <= hMax - 2) {
         static thread_local std::vector<float> cheeseBuf;
-        static thread_local std::vector<float> noodleBuf;
+        static thread_local std::vector<float> wormABuf;
+        static thread_local std::vector<float> wormBBuf;
         cheeseBuf.resize(std::size_t(kChunkSize3));
-        noodleBuf.resize(std::size_t(kChunkSize3));
+        wormABuf.resize(std::size_t(kChunkSize3));
+        wormBBuf.resize(std::size_t(kChunkSize3));
         // grid order: x + y * size + z * size * size
         m_cheese->GenUniformGrid3D(cheeseBuf.data(), float(baseX), float(baseY), float(baseZ),
                                    kChunkSize, kChunkSize, kChunkSize, 1.0f, 1.0f, 1.0f,
                                    m_seed + 2);
-        m_noodle->GenUniformGrid3D(noodleBuf.data(), float(baseX), float(baseY), float(baseZ),
-                                   kChunkSize, kChunkSize, kChunkSize, 1.0f, 1.0f, 1.0f,
-                                   m_seed + 3);
+        m_wormA->GenUniformGrid3D(wormABuf.data(), float(baseX), float(baseY), float(baseZ),
+                                  kChunkSize, kChunkSize, kChunkSize, 1.0f, 1.0f, 1.0f,
+                                  m_seed + 3);
+        m_wormB->GenUniformGrid3D(wormBBuf.data(), float(baseX), float(baseY), float(baseZ),
+                                  kChunkSize, kChunkSize, kChunkSize, 1.0f, 1.0f, 1.0f,
+                                  m_seed + 4);
         for (int z = 0; z < kChunkSize; ++z)
             for (int y = 0; y < kChunkSize; ++y)
                 for (int x = 0; x < kChunkSize; ++x) {
@@ -274,7 +293,14 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
                     const std::size_t i =
                         std::size_t(x) + std::size_t(y) * kChunkSize +
                         std::size_t(z) * kChunkSize * kChunkSize;
-                    if (cheeseBuf[i] > 0.56f || noodleBuf[i] > 0.90f)
+                    // Cheese opens up with depth. Near the surface a big blob just punches
+                    // a crater in the ground you fall into; the rooms worth finding belong
+                    // further down, and this also keeps the crust from reading as sponge.
+                    const int depth = heights[z][x] - wy;
+                    const float cheeseT = depth > 40 ? 0.50f : (depth > 20 ? 0.56f : 0.62f);
+                    // distance from the curve where both fields vanish -> a round tunnel
+                    const float a = wormABuf[i], b = wormBBuf[i];
+                    if (cheeseBuf[i] > cheeseT || a * a + b * b < kWormR2)
                         chunk.set(x, y, z, blocks::Air);
                 }
 

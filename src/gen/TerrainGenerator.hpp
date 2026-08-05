@@ -31,7 +31,11 @@ private:
     FastNoise::SmartNode<> m_height;    // domain-warped fbm, [-1,1]
     FastNoise::SmartNode<> m_continent; // very low frequency, drives the spline
     FastNoise::SmartNode<> m_cheese;    // 3d fbm cave blobs
-    FastNoise::SmartNode<> m_noodle;    // ridged thin winding tunnels
+    // Worm tunnels are the intersection of these two: the places where BOTH are near zero
+    // form a 1D curve through the volume, and carving a radius around it gives a tunnel.
+    // One ridged field on its own only ever gives sheets, which is what the old noodle was.
+    FastNoise::SmartNode<> m_wormA;
+    FastNoise::SmartNode<> m_wormB;
 };
 
 } // namespace vx
