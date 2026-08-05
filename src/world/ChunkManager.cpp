@@ -298,8 +298,18 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         // otherwise get meshed dark.
         const auto markLit = [&](ChunkPos col) {
             for (int cy = 0; cy < kWorldChunksY; ++cy)
-                if (const auto cit = m_chunks.find({col.x, cy, col.z}); cit != m_chunks.end())
+                if (const auto cit = m_chunks.find({col.x, cy, col.z}); cit != m_chunks.end()) {
                     cit->second.lit = true;
+                    // A RE-seed changes light in a chunk that is already meshed, and the
+                    // seeder writes through Chunk::setLight directly (the sky descent and
+                    // fillLight) rather than LightEngine::setLevel, which is the only thing
+                    // that marks a chunk touched. So nothing asked for a remesh and the
+                    // chunk kept its stale baked light until some unrelated edit forced
+                    // one - that is the lighting that looks frozen until you break a block
+                    // next to it. Meshes bake light, so a re-seed has to invalidate them.
+                    if (cit->second.state == ChunkState::Meshed)
+                        cit->second.state = ChunkState::Ready;
+                }
             m_meshScanDirty = true; // newly lit -> meshable
             // Sky light spreads sideways out of this column, and an absent neighbour reads
             // as stone — so a column lit before its neighbours exist gets a dark edge that
