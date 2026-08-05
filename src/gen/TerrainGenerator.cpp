@@ -73,8 +73,11 @@ std::int32_t floorDivI(std::int32_t a, std::int32_t b) {
 
 constexpr int kSeaLevel = 62;   // air at or below this over the seafloor becomes water
 constexpr int kCaveDepth = 56;  // caves only within this many blocks below the surface
-constexpr int kTreeCell = 7;    // one tree candidate per 7x7 column cell
-constexpr int kTreeCanopyR = 4; // scan overlap: >= the widest canopy so no tree is missed
+constexpr int kTreeCell = 7; // one tree candidate per 7x7 column cell
+// Scan overlap. MUST be >= the widest horizontal reach of any species or trees get sliced
+// off at chunk borders — a tree is only placed by chunks that bother to consider its cell.
+// Worst case is an oak: branch length 3 plus a radius-2 leaf blob on the end.
+constexpr int kTreeCanopyR = 6;
 constexpr int kSnowLine = 205;  // peaks at/above this get snow (jittered per column)
 
 // glow-lit test room kept from M9 as the lighting regression anchor; a 1-block stone
@@ -340,53 +343,109 @@ void TerrainGenerator::placeTrees(Chunk& chunk, ChunkPos pos) const {
             if (surf < kSeaLevel + 2)
                 continue; // no trees on beaches or underwater
 
-            // per-tree variation: an independent hash drives size/shape/raggedness, and a
-            // per-voxel hash punches holes in the canopy so no two trees are the same and
-            // none is a solid blob. all deterministic -> still seamless across chunk borders.
+            // per-tree variation: an independent hash drives size and shape. everything
+            // below is a pure function of the tree's world position, which is what lets
+            // every chunk it overlaps compute the identical tree with no neighbour lookups.
             const std::uint32_t rv = voxelHash(tx, 7, tz);
             const auto leaf = [&](int wx, int wy, int wz, int holePerMille) {
                 if (int(voxelHash(wx, wy, wz) % 1000) >= holePerMille)
                     put(wx, wy, wz, blocks::Leaves);
             };
+            // A clump of leaves centred anywhere — the piece that lets a canopy be built
+            // out of parts hanging off branch ends instead of one ellipsoid sitting on the
+            // trunk. Squashed vertically because a sphere of leaves reads as a ball.
+            const auto blob = [&](int bx, int by, int bz, int r, int holePerMille) {
+                for (int dy = -r; dy <= r; ++dy)
+                    for (int dz = -r; dz <= r; ++dz)
+                        for (int dx = -r; dx <= r; ++dx) {
+                            const int rr = dx * dx + dz * dz + dy * dy * 2;
+                            if (rr <= r * r + 1)
+                                leaf(bx + dx, by + dy, bz + dz,
+                                     rr > (r - 1) * (r - 1) ? holePerMille : holePerMille / 4);
+                        }
+            };
+            // A limb from the trunk at fromY, out along ang, rising as it goes. Returns
+            // where it ended so the caller can hang a clump there.
+            const auto limb = [&](int fromY, float ang, int len, int rise) {
+                int ex = tx, ey = fromY, ez = tz;
+                for (int t = 1; t <= len; ++t) {
+                    ex = tx + int(std::lround(std::cos(ang) * float(t)));
+                    ez = tz + int(std::lround(std::sin(ang) * float(t)));
+                    ey = fromY + (t * rise + len - 1) / len;
+                    put(ex, ey, ez, blocks::Wood);
+                }
+                return glm::ivec3{ex, ey, ez};
+            };
 
-            if (hsh & (1u << 22)) {
-                // SPRUCE: tall, tiered conical needles; height + width jittered, gappy
-                const int trunk = 7 + int(rv % 6u);       // 7..12
-                const int maxR = 2 + int((rv >> 4) & 1u); // 2..3
+            // Species comes from a coarse region hash, not per tree, so the world grows
+            // pine stands and oak groves instead of salt-and-pepper mixing every cell.
+            const std::uint32_t region = cellHash((cx >> 3) * 31 + m_seed, (cz >> 3) * 17);
+            int species = int(region % 3u);
+            if ((rv >> 17) % 5u == 0u) // a few strays keep a stand from looking planted
+                species = int((rv >> 19) % 3u);
+
+            if (species == 0) {
+                // PINE: tall bare lower trunk, then narrow tiers with GAPS between them.
+                // The gaps are the whole silhouette — a continuous cone just reads as a
+                // green triangle, which is what the old spruce was.
+                const int trunk = 9 + int(rv % 6u); // 9..14
                 for (int i = 1; i <= trunk; ++i)
                     put(tx, surf + i, tz, blocks::Wood);
                 put(tx, surf + trunk + 1, tz, blocks::Leaves); // tip
-                const int leafTop = surf + trunk;
-                const int leafBot = surf + 2 + int((rv >> 8) & 1u);
-                for (int wy = leafTop; wy >= leafBot; --wy) {
-                    int r = (leafTop - wy) / 2; // widening cone, a tier every two rows
-                    if (r > maxR)
-                        r = maxR;
+                const int bare = trunk / 3 + 1;                // no branches down here
+                for (int wy = surf + trunk; wy > surf + bare; --wy) {
+                    const int fromTop = surf + trunk - wy;
+                    if (fromTop % 3 == 2)
+                        continue; // the gap between tiers
+                    int r = 1 + fromTop / 4;
+                    if (r > 3)
+                        r = 3;
+                    if (fromTop % 3 == 1 && r > 1)
+                        --r; // tiers taper within themselves
                     for (int dz = -r; dz <= r; ++dz)
                         for (int dx = -r; dx <= r; ++dx) {
                             if (dx == 0 && dz == 0)
                                 continue; // keep the trunk clear
                             if (dx * dx + dz * dz <= r * r + 1)
-                                leaf(tx + dx, wy, tz + dz, 250);
+                                leaf(tx + dx, wy, tz + dz, 200);
                         }
                 }
-            } else {
-                // OAK: bushy rounded canopy; radius, height + edge raggedness jittered
-                const int trunk = 4 + int(rv % 4u);      // 4..7
-                const int cr = 2 + int((rv >> 3) & 1u);  // canopy radius 2..3
-                const int ch = 1 + int((rv >> 6) & 1u);  // vertical half-extent 1..2
-                const int topY = surf + trunk;
+            } else if (species == 1) {
+                // OAK: real limbs. 3-4 of them fan off the upper trunk and each carries its
+                // own clump, so the canopy is the union of off-centre parts — lumpy and
+                // asymmetric by construction rather than by punching holes in a ball.
+                const int trunk = 5 + int(rv % 3u); // 5..7
                 for (int i = 1; i <= trunk; ++i)
                     put(tx, surf + i, tz, blocks::Wood);
-                const float edge = float(cr) + 0.4f;
-                const float inner = float(cr - 1) * float(cr - 1);
-                for (int dy = -ch; dy <= ch + 1; ++dy)
-                    for (int dz = -cr; dz <= cr; ++dz)
-                        for (int dx = -cr; dx <= cr; ++dx) {
-                            const float rr = float(dx * dx + dz * dz) + float(dy * dy) * 1.5f;
-                            if (rr <= edge * edge)
-                                leaf(tx + dx, topY + dy, tz + dz, rr > inner ? 430 : 80);
-                        }
+                const int n = 3 + int((rv >> 5) & 1u);              // 3..4 limbs
+                const float base = float(rv >> 9 & 63u) * 0.0981f;  // random fan rotation
+                for (int b = 0; b < n; ++b) {
+                    const std::uint32_t bh = voxelHash(tx, 20 + b, tz);
+                    const float ang = base + float(b) * 6.2832f / float(n) +
+                                      (float(bh & 15u) - 7.5f) * 0.035f;
+                    const int len = 2 + int((bh >> 6) & 1u);        // 2..3
+                    const int from = surf + trunk - int((bh >> 8) % 3u); // stagger heights
+                    const glm::ivec3 end = limb(from, ang, len, 1 + int((bh >> 11) & 1u));
+                    blob(end.x, end.y + 1, end.z, 2, 300);
+                }
+                // r=3 rather than 2: at r=2 the vertical squash leaves only one row above
+                // and below centre, which reads as a disc balanced on the trunk instead of
+                // a crown. 3 keeps the reach inside kTreeCanopyR while giving it volume.
+                blob(tx, surf + trunk + 1, tz, 3, 220);
+            } else {
+                // BIRCH: slender and tall with a small high canopy, so a stand of them
+                // reads as vertical lines. Deliberately the sparsest of the three.
+                const int trunk = 7 + int(rv % 4u); // 7..10
+                for (int i = 1; i <= trunk; ++i)
+                    put(tx, surf + i, tz, blocks::Wood);
+                const int topY = surf + trunk;
+                for (int b = 0; b < 2; ++b) {
+                    const std::uint32_t bh = voxelHash(tx, 40 + b, tz);
+                    const float ang = float(bh & 63u) * 0.0981f + float(b) * 3.1416f;
+                    const glm::ivec3 end = limb(topY - 1 - int((bh >> 7) & 1u), ang, 2, 1);
+                    blob(end.x, end.y + 1, end.z, 2, 260);
+                }
+                blob(tx, topY + 1, tz, 2, 240);
             }
         }
 }
