@@ -188,6 +188,7 @@ void ChunkManager::processEvictions(Renderer& renderer, JobSystem& jobs) {
         m_seededColumns.erase(ChunkPos{m_evictList[i].x, 0, m_evictList[i].z});
         m_provisionalColumns.erase(ChunkPos{m_evictList[i].x, 0, m_evictList[i].z});
         m_chunks.erase(it);
+        m_visDirty = true; // reshuffles meta order; see the note at try_emplace
         m_evictList[i] = m_evictList.back();
         m_evictList.pop_back();
     }
@@ -417,6 +418,12 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         entry.voxels = voxels;
         entry.detailed = detailed;
         m_chunks.try_emplace(pos, std::move(entry));
+        // The cave-cull visibility bits are indexed by META ORDER, and collectDrawInfo
+        // rebuilds that order by walking m_chunks — an open-addressed map, so ANY insert
+        // or erase can reshuffle every index. Leaving the bits alone across that reshuffle
+        // points each one at a different chunk, which culls whatever it lands on: chunk
+        // tops blinking out and the caves under them showing through while you fly.
+        m_visDirty = true;
         ++m_jobsInFlight;
         jobs.submit([this, voxels, pos, detailed] {
             const auto t0 = Clock::now();
