@@ -16,13 +16,13 @@ namespace vx {
 namespace {
 
 constexpr int kTile = 16;
-constexpr int kLayers = 14;
+constexpr int kLayers = 15;
 
 // filename (without extension) per layer, looked up in assets/textures/
 constexpr const char* kNames[kLayers] = {"stone",    "dirt",     "grass_top", "grass_side",
                                          "glow",     "wood_side", "wood_top", "leaves",
                                          "sand",     "snow",     "planks",    "bricks",
-                                         "coal_ore", "iron_ore"};
+                                         "coal_ore", "iron_ore", "gravel"};
 
 // value hash in [0,1) — deterministic per texel so textures are identical every run
 float h01(int x, int y, int salt) {
@@ -163,11 +163,20 @@ Rgba oreSpeckle(int x, int y, int z, float r, float g, float b) {
 Rgba genCoalOre(int x, int y) { return oreSpeckle(x, y, 31, 0.13f, 0.12f, 0.14f); }
 Rgba genIronOre(int x, int y) { return oreSpeckle(x, y, 47, 0.72f, 0.56f, 0.42f); }
 
+// Loose pebbles: a few grey tones scattered per texel rather than one tinted noise field,
+// so it reads as aggregate next to stone instead of as dirty stone.
+Rgba genGravel(int x, int y) {
+    const float pick = h01(x, y, 61);
+    const float tone = pick < 0.30f ? 0.42f : (pick < 0.62f ? 0.55f : (pick < 0.86f ? 0.66f : 0.34f));
+    const float n = 0.90f + 0.16f * h01(x, y, 62);
+    return shade(tone, tone * 0.98f, tone * 0.94f, n);
+}
+
 constexpr std::array<Gen, kLayers> kGens = {genStone,    genDirt,    genGrassTop,
                                             genGrassSide, genGlow,   genWoodSide,
                                             genWoodTop,  genLeaves,  genSand,
                                             genSnow,    genPlanks,  genBricks,
-                                            genCoalOre, genIronOre};
+                                            genCoalOre, genIronOre, genGravel};
 
 } // namespace
 

@@ -249,6 +249,11 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
                         id = blocks::CoalOre;
                     else if (depth > 28 && roll >= 26u && roll < 38u)
                         id = blocks::IronOre;
+                    // Gravel rides the same lattice but in a wide shallow band, so a pocket
+                    // opened by a cave collapses instead of holding a clean roof — which is
+                    // the point of it falling at all.
+                    else if (depth > 5 && depth < 34 && roll >= 38u && roll < 62u)
+                        id = blocks::Gravel;
                 }
                 if (wy >= h - 3) {
                     if (coastal)

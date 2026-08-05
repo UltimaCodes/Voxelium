@@ -42,7 +42,13 @@ inline constexpr BlockId IronOre = 13;
 // serializer and the region format with no format change anywhere.
 inline constexpr BlockId WaterL1 = 14;
 inline constexpr BlockId WaterL7 = 20;
-inline constexpr int kBlockCount = 21;
+inline constexpr BlockId Gravel = 21;
+inline constexpr int kBlockCount = 22;
+
+// Blocks with nothing under them fall. Sand and gravel only — dirt and stone staying put
+// is what keeps a cliff a cliff, and the sim scans a box every tick, so this predicate is
+// on the hot path and wants to stay a compare rather than a table lookup.
+inline constexpr bool falls(BlockId id) { return id == Sand || id == Gravel; }
 
 inline constexpr int luminance(BlockId id) { return id == Glow ? 14 : 0; }
 

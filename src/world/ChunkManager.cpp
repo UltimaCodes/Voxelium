@@ -993,6 +993,42 @@ int ChunkManager::setBlocks(Renderer& renderer, LightEngine& light,
     return applied;
 }
 
+int ChunkManager::stepFalling(Renderer& renderer, LightEngine& light,
+                              const glm::dvec3& around) {
+    // Smaller box than the fluid: a falling block is only interesting while you can watch
+    // it fall, and every cell in here is scanned every tick.
+    constexpr int kR = 24;
+    const glm::ivec3 c{int(std::floor(around.x)), int(std::floor(around.y)),
+                       int(std::floor(around.z))};
+    const int y0 = std::max(c.y - kR, 1); // y0 >= 1: nothing falls out of the world floor
+    const int y1 = std::min(c.y + kR, kWorldHeight - 1);
+
+    m_fluidEdits.clear();
+    // Bottom-up. Every decision reads the state at the START of the tick, so a column only
+    // moves its lowest block this tick and the one above it follows next tick — which is
+    // what a collapsing pile looks like. Top-down would read the hole this block just left
+    // and drop the whole column at once.
+    for (int y = y0; y <= y1; ++y)
+        for (int z = c.z - kR; z <= c.z + kR; ++z)
+            for (int x = c.x - kR; x <= c.x + kR; ++x) {
+                const glm::ivec3 p{x, y, z};
+                const BlockId here = blockAtWorld(p);
+                if (!blocks::falls(here))
+                    continue;
+                const BlockId below = blockAtWorld({x, y - 1, z});
+                // falls through air and through water — sinking is the behaviour you want
+                // when you drop gravel into a lake, and water is not a support
+                if (below != blocks::Air && !blocks::isWater(below))
+                    continue;
+                m_fluidEdits.push_back({p, blocks::Air});
+                m_fluidEdits.push_back({{x, y - 1, z}, here});
+            }
+
+    if (m_fluidEdits.empty())
+        return 0;
+    return setBlocks(renderer, light, m_fluidEdits);
+}
+
 int ChunkManager::stepFluid(Renderer& renderer, LightEngine& light,
                             const glm::dvec3& around) {
     // Radius is small on purpose: fluid only has to be right where it can be seen moving,

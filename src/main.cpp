@@ -640,6 +640,48 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                 return 1;
         }
 
+        // M20: a floating column of sand must come down and stack, one layer per tick, and
+        // then stop. The per-tick part matters as much as the resting place — reading the
+        // state mid-tick instead of at the start of it would teleport the whole column.
+        {
+            const int sx = 90, sz = 90;
+            const int floorY = world.generator().surfaceHeight(sx, sz) + 4;
+            std::vector<vx::ChunkManager::BlockEdit> setup;
+            setup.push_back({{sx, floorY, sz}, vx::blocks::Stone});
+            for (int i = 1; i <= 3; ++i) // clear the shaft so nothing else is in the way
+                for (int dy = 0; dy < 12; ++dy)
+                    setup.push_back({{sx, floorY + dy + 1, sz}, vx::blocks::Air});
+            for (int i = 0; i < 3; ++i) // three sand blocks hanging with a gap under them
+                setup.push_back({{sx, floorY + 5 + i, sz}, vx::blocks::Sand});
+            world.setBlocks(rc.renderer, light, setup);
+
+            const glm::dvec3 near{double(sx), double(floorY), double(sz)};
+            world.stepFalling(rc.renderer, light, near);
+            // One tick moves the LOWEST block of the column only. Checked on the column
+            // itself rather than on the returned edit count: the scan box is 49 blocks
+            // across and catches natural sand and gravel elsewhere in the world, so the
+            // count is not ours to predict.
+            const bool stepOk = world.blockAtWorld({sx, floorY + 4, sz}) == vx::blocks::Sand &&
+                                world.blockAtWorld({sx, floorY + 5, sz}) == vx::blocks::Air &&
+                                world.blockAtWorld({sx, floorY + 6, sz}) == vx::blocks::Sand;
+            int settleTick = 1;
+            for (; settleTick < 40; ++settleTick)
+                if (world.stepFalling(rc.renderer, light, near) == 0)
+                    break;
+            int stack = 0;
+            for (int dy = 1; dy <= 4; ++dy)
+                if (world.blockAtWorld({sx, floorY + dy, sz}) == vx::blocks::Sand)
+                    ++stack;
+            const bool airAbove = world.blockAtWorld({sx, floorY + 5, sz}) == vx::blocks::Air;
+            const bool fallOk = stepOk && stack == 3 && airAbove;
+            VX_INFO("falling: one block/tick=%d, stacked %d of 3 on the floor, source clear=%d,"
+                    " settled after %d ticks -> %s",
+                    stepOk ? 1 : 0, stack, airAbove ? 1 : 0, settleTick,
+                    fallOk ? "PASS" : "FAIL");
+            if (!fallOk)
+                return 1;
+        }
+
         const glm::ivec3 ep{18, world.generator().surfaceHeight(18, 18) + 6, 18};
         world.setBlock(rc.renderer, light, ep, vx::blocks::Stone);
         const bool placed = world.blockAtWorld(ep) == vx::blocks::Stone;
@@ -1408,7 +1450,7 @@ int main(int argc, char** argv) {
     constexpr int kHotbar[] = {vx::blocks::Stone,  vx::blocks::Dirt,   vx::blocks::Grass,
                                vx::blocks::Sand,   vx::blocks::Snow,   vx::blocks::Wood,
                                vx::blocks::Planks, vx::blocks::Bricks, vx::blocks::Leaves,
-                               vx::blocks::Glow,   vx::blocks::Water};
+                               vx::blocks::Gravel, vx::blocks::Glow,   vx::blocks::Water};
     constexpr int kHotbarCount = int(sizeof(kHotbar) / sizeof(kHotbar[0]));
     int hotbarSel = 0;
     int placeBlock = kHotbar[hotbarSel];
@@ -1554,6 +1596,14 @@ int main(int argc, char** argv) {
         if (fluidClock >= 1.0 / 6.0) {
             fluidClock = 0.0;
             world->stepFluid(renderer, *light, camera.position);
+        }
+        // Falling runs faster than water: 6 Hz makes a collapsing pile look like it is
+        // being dragged down a step at a time, where gravity should read as quick.
+        static double fallClock = 0.0;
+        fallClock += dt;
+        if (fallClock >= 1.0 / 12.0) {
+            fallClock = 0.0;
+            world->stepFalling(renderer, *light, camera.position);
         }
         if (world->consumeDirty()) {
             world->collectDrawInfo(drawInfo, waterInfo);

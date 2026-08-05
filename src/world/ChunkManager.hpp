@@ -100,6 +100,12 @@ public:
     // many voxels and one-at-a-time would settle light and remesh per voxel.
     int stepFluid(Renderer& renderer, LightEngine& light, const glm::dvec3& around);
 
+    // One gravity step for sand and gravel near `around`. Same batched path as the fluid:
+    // a tick moves many voxels and doing them one at a time would settle light and remesh
+    // per voxel. Scanned bottom-up so the lowest block of a column moves first and the
+    // stack collapses downward a layer per tick instead of the whole column teleporting.
+    int stepFalling(Renderer& renderer, LightEngine& light, const glm::dvec3& around);
+
     const TerrainGenerator& generator() const { return m_gen; }
     RegionStore& regions() { return m_regions; }
 
