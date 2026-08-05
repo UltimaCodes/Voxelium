@@ -125,7 +125,7 @@ void ChunkManager::rescan(ChunkPos center) {
     });
 }
 
-void ChunkManager::processEvictions(Renderer& renderer) {
+void ChunkManager::processEvictions(Renderer& renderer, JobSystem& jobs) {
     for (std::size_t i = 0; i < m_evictList.size();) {
         const auto it = m_chunks.find(m_evictList[i]);
         if (it == m_chunks.end()) {
@@ -143,10 +143,30 @@ void ChunkManager::processEvictions(Renderer& renderer) {
         }
         // an in-flight re-gen whose job already finished: the entry vanishes here, and the
         // regen-done drain releases that orphaned chunk when it can't find the entry
-        if (e.dirty) { // player-edited: persist before it leaves memory
-            m_saveScratch.clear();
-            ChunkSerializer::serialize(*e.voxels, m_saveScratch);
-            m_regions.save(m_evictList[i], m_saveScratch);
+        // Persist player edits, and also cache DETAILED generated chunks so coming back
+        // reloads them instead of paying full generation again. Coarse chunks are left to
+        // regenerate: they are the cheap half (no caves, which are ~4x the cost) and
+        // caching them would spend main-thread serialize time to save very little.
+        // Serialize on a worker, never here. A teleport evicts thousands of chunks at
+        // once and doing this inline measured as a 128 ms freeze — and blocking the main
+        // thread on disk work is exactly what the streaming design forbids. The job holds
+        // a ref, so the chunk cannot return to the pool underneath it; this entry simply
+        // waits out another pass or two of the evict list, which it is already on.
+        if ((e.dirty || e.detailed) && !e.saving) {
+            e.saving = true;
+            Chunk* voxels = e.voxels;
+            const ChunkPos at = m_evictList[i];
+            const bool edited = e.dirty;
+            const bool detailed = e.detailed;
+            voxels->retainJob();
+            jobs.submit([this, voxels, at, edited, detailed] {
+                std::vector<std::uint8_t> bytes;
+                ChunkSerializer::serialize(*voxels, bytes);
+                m_regions.save(at, std::move(bytes), edited, detailed);
+                voxels->releaseJob();
+            });
+            ++i; // comes back once the job drops its ref
+            continue;
         }
         if (e.range.count != 0) {
             renderer.free(e.range);
@@ -198,7 +218,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     m_phaseSum.rescanMs += rescanMs;
 
     const auto phase1 = Clock::now();
-    processEvictions(renderer);
+    processEvictions(renderer, jobs);
     const double evictMs = msSince(phase1);
     m_phase.evictMs = std::max(m_phase.evictMs, evictMs);
     m_phaseSum.evictMs += evictMs;
@@ -359,6 +379,13 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         if (m_chunks.contains(pos))
             continue;
         Chunk* voxels = m_pool.acquire();
+        // Pooled chunks keep their light array across reuse (fillLight only rewrites
+        // values, it never frees), so a recycled chunk arrives carrying the PREVIOUS
+        // occupant's light. Seeding does not fully overwrite it: the sky descent stops at
+        // the first opaque block, and nothing clears the block-light nibbles at all, so
+        // whatever was under the old terrain's surface survives under the new one. That
+        // made lighting depend on which chunk happened to be recycled into this slot.
+        voxels->fillLight(0);
         voxels->retainJob();
         // far chunks generate coarse (no caves/trees); re-gen'd detailed when approached
         const bool detailed = lodForDist2(horizontalDist2(pos, center)) < kCoarseLod;
@@ -369,10 +396,16 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         ++m_jobsInFlight;
         jobs.submit([this, voxels, pos, detailed] {
             const auto t0 = Clock::now();
-            // disk first: a saved (player-edited) chunk loads instead of regenerating.
-            // load() is thread-safe; the read happens here on the worker, never the
-            // main thread. absent chunks fall back to deterministic gen.
-            if (!m_regions.load(pos, *voxels))
+            // Disk first: a saved chunk loads instead of regenerating. load() is
+            // thread-safe; the read happens here on the worker, never the main thread.
+            //
+            // A cached GENERATED chunk is only usable at the detail level it was made for
+            // — a coarse blob has no caves or trees, and a detailed one carries geometry
+            // the coarse path deliberately skips — so a mismatch regenerates. An EDITED
+            // chunk is used regardless, because losing a player's changes to satisfy an
+            // LOD preference would be the worse trade.
+            const RegionStore::Loaded got = m_regions.load(pos, *voxels);
+            if (!got.found || !(got.edited || got.detailed == detailed))
                 m_gen.generate(*voxels, pos, detailed);
             m_genNanos.fetch_add(nsSince(t0), std::memory_order_relaxed);
             m_genCount.fetch_add(1, std::memory_order_relaxed);
@@ -504,11 +537,14 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         if (it == m_chunks.end() || it->second.pendingDetail)
             continue;
         Chunk* c2 = m_pool.acquire();
+        c2->fillLight(0); // same reuse hazard as the initial gen path
         c2->retainJob();
         it->second.pendingDetail = c2;
         ++m_jobsInFlight;
         jobs.submit([this, c2, pos] {
-            if (!m_regions.load(pos, *c2))
+            // this path always wants detail, so a cached coarse blob is no use here
+            const RegionStore::Loaded got = m_regions.load(pos, *c2);
+            if (!got.found || !(got.edited || got.detailed))
                 m_gen.generate(*c2, pos, /*detailed=*/true);
             c2->releaseJob();
             std::lock_guard lock(m_regenDoneMutex);
@@ -727,7 +763,7 @@ void ChunkManager::saveDirty() {
         if (e.dirty && e.voxels) {
             m_saveScratch.clear();
             ChunkSerializer::serialize(*e.voxels, m_saveScratch);
-            m_regions.save(pos, m_saveScratch);
+            m_regions.save(pos, m_saveScratch, /*edited=*/true, e.detailed);
             e.dirty = false;
             ++saved;
         }
@@ -840,6 +876,9 @@ int ChunkManager::setBlocks(Renderer& renderer, LightEngine& light,
         }
         c->set(lx, ly, lz, e.id);
         it->second.dirty = true; // content changed: this chunk now needs persisting
+        // if a save job already ran for this chunk it captured the pre-edit voxels, so
+        // clear the guard or the new content would never be written
+        it->second.saving = false;
         light.onBlockChanged(e.pos, old, e.id);
         ++applied;
 
@@ -894,6 +933,8 @@ ChunkManager::Stats ChunkManager::stats() const {
             const Entry& e = item.second;
             if (e.state == ChunkState::Meshed)
                 ++sc.meshed;
+            if (!e.lit)
+                ++sc.unlit;
             if (e.voxels->uniform())
                 ++sc.uniformChunks;
             sc.totalQuads += e.quads;
@@ -903,6 +944,7 @@ ChunkManager::Stats ChunkManager::stats() const {
         m_scanCache = sc;
     }
     s.meshed = m_scanCache.meshed;
+    s.unlit = m_scanCache.unlit;
     s.uniformChunks = m_scanCache.uniformChunks;
     s.totalQuads = m_scanCache.totalQuads;
     s.voxelBytes = m_scanCache.voxelBytes;
