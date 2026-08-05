@@ -69,9 +69,15 @@ vec3 skyColor(vec3 d) {
 }
 
 // march R from world-rel point P, return reflected colour (scene hit or sky)
-vec3 reflection(vec3 P, vec3 R) {
+vec3 reflection(vec3 P, vec3 R, float jitter) {
+    // Start the march a fraction of a step along, varying per pixel. Every ray used to
+    // begin at the same offset and grow by the same ratio, so against a flat water plane
+    // the sample depths landed in lockstep across the screen and the acceptance window
+    // resolved in bands — horizontal stripes that slid as the view angle changed the ray
+    // slope. Breaking the phase per pixel turns that banding into noise the eye reads as
+    // surface detail instead of a grid.
     float stepLen = 0.6;
-    vec3 sp = P;
+    vec3 sp = P + R * (stepLen * jitter);
     for (int i = 0; i < 28; ++i) {
         sp += R * stepLen;
         vec4 clip = uViewProj * vec4(sp, 1.0);
@@ -127,7 +133,8 @@ void main() {
     vec3 tint = mix(vec3(0.12, 0.30, 0.36), vec3(0.02, 0.09, 0.16), absorb);
     refr = mix(refr, tint, absorb) * (0.4 + 0.6 * vSky);
 
-    vec3 refl = reflection(vWorldRel, reflect(-V, N)) * (0.4 + 0.6 * vSky);
+    float jitter = hash21(gl_FragCoord.xy + fract(uTime) * 17.0);
+    vec3 refl = reflection(vWorldRel, reflect(-V, N), jitter) * (0.4 + 0.6 * vSky);
 
     vec3 H = normalize(uSunL + V);
     float spec = pow(max(dot(N, H), 0.0), 120.0) * 1.1 * vSky;
