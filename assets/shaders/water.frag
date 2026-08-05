@@ -91,6 +91,20 @@ vec3 reflection(vec3 P, vec3 R, float jitter) {
             float sceneZ = -uNear / rawD;   // view-space z of the scene at uv (negative)
             float marchZ = -clip.w;         // view-space z of the marched point
             if (marchZ < sceneZ && marchZ > sceneZ - 2.5) {
+                // Binary-refine the crossing. A linear march only knows the hit to within
+                // one (growing) step, and at grazing angles that step is metres long — the
+                // reflection then samples well past the silhouette it should have stopped
+                // at, which is what smeared reflected trees into vertical streaks.
+                vec3 lo = sp - R * stepLen, hi = sp;
+                for (int k = 0; k < 5; ++k) {
+                    vec3 mid = (lo + hi) * 0.5;
+                    vec4 mc = uViewProj * vec4(mid, 1.0);
+                    vec2 muv = mc.xy / mc.w * 0.5 + 0.5;
+                    float mz = -uNear / max(texture(uSceneDepth, muv).r, 1e-7);
+                    if (-mc.w < mz) hi = mid; else lo = mid;
+                }
+                vec4 hc = uViewProj * vec4(hi, 1.0);
+                uv = hc.xy / hc.w * 0.5 + 0.5;
                 // fade near screen edges to hide the SSR cutoff
                 vec2 e = smoothstep(0.0, 0.12, uv) * smoothstep(0.0, 0.12, 1.0 - uv);
                 float edge = e.x * e.y;
@@ -110,7 +124,14 @@ void main() {
         N = normalize(vec3(-g.x * 6.0, 1.0, -g.y * 6.0));
     }
     vec3 V = normalize(-vWorldRel); // camera at the origin
-    float fres = mix(0.02, 1.0, pow(1.0 - max(dot(N, V), 0.0), 5.0));
+    // Schlick off water's real F0 (0.02) is physically right and looks like jelly: from
+    // above you get 2% reflection and 98% murky refraction, so the surface reads as a
+    // translucent solid rather than a mirror. Real water sells itself on reflection at
+    // every angle, and the look people mean by "raytraced water" is a much higher floor.
+    // This is a deliberate art choice, not a physical one - the grazing end still goes to
+    // 1.0, so the Fresnel falloff is intact, the floor is just lifted.
+    const float kBaseReflect = 0.34;
+    float fres = mix(kBaseReflect, 1.0, pow(1.0 - max(dot(N, V), 0.0), 5.0));
 
     vec2 res = vec2(textureSize(uSceneDepth, 0));
     vec2 suv = gl_FragCoord.xy / res;
@@ -136,10 +157,13 @@ void main() {
     float jitter = hash21(gl_FragCoord.xy + fract(uTime) * 17.0);
     vec3 refl = reflection(vWorldRel, reflect(-V, N), jitter) * (0.4 + 0.6 * vSky);
 
+    // two-lobe glint: a tight hot core plus a broad sheen, which is what separates a wet
+    // mirror from a plastic-looking one under a single narrow highlight
     vec3 H = normalize(uSunL + V);
-    float spec = pow(max(dot(N, H), 0.0), 120.0) * 1.1 * vSky;
+    float ndh = max(dot(N, H), 0.0);
+    float spec = (pow(ndh, 340.0) * 2.6 + pow(ndh, 34.0) * 0.28) * vSky;
 
-    vec3 col = mix(refr, refl, fres) + uSunColor * 0.5 * spec; // glint fades at night
+    vec3 col = mix(refr, refl, fres) + uSunColor * spec; // glint fades at night
 
     // Shoreline foam: thin water gets an animated fringe. It has to be LIT like everything
     // else - as a constant white it stayed full brightness after dark, so every shoreline
