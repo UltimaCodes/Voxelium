@@ -115,7 +115,10 @@ void main() {
     // (interior leaf pockets, deep cave walls) from crushing to pure black.
     vec3 direct = uSunColor * (ndl * shadow * skyAccess);
     vec3 ambient = uSkyAmbient * (0.10 + 0.90 * skyL) + vec3(0.035, 0.04, 0.05);
-    vec3 torch = vec3(1.35, 0.95, 0.55) * (blockRGB * blockRGB * 1.6);
+    // The emitter's own colour drives the tint now (M18), so the fixed warm multiplier
+    // that used to supply it would double-tint. Keep a slight warm bias for the ember
+    // feel and let the light itself carry the hue out to its falloff.
+    vec3 torch = vec3(1.12, 1.0, 0.88) * (blockRGB * blockRGB * 2.1);
 
     // per-vertex ambient occlusion darkens concave corners smoothly (occluded -> 68%).
     // every terrace step is a concave corner, so a deep AO stacks with the face shading

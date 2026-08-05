@@ -37,12 +37,16 @@ inline constexpr int kBlockCount = 14;
 
 inline constexpr int luminance(BlockId id) { return id == Glow ? 14 : 0; }
 
-// Emitted colour of a light-emitting block, 0..15 per channel. Monochrome for now — the
-// storage and the quad format carry three channels so coloured emitters (M18) only have
-// to change this table and the propagation, not the mesh format or the shaders.
-inline constexpr int emitR(BlockId id) { return luminance(id); }
-inline constexpr int emitG(BlockId id) { return luminance(id); }
-inline constexpr int emitB(BlockId id) { return luminance(id); }
+// Emitted colour of a light-emitting block, 0..15 per channel. The three channels
+// propagate independently, so an emitter's hue survives all the way out to its falloff
+// rather than being a white blob tinted at the end. Glow is a warm ember: red carries
+// furthest, blue dies first, so its pool goes orange at the edges the way firelight does.
+inline constexpr int emitR(BlockId id) { return id == Glow ? 14 : 0; }
+inline constexpr int emitG(BlockId id) { return id == Glow ? 10 : 0; }
+inline constexpr int emitB(BlockId id) { return id == Glow ? 5 : 0; }
+inline constexpr bool emissive(BlockId id) {
+    return emitR(id) > 0 || emitG(id) > 0 || emitB(id) > 0;
+}
 
 // opaque = blocks light and hides faces behind it. water is see-through (renders in the
 // transparent pass, lets light through); leaves are opaque for cheap "fast" foliage.

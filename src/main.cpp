@@ -364,6 +364,22 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         if (!ok)
             return 1;
 
+        // M18: the three block-light channels propagate independently, so a warm emitter
+        // must still be warm out at its falloff - red reaching further than blue. A
+        // monochrome engine would report all three equal here.
+        {
+            const std::uint16_t v = light.lightAt({16, 46, 16});
+            const int r = vx::light::red(v), g = vx::light::green(v), b = vx::light::blue(v);
+            const std::uint16_t far = light.lightAt({16, 48, 19});
+            const int fr = vx::light::red(far), fb = vx::light::blue(far);
+            const bool tinted = r > g && g > b && fr > fb;
+            VX_INFO("light: glow colour rgb %d/%d/%d, at falloff r%d b%d -> %s", r, g, b, fr,
+                    fb, tinted ? "PASS" : "FAIL");
+            if (!tinted)
+                return 1;
+        }
+
+
         vx::Chunk* roomChunk = world.chunkDataMutable({0, 1, 0});
         roomChunk->set(16, 13, 16, vx::blocks::Air);
         light.onBlockChanged({16, 45, 16}, vx::blocks::Glow, vx::blocks::Air);

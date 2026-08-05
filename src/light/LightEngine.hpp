@@ -52,8 +52,10 @@ public:
 
     void process(double budgetMs);
     bool idle() const {
-        return m_queue[0].empty() && m_queue[1].empty() && m_removal[0].empty() &&
-               m_removal[1].empty();
+        for (int c = 0; c < kChannels; ++c)
+            if (!m_queue[c].empty() || !m_removal[c].empty())
+                return false;
+        return true;
     }
 
     // Drained by the manager. Clearing goes through clearTouched() rather than handing
@@ -67,12 +69,17 @@ public:
     // debug/verification
     std::uint16_t lightAt(const glm::ivec3& wp) const;
     int queueDepth() const {
-        return int(m_queue[0].size() + m_queue[1].size() + m_removal[0].size() +
-                   m_removal[1].size());
+        std::size_t n = 0;
+        for (int c = 0; c < kChannels; ++c)
+            n += m_queue[c].size() + m_removal[c].size();
+        return int(n);
     }
 
 private:
-    enum Channel : int { Block = 0, Sky = 1 };
+    // Four independent BFS channels. Block light is three of them so a coloured emitter
+    // keeps its hue across its whole falloff; sky is the fourth because it seeds and
+    // attenuates differently (full strength straight down).
+    enum Channel : int { R = 0, G = 1, B = 2, Sky = 3, kChannels = 4 };
 
     struct Removal {
         glm::ivec3 pos;
@@ -132,10 +139,10 @@ private:
     bool seedStackValid(Chunk** stack) const; // refetch + validate the column's chunks
 
     ChunkManager& m_world;
-    std::vector<glm::ivec3> m_queue[2];
-    std::vector<Removal> m_removal[2];
-    std::size_t m_queueHead[2] = {0, 0};
-    std::size_t m_removalHead[2] = {0, 0};
+    std::vector<glm::ivec3> m_queue[kChannels];
+    std::vector<Removal> m_removal[kChannels];
+    std::size_t m_queueHead[kChannels] = {};
+    std::size_t m_removalHead[kChannels] = {};
     // Every light write that changes a value marks its chunk, plus a neighbour per border
     // face — up to seven membership tests per write. That was a linear scan of m_touched,
     // which grows to hundreds of chunks over a streaming frame, so the dedup cost rose

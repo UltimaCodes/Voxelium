@@ -55,7 +55,12 @@ int LightEngine::getLevel(const glm::ivec3& wp, int channel) const {
     if (!c)
         return 0;
     const std::uint16_t v = c->lightAt(wp.x & 31, wp.y & 31, wp.z & 31);
-    return channel == Sky ? light::sky(v) : light::block(v);
+    switch (channel) {
+        case R: return light::red(v);
+        case G: return light::green(v);
+        case B: return light::blue(v);
+        default: return light::sky(v);
+    }
 }
 
 void LightEngine::setLevel(const glm::ivec3& wp, int channel, int level) {
@@ -68,10 +73,11 @@ void LightEngine::setLevel(const glm::ivec3& wp, int channel, int level) {
     const int y = wp.y & 31;
     const int z = wp.z & 31;
     const std::uint16_t old = c->lightAt(x, y, z);
-    // block light writes all three colour channels: the engine is still monochrome, and
-    // keeping them equal means light::block() is exact and output matches the old path
     const std::uint16_t next =
-        channel == Sky ? light::withSky(old, level) : light::withBlock(old, level);
+        channel == R   ? light::pack(level, light::green(old), light::blue(old), light::sky(old))
+        : channel == G ? light::pack(light::red(old), level, light::blue(old), light::sky(old))
+        : channel == B ? light::pack(light::red(old), light::green(old), level, light::sky(old))
+                       : light::withSky(old, level);
     if (next == old)
         return;
     c->setLight(x, y, z, next);
@@ -226,11 +232,16 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
         for (int y = 0; y < kChunkSize; ++y)
             for (int z = 0; z < kChunkSize; ++z)
                 for (int x = 0; x < kChunkSize; ++x) {
-                    const int lum = blocks::luminance(c->get(x, y, z));
-                    if (lum > 0) {
+                    const BlockId id = c->get(x, y, z);
+                    if (blocks::emissive(id)) {
                         const glm::ivec3 wp{baseX + x, cy * kChunkSize + y, baseZ + z};
-                        setLevel(wp, Block, lum);
-                        enqueue(Block, wp);
+                        const int e[3] = {blocks::emitR(id), blocks::emitG(id),
+                                          blocks::emitB(id)};
+                        for (int ch = R; ch <= B; ++ch)
+                            if (e[ch] > 0) {
+                                setLevel(wp, ch, e[ch]);
+                                enqueue(ch, wp);
+                            }
                     }
                 }
     }
@@ -286,12 +297,12 @@ void LightEngine::removeStep(int channel, Removal r) {
 
 void LightEngine::onBlockChanged(const glm::ivec3& wp, BlockId oldId, BlockId newId) {
     resetChunkCache();
-    const int oldLum = blocks::luminance(oldId);
-    const int newLum = blocks::luminance(newId);
+    const int oldE[3] = {blocks::emitR(oldId), blocks::emitG(oldId), blocks::emitB(oldId)};
+    const int newE[3] = {blocks::emitR(newId), blocks::emitG(newId), blocks::emitB(newId)};
 
     if (blocks::opaque(newId) && !blocks::opaque(oldId)) {
         // placed a solid block: kill whatever light was in this voxel
-        for (int ch = 0; ch < 2; ++ch) {
+        for (int ch = 0; ch < kChannels; ++ch) {
             const int level = getLevel(wp, ch);
             if (level > 0) {
                 setLevel(wp, ch, 0);
@@ -303,7 +314,8 @@ void LightEngine::onBlockChanged(const glm::ivec3& wp, BlockId oldId, BlockId ne
         // broke a block: pull light in from every neighbor, and if the voxel above has
         // direct sky, the column below regains it
         for (int d = 0; d < 6; ++d)
-            enqueue(Block, wp + kStep[d]), enqueue(Sky, wp + kStep[d]);
+            for (int ch = 0; ch < kChannels; ++ch)
+                enqueue(ch, wp + kStep[d]);
         if (getLevel(wp + glm::ivec3(0, 1, 0), Sky) == 15) {
             for (int y = wp.y; y >= 0 && !blocks::opaque(blockAt({wp.x, y, wp.z})); --y) {
                 setLevel({wp.x, y, wp.z}, Sky, 15);
@@ -312,12 +324,14 @@ void LightEngine::onBlockChanged(const glm::ivec3& wp, BlockId oldId, BlockId ne
         }
         markTouched(wp);
     }
-    if (newLum > 0) {
-        setLevel(wp, Block, newLum);
-        enqueue(Block, wp);
-    } else if (oldLum > 0) {
-        setLevel(wp, Block, 0);
-        m_removal[Block].push_back({wp, std::uint8_t(oldLum)});
+    for (int ch = R; ch <= B; ++ch) {
+        if (newE[ch] > 0) {
+            setLevel(wp, ch, newE[ch]);
+            enqueue(ch, wp);
+        } else if (oldE[ch] > 0) {
+            setLevel(wp, ch, 0);
+            m_removal[ch].push_back({wp, std::uint8_t(oldE[ch])});
+        }
     }
 }
 
@@ -337,7 +351,7 @@ void LightEngine::process(double budgetMs) {
         ++slice;
         bool didWork = false;
         // removals first: re-propagation seeds they emit must see the cleared state
-        for (int ch = 0; ch < 2; ++ch) {
+        for (int ch = 0; ch < kChannels; ++ch) {
             for (int n = 0; n < 128 && m_removalHead[ch] < m_removal[ch].size(); ++n) {
                 removeStep(ch, m_removal[ch][m_removalHead[ch]++]);
                 didWork = true;
@@ -347,7 +361,7 @@ void LightEngine::process(double budgetMs) {
                 m_removalHead[ch] = 0;
             }
         }
-        for (int ch = 0; ch < 2; ++ch) {
+        for (int ch = 0; ch < kChannels; ++ch) {
             if (!m_removal[ch].empty())
                 continue; // finish removal before spreading this channel again
             for (int n = 0; n < 256 && m_queueHead[ch] < m_queue[ch].size(); ++n) {
@@ -368,8 +382,8 @@ std::uint16_t LightEngine::lightAt(const glm::ivec3& wp) const {
     // debug/verification only, and callers reach it at arbitrary times — never trust a
     // cache filled by whatever ran last
     const_cast<LightEngine*>(this)->resetChunkCache();
-    const int b = getLevel(wp, Block);
-    return light::pack(b, b, b, getLevel(wp, Sky));
+    return light::pack(getLevel(wp, R), getLevel(wp, G), getLevel(wp, B),
+                       getLevel(wp, Sky));
 }
 
 } // namespace vx
