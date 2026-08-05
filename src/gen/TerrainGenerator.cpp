@@ -11,19 +11,23 @@ namespace {
 
 // continentalness -> base surface height, piecewise linear ("splines" per the spec —
 // linear segments are all the control this terrain needs)
-// Exponential relief. The old height was spline(continent) + noise*26, i.e. the SAME
-// 26-block swing everywhere, so lowlands were as bumpy as mountains and peaks could never
-// get dramatic without making the plains noisy too. Raising 2^noise instead makes the
-// amplitude itself scale with the terrain: near-zero noise stays almost flat, and the top
-// of the range runs away into real mountains. kRelief is the octave span - each +1 of it
-// doubles what the loudest noise can reach.
-float exponentialRelief(float n) {
-    constexpr float kRelief = 4.2f;  // ~18x between the quietest and loudest terrain
-    constexpr float kScale = 7.0f;   // blocks per unit at the low end
-    // n is roughly [-1,1]; remap to [0,1] so the exponent never goes negative, then centre
-    // the result so flat terrain sits near the spline rather than well above it.
-    const float t = std::clamp(n * 0.5f + 0.5f, 0.0f, 1.0f);
-    return kScale * (std::exp2(t * kRelief) - 1.0f);
+// Exponential relief, applied to the AMPLITUDE rather than to the noise.
+//
+// The first attempt raised 2^(detail noise), which was wrong in a way that is obvious in
+// a screenshot: the detail octaves are high frequency, so exponentiating them turned every
+// small wiggle into a cliff and the whole world became chaotic ridging with no plains left
+// anywhere. The shape of the terrain has to stay the shape the noise describes.
+//
+// What should scale exponentially is how much relief a REGION gets. The continental field
+// is the low-frequency "how mountainous is it here" signal, so it drives the amplitude the
+// detail noise is multiplied by. Lowlands get a gentler swing than the old flat 26 and read
+// as actual plains; high continent runs away into real mountains. Same mountain shapes as
+// before, an order of magnitude apart in scale.
+float reliefAmplitude(float c) {
+    constexpr float kBase = 14.0f;     // blocks of swing in the flattest regions
+    constexpr float kOctaves = 2.4f;   // ~5x more in the most mountainous
+    const float t = std::clamp(c * 0.5f + 0.5f, 0.0f, 1.0f);
+    return kBase * std::exp2(t * kOctaves);
 }
 
 float heightSpline(float c) {
@@ -146,7 +150,7 @@ int TerrainGenerator::surfaceHeight(int wx, int wz) const {
     float c = 0.0f;
     m_height->GenUniformGrid2D(&h, float(wx), float(wz), 1, 1, 1.0f, 1.0f, m_seed);
     m_continent->GenUniformGrid2D(&c, float(wx), float(wz), 1, 1, 1.0f, 1.0f, m_seed + 1);
-    return std::clamp(int(heightSpline(c) + exponentialRelief(h)), 8, kWorldHeight - 8);
+    return std::clamp(int(heightSpline(c) + h * reliefAmplitude(c)), 8, kWorldHeight - 8);
 }
 
 void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const {
@@ -170,7 +174,7 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
             // grid order: x + z * kChunkSize (x start axis first)
             const float hn = heightNoise[x + z * kChunkSize];
             const float c = contNoise[x + z * kChunkSize];
-            const int h = std::clamp(int(heightSpline(c) + exponentialRelief(hn)), 8,
+            const int h = std::clamp(int(heightSpline(c) + hn * reliefAmplitude(c)), 8,
                                      kWorldHeight - 8);
             heights[z][x] = h;
             hMin = std::min(hMin, h);
