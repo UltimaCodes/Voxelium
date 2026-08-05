@@ -69,6 +69,9 @@ public:
     }
 
     BlockId blockAtWorld(const glm::ivec3& wp) const;
+    // debug: has this column been through a completed light seed?
+    bool columnSeeded(ChunkPos col) const { return m_seededColumns.contains(col); }
+    bool columnProvisional(ChunkPos col) const { return m_provisionalColumns.contains(col); }
 
     // The block-edit fast path: sets the voxel, settles light, and synchronously
     // remeshes the affected chunk (plus border neighbors and anything light touched)

@@ -438,6 +438,32 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     if (doMeshScan)
     for (const auto& item : m_chunks) {
         const Entry& e = item.second;
+        // Catch columns that became complete without anyone noticing. A column is only
+        // ever put up for seeding from the gen-done drain, keyed on one of ITS chunks
+        // finishing generation — so a column that completes by any other route (an entry
+        // erased while its job was in flight, a re-gen swap, a rescan reshuffling what was
+        // queued) is never offered at all, and stays unseeded forever holding sky light 0.
+        // That is open sky rendering pitch black regardless of time of day.
+        //
+        // The scan already walks every chunk and only runs when something changed, so
+        // checking here costs a set lookup on work that was happening anyway.
+        // NB: gated on m_seededColumns, never on e.lit. evicting one chunk of a column
+        // drops the column from m_seededColumns but leaves the surviving chunks flagged
+        // lit, so e.lit says "done" for a column that no longer has a seed to its name.
+        if (e.state != ChunkState::Generating && !e.pendingDetail) {
+            const ChunkPos col{item.first.x, 0, item.first.z};
+            if (!m_seededColumns.contains(col) && columnPresent(col)) {
+                bool ready = true;
+                for (int cy = 0; cy < kWorldChunksY && ready; ++cy)
+                    if (const auto cit = m_chunks.find({col.x, cy, col.z});
+                        cit == m_chunks.end() || cit->second.state == ChunkState::Generating)
+                        ready = false;
+                if (ready) {
+                    m_seededColumns.insert(col);
+                    m_seedQueue.push_back(col);
+                }
+            }
+        }
         if (!e.lit || e.pendingDetail) // pendingDetail: a detailed re-gen is landing
             continue;
         if (std::abs(item.first.x - center.x) > radius ||
