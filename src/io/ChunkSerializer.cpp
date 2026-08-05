@@ -81,6 +81,23 @@ bool deserialize(std::span<const std::uint8_t> bytes, Chunk& chunk) {
                                (std::uint32_t(bytes[3]) << 24);
     pos = 4;
 
+    // A single run covering the grid is a uniform chunk, and it has to come back AS one.
+    // Rebuilding it through set() grows the palette and leaves m_bits > 0, so the chunk is
+    // byte-identical when read but no longer reports uniform() — which silently costs it
+    // the whole-chunk fast paths (the light seeder's fillLight, the descent's chunk skip,
+    // the mesher's all-air early-out) plus a 32 KB index array it does not need. Most of
+    // the world is uniform air or uniform stone, so this is the common case, not an edge.
+    if (runs == 1) {
+        std::uint32_t len = 0;
+        std::uint32_t id = 0;
+        if (!getVarint(bytes, pos, len) || !getVarint(bytes, pos, id))
+            return false;
+        if (len != kChunkSize3)
+            return false;
+        chunk.makeUniform(BlockId(id));
+        return true;
+    }
+
     chunk.makeUniform(blocks::Air);
     std::int64_t voxel = 0;
     for (std::uint32_t r = 0; r < runs; ++r) {
