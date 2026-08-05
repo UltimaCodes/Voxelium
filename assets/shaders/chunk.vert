@@ -41,6 +41,7 @@ uint texLayer(uint block, uint dir) {
     if (block == 12u) return 12u;                            // coal ore
     if (block == 13u) return 13u;                            // iron ore
     if (block == 21u) return 14u;                            // gravel
+    if (block >= 22u && block <= 27u) return block - 7u;     // lamps -> layers 15..20
     return 0u;
 }
 

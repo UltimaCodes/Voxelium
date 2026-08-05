@@ -379,6 +379,29 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                 return 1;
         }
 
+        // M19b: a coloured lamp must carry ITS hue, not the warm one baked in for Glow.
+        // Blue and green are checked together because the failure this catches is a lamp
+        // whose emit row was filled in for the wrong channel, which a single colour hides.
+        {
+            const int lx = 40, lz = 40;
+            const int ly = world.generator().surfaceHeight(lx, lz) + 3;
+            world.setBlock(rc.renderer, light, {lx, ly, lz}, vx::blocks::LampBlue);
+            const std::uint16_t bv = light.lightAt({lx, ly + 1, lz});
+            const int br = vx::light::red(bv), bb = vx::light::blue(bv);
+            world.setBlock(rc.renderer, light, {lx, ly, lz}, vx::blocks::LampGreen);
+            const std::uint16_t gv = light.lightAt({lx, ly + 1, lz});
+            const int gg = vx::light::green(gv), gbl = vx::light::blue(gv);
+            // and removing it has to take the colour with it, through the removal BFS
+            world.setBlock(rc.renderer, light, {lx, ly, lz}, vx::blocks::Air);
+            const std::uint16_t off = light.lightAt({lx, ly + 1, lz});
+            const int rest = vx::light::red(off) + vx::light::green(off) + vx::light::blue(off);
+            const bool lampOk = bb > br && bb >= 13 && gg > gbl && gg >= 13 && rest == 0;
+            VX_INFO("light: lamp blue r%d b%d, lamp green g%d b%d, block light after removal "
+                    "%d (want 0) -> %s",
+                    br, bb, gg, gbl, rest, lampOk ? "PASS" : "FAIL");
+            if (!lampOk)
+                return 1;
+        }
 
         vx::Chunk* roomChunk = world.chunkDataMutable({0, 1, 0});
         roomChunk->set(16, 13, 16, vx::blocks::Air);
@@ -1450,7 +1473,10 @@ int main(int argc, char** argv) {
     constexpr int kHotbar[] = {vx::blocks::Stone,  vx::blocks::Dirt,   vx::blocks::Grass,
                                vx::blocks::Sand,   vx::blocks::Snow,   vx::blocks::Wood,
                                vx::blocks::Planks, vx::blocks::Bricks, vx::blocks::Leaves,
-                               vx::blocks::Gravel, vx::blocks::Glow,   vx::blocks::Water};
+                               vx::blocks::Gravel, vx::blocks::Glow,   vx::blocks::Water,
+                               vx::blocks::LampRed,   vx::blocks::LampOrange,
+                               vx::blocks::LampGreen, vx::blocks::LampCyan,
+                               vx::blocks::LampBlue,  vx::blocks::LampMagenta};
     constexpr int kHotbarCount = int(sizeof(kHotbar) / sizeof(kHotbar[0]));
     int hotbarSel = 0;
     int placeBlock = kHotbar[hotbarSel];

@@ -16,13 +16,15 @@ namespace vx {
 namespace {
 
 constexpr int kTile = 16;
-constexpr int kLayers = 15;
+constexpr int kLayers = 21;
 
 // filename (without extension) per layer, looked up in assets/textures/
 constexpr const char* kNames[kLayers] = {"stone",    "dirt",     "grass_top", "grass_side",
                                          "glow",     "wood_side", "wood_top", "leaves",
                                          "sand",     "snow",     "planks",    "bricks",
-                                         "coal_ore", "iron_ore", "gravel"};
+                                         "coal_ore", "iron_ore", "gravel",
+                                         "lamp_red", "lamp_orange", "lamp_green",
+                                         "lamp_cyan", "lamp_blue", "lamp_magenta"};
 
 // value hash in [0,1) — deterministic per texel so textures are identical every run
 float h01(int x, int y, int salt) {
@@ -165,6 +167,21 @@ Rgba genIronOre(int x, int y) { return oreSpeckle(x, y, 47, 0.72f, 0.56f, 0.42f)
 
 // Loose pebbles: a few grey tones scattered per texel rather than one tinted noise field,
 // so it reads as aggregate next to stone instead of as dirty stone.
+// Lamp faces: a bright core falling off to a darker rim, so the block reads as a fitting
+// with a lit centre rather than a flat colour swatch. Templated because six of these
+// differing only by hue would otherwise be six copies of the same six lines, and kGens
+// needs plain function pointers.
+template <int R, int G, int B>
+Rgba genLamp(int x, int y) {
+    const float dx = float(x) - 7.5f, dy = float(y) - 7.5f;
+    const float d = std::sqrt(dx * dx + dy * dy) / 8.0f;
+    const float core = 1.0f - 0.42f * d + 0.10f * h01(x, y, 70 + R + G * 3 + B * 7);
+    // lift toward white in the middle so the centre looks like the source, not the paint
+    const float w = 0.35f * (1.0f - d);
+    const float r = float(R) / 255.0f, g = float(G) / 255.0f, b = float(B) / 255.0f;
+    return shade(r + w * (1.0f - r), g + w * (1.0f - g), b + w * (1.0f - b), core);
+}
+
 Rgba genGravel(int x, int y) {
     const float pick = h01(x, y, 61);
     const float tone = pick < 0.30f ? 0.42f : (pick < 0.62f ? 0.55f : (pick < 0.86f ? 0.66f : 0.34f));
@@ -176,7 +193,10 @@ constexpr std::array<Gen, kLayers> kGens = {genStone,    genDirt,    genGrassTop
                                             genGrassSide, genGlow,   genWoodSide,
                                             genWoodTop,  genLeaves,  genSand,
                                             genSnow,    genPlanks,  genBricks,
-                                            genCoalOre, genIronOre, genGravel};
+                                            genCoalOre, genIronOre, genGravel,
+                                            genLamp<236, 46, 46>,  genLamp<240, 138, 32>,
+                                            genLamp<70, 220, 70>,  genLamp<40, 210, 214>,
+                                            genLamp<70, 110, 240>, genLamp<214, 60, 220>};
 
 } // namespace
 

@@ -315,8 +315,22 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
                 for (int x = 0; x < kChunkSize; ++x)
                     if (chunk.get(x, y, z) == blocks::Air &&
                         chunk.get(x, y - 1, z) == blocks::Stone &&
-                        (voxelHash(baseX + x, baseY + y, baseZ + z) & 511u) == 0u)
-                        chunk.set(x, y, z, blocks::Glow);
+                        (voxelHash(baseX + x, baseY + y, baseZ + z) & 511u) == 0u) {
+                        // Hue comes from where it formed: warm near the surface, cold deep
+                        // down, with the odd stray so a depth band is not one flat colour.
+                        //
+                        // Derived from depth and world position ONLY. It is tempting to
+                        // look at the surrounding stone for ore, but the neighbours of an
+                        // edge voxel live in a chunk that may not exist yet — reading them
+                        // would make the crystal's colour depend on which chunk generated
+                        // it first, which is the one thing a deferred structure cannot do.
+                        const int depth = heights[z][x] - (baseY + y);
+                        const std::uint32_t j = voxelHash(baseX + x, 3, baseZ + z) >> 7;
+                        int hue = depth > 44 ? 4 : (depth > 30 ? 3 : (depth > 18 ? 2 : 1));
+                        if ((j & 7u) == 0u)
+                            hue = int(j >> 3) % 6;
+                        chunk.set(x, y, z, BlockId(blocks::LampRed + hue));
+                    }
     }
 
     // flood air that sits over the seafloor and at/below sea level (oceans + lakes).

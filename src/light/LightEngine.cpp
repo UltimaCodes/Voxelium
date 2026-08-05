@@ -325,12 +325,22 @@ void LightEngine::onBlockChanged(const glm::ivec3& wp, BlockId oldId, BlockId ne
         markTouched(wp);
     }
     for (int ch = R; ch <= B; ++ch) {
+        if (oldE[ch] == newE[ch])
+            continue; // this channel is unchanged; touching it would only churn the BFS
+        // Retract first, using the level this voxel ACTUALLY holds rather than the old
+        // emitter's nominal value. Swapping a bright emitter for a dimmer one used to take
+        // the "just seed the new value" path, and seeding only ever propagates — it never
+        // pulls back what the old one already lit, so the bright pool stayed and the new
+        // colour bled into it. Unreachable while Glow was the only emitter; the lamps make
+        // emitter-to-emitter a normal move.
+        const int cur = getLevel(wp, ch);
+        if (cur > 0) {
+            setLevel(wp, ch, 0);
+            m_removal[ch].push_back({wp, std::uint8_t(cur)});
+        }
         if (newE[ch] > 0) {
             setLevel(wp, ch, newE[ch]);
             enqueue(ch, wp);
-        } else if (oldE[ch] > 0) {
-            setLevel(wp, ch, 0);
-            m_removal[ch].push_back({wp, std::uint8_t(oldE[ch])});
         }
     }
 }

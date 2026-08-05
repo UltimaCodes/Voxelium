@@ -43,22 +43,73 @@ inline constexpr BlockId IronOre = 13;
 inline constexpr BlockId WaterL1 = 14;
 inline constexpr BlockId WaterL7 = 20;
 inline constexpr BlockId Gravel = 21;
-inline constexpr int kBlockCount = 22;
+// Coloured lamps. Same block-id-as-data trick the water levels use: the emitted colour is
+// a compile-time property of the id, so a hue costs an id and nothing else — no per-voxel
+// metadata, no storage change, no serializer change. Six presets rather than a free colour
+// picker for exactly that reason; arbitrary hues would need per-voxel data the engine has
+// nowhere to put.
+inline constexpr BlockId LampRed = 22;
+inline constexpr BlockId LampOrange = 23;
+inline constexpr BlockId LampGreen = 24;
+inline constexpr BlockId LampCyan = 25;
+inline constexpr BlockId LampBlue = 26;
+inline constexpr BlockId LampMagenta = 27;
+inline constexpr int kBlockCount = 28;
+inline constexpr bool isLamp(BlockId id) { return id >= LampRed && id <= LampMagenta; }
 
 // Blocks with nothing under them fall. Sand and gravel only — dirt and stone staying put
 // is what keeps a cliff a cliff, and the sim scans a box every tick, so this predicate is
 // on the hot path and wants to stay a compare rather than a table lookup.
 inline constexpr bool falls(BlockId id) { return id == Sand || id == Gravel; }
 
-inline constexpr int luminance(BlockId id) { return id == Glow ? 14 : 0; }
+inline constexpr int luminance(BlockId id) {
+    return id == Glow ? 14 : (isLamp(id) ? 14 : 0);
+}
 
 // Emitted colour of a light-emitting block, 0..15 per channel. The three channels
 // propagate independently, so an emitter's hue survives all the way out to its falloff
 // rather than being a white blob tinted at the end. Glow is a warm ember: red carries
 // furthest, blue dies first, so its pool goes orange at the edges the way firelight does.
-inline constexpr int emitR(BlockId id) { return id == Glow ? 14 : 0; }
-inline constexpr int emitG(BlockId id) { return id == Glow ? 10 : 0; }
-inline constexpr int emitB(BlockId id) { return id == Glow ? 5 : 0; }
+// The lamp rows keep one channel at 15 and drop the others hard, because the channels
+// attenuate independently — a hue that starts near-white just reads as a white pool with a
+// tinted rim, and the whole point of three channels is that the colour survives to the
+// falloff. This table is still the entire interface for adding an emitter.
+inline constexpr int emitR(BlockId id) {
+    switch (id) {
+        case Glow: return 14;
+        case LampRed: return 15;
+        case LampOrange: return 15;
+        case LampGreen: return 1;
+        case LampCyan: return 0;
+        case LampBlue: return 2;
+        case LampMagenta: return 14;
+        default: return 0;
+    }
+}
+inline constexpr int emitG(BlockId id) {
+    switch (id) {
+        case Glow: return 10;
+        case LampRed: return 1;
+        case LampOrange: return 8;
+        case LampGreen: return 15;
+        case LampCyan: return 12;
+        case LampBlue: return 2;
+        case LampMagenta: return 0;
+        default: return 0;
+    }
+}
+inline constexpr int emitB(BlockId id) {
+    switch (id) {
+        case Glow: return 5;
+        case LampRed: return 0;
+        case LampOrange: return 0;
+        case LampGreen: return 2;
+        case LampCyan: return 15;
+        case LampBlue: return 15;
+        case LampMagenta: return 14;
+        default: return 0;
+    }
+}
 inline constexpr bool emissive(BlockId id) {
     return emitR(id) > 0 || emitG(id) > 0 || emitB(id) > 0;
 }
