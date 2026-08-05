@@ -93,14 +93,27 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
                 }
         // copy the six neighbour border planes into the pad so seam faces cull correctly
         const auto pad = [&](int face, int px, int py, int pz, int nx, int ny, int nz) {
-            // coarser neighbour: leave the pad air. culling against voxels it isn't
-            // actually drawing is what opens the cross-LOD cracks.
-            if ((m_coarseNeighbors >> face) & 1)
-                return;
             const Chunk* n = neighbors ? neighbors[face] : nullptr;
             if (!n)
                 return;
-            m_grid[gi(px, py, pz)] = n->get(nx, ny, nz);
+            const BlockId nb = n->get(nx, ny, nz);
+            // Coarser neighbour: the OPAQUE layer wants this pad left as air, because
+            // culling against voxels the neighbour isn't actually drawing is what opens
+            // the cross-LOD cracks the skirt exists to plug.
+            //
+            // Water is different. It is not opaque, so letting it through the pad does not
+            // suppress a single skirt face — but it does let the water layer cull against
+            // the neighbour's real surface. Without it, water at a cross-LOD border sees
+            // air and either walls up or (with the old blanket skip) loses its border
+            // faces entirely, which is the seam that opens along every lake once LOD
+            // boundaries appear. Land in the pad still reads as air here, so a genuine
+            // water-meets-land edge is still emitted.
+            if ((m_coarseNeighbors >> face) & 1) {
+                if (blocks::isWater(nb))
+                    m_grid[gi(px, py, pz)] = nb;
+                return;
+            }
+            m_grid[gi(px, py, pz)] = nb;
             m_gridLight[gi(px, py, pz)] = n->lightAt(nx, ny, nz);
         };
         for (int b = 0; b < kChunkSize; ++b)
@@ -227,16 +240,6 @@ void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, Greedy
                     const int ax = x + kStep[dir][0];
                     const int ay = y + kStep[dir][1];
                     const int az = z + kStep[dir][2];
-                    // Water never gets a skirt. The skirt works by leaving the border pad
-                    // air, which stops the WATER layer culling at that seam too — so every
-                    // chunk next to a coarser one grew a wall of vertical water faces
-                    // standing up out of the surface, visible as hard chunk-shaped seams
-                    // across every lake. Only the opaque layer needs the crack plugged.
-                    if (water && ((m_coarseNeighbors >> dir) & 1)) {
-                        const int outer = (dir >> 1) == 0 ? ax : ((dir >> 1) == 1 ? ay : az);
-                        if (outer == ((dir & 1) ? -1 : kChunkSize))
-                            continue;
-                    }
                     const BlockId block = m_grid[gi(x, y, z)];
                     const std::uint16_t lv = m_gridLight[gi(ax, ay, az)];
                     if (!water && light::sky(lv) != 0)
