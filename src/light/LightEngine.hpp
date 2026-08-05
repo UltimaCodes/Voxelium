@@ -36,7 +36,12 @@ public:
     // hitch. begin/step spreads it over frames, splitting at (dx,dz) cell granularity.
     // The caller must not treat the column as lit until step returns true.
     void beginSeedColumn(std::int32_t chunkX, std::int32_t chunkZ);
-    bool stepSeedColumn(double budgetMs); // true = column finished
+    bool stepSeedColumn(double budgetMs); // true = column finished (check seedAborted!)
+    // True when the last seed gave up because the column's chunks were not all resident.
+    // stepSeedColumn still returns "finished" in that case — there is nothing left to do —
+    // but the column was NOT lit, so the caller must re-queue it instead of marking it
+    // done. Getting this wrong marks a column seeded forever with sky light 0.
+    bool seedAborted() const { return m_seedAborted; }
     bool seedInProgress() const { return m_seed.phase != SeedPhase::Idle; }
     void abortSeedColumn() { m_seed.phase = SeedPhase::Idle; }
     std::int32_t seedColumnX() const { return m_seed.chunkX; }
@@ -123,6 +128,7 @@ private:
         int heights[kChunkSize][kChunkSize] = {};
     };
     SeedState m_seed;
+    bool m_seedAborted = false;
     bool seedStackValid(Chunk** stack) const; // refetch + validate the column's chunks
 
     ChunkManager& m_world;

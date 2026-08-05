@@ -900,6 +900,38 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
         std::snprintf(litName, sizeof(litName), "tour_%d%s_noshadow.bmp", i,
                       settle ? "" : "_moving");
         vx::writeBmp24(litName, w, h, lit);
+        // Sky-light invariant: every air voxel above the highest opaque block in a column
+        // is open to the sky and must hold sky 15. This is what seeding is FOR, and it
+        // does not depend on the sun, the time of day or the shadow map — so if it fails,
+        // the darkness people see at night is here and not in the shadow pass.
+        {
+            int checked = 0, bad = 0, worst = 15;
+            glm::ivec3 firstBad{0, 0, 0};
+            const int cx = int(std::floor(camera.position.x));
+            const int cz = int(std::floor(camera.position.z));
+            for (int dz = -96; dz <= 96; dz += 3)
+                for (int dx = -96; dx <= 96; dx += 3) {
+                    const int wx = cx + dx, wz = cz + dz;
+                    int top = vx::kWorldHeight - 1;
+                    while (top >= 0 && !vx::blocks::opaque(world.blockAtWorld({wx, top, wz})))
+                        --top;
+                    // sample a few air voxels above the surface, not all of them
+                    for (int y = top + 1; y < std::min(top + 12, vx::kWorldHeight); ++y) {
+                        const int sky = vx::light::sky(light.lightAt({wx, y, wz}));
+                        ++checked;
+                        if (sky != 15) {
+                            if (bad == 0) firstBad = {wx, y, wz};
+                            ++bad;
+                            worst = std::min(worst, sky);
+                        }
+                    }
+                }
+            VX_INFO("tour %d sky-light: %d/%d open-air voxels BELOW full sky (worst %d)%s",
+                    i, bad, checked, bad ? worst : 15,
+                    bad ? "" : "  -> ok");
+            if (bad)
+                VX_INFO("   first at (%d,%d,%d)", firstBad.x, firstBad.y, firstBad.z);
+        }
         const vx::ChunkManager::Stats st = world.stats();
         VX_INFO("tour %d @ (%.0f,%.0f,%.0f): %d chunks %d meshed %d UNLIT, %d drawn, "
                 "busy=%d -> %s",

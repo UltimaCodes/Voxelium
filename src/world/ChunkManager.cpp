@@ -302,6 +302,15 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             else
                 m_provisionalColumns.erase(col);
         };
+        // A column whose chunks were not all resident when its turn came was never lit.
+        // It must go back on the queue AND out of m_seededColumns, or it stays marked
+        // seeded forever holding sky light 0 - open sky reading as pitch black, at any
+        // time of day, which is exactly what it looked like.
+        const auto requeueSeed = [&](ChunkPos col) {
+            m_seededColumns.erase(col);
+            m_provisionalColumns.erase(col);
+            m_seedDeferred.push_back(col);
+        };
         const auto remaining = [&] {
             return std::max(0.1, kSeedBudgetMs - msSince(seedStart));
         };
@@ -315,7 +324,10 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                 light.abortSeedColumn();
                 m_seedDeferred.push_back(col);
             } else if (light.stepSeedColumn(remaining())) {
-                markLit(col);
+                if (light.seedAborted())
+                    requeueSeed(col);
+                else
+                    markLit(col);
             }
         }
 
@@ -334,8 +346,12 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                 continue;
             }
             light.beginSeedColumn(col.x, col.z);
-            if (light.stepSeedColumn(remaining()))
-                markLit(col);
+            if (light.stepSeedColumn(remaining())) {
+                if (light.seedAborted())
+                    requeueSeed(col);
+                else
+                    markLit(col);
+            }
         }
         // Put deferred columns back at the front so they're retried only after everything
         // else (pop_back serves the tail). One splice a frame, not one memmove of the

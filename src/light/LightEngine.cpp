@@ -113,6 +113,7 @@ bool LightEngine::seedStackValid(Chunk** stack) const {
 
 void LightEngine::beginSeedColumn(std::int32_t chunkX, std::int32_t chunkZ) {
     resetChunkCache();
+    m_seedAborted = false;
     m_seed.chunkX = chunkX;
     m_seed.chunkZ = chunkZ;
     m_seed.cursor = 0;
@@ -121,6 +122,7 @@ void LightEngine::beginSeedColumn(std::int32_t chunkX, std::int32_t chunkZ) {
     Chunk* stack[kWorldChunksY] = {};
     if (!seedStackValid(stack)) {
         m_seed.phase = SeedPhase::Idle;
+        m_seedAborted = true; // nothing was lit; the caller has to try again later
         return;
     }
     // whole-chunk fast path: with heightmap-driven terrain a uniform-air chunk sits
@@ -137,7 +139,10 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
 
     Chunk* stack[kWorldChunksY] = {};
     if (!seedStackValid(stack)) {
-        m_seed.phase = SeedPhase::Idle; // column went away mid-seed; caller re-queues it
+        // column went away mid-seed. the partial work is dropped, so this is NOT a
+        // finished column even though there is nothing further to step.
+        m_seed.phase = SeedPhase::Idle;
+        m_seedAborted = true;
         return true;
     }
 
