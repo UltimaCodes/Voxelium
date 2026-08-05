@@ -868,6 +868,19 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
         char name[64];
         std::snprintf(name, sizeof(name), "tour_%d%s.bmp", i, settle ? "" : "_moving");
         vx::writeBmp24(name, w, h, pixels);
+        // same view with the sun shadow off. if a frame is mostly dark in one and lit in
+        // the other, the darkness is the shadow map, not the geometry or the voxel light.
+        vx::FxToggles noShadow = fx;
+        noShadow.shadows = false;
+        rc.renderer.beginFrame();
+        renderFrame(rc, camera, noShadow, true, w, h, fbo, 0.6f, nullptr);
+        rc.renderer.endFrame();
+        std::vector<std::uint8_t> lit(pixels.size());
+        glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, lit.data());
+        char litName[72];
+        std::snprintf(litName, sizeof(litName), "tour_%d%s_noshadow.bmp", i,
+                      settle ? "" : "_moving");
+        vx::writeBmp24(litName, w, h, lit);
         const vx::ChunkManager::Stats st = world.stats();
         VX_INFO("tour %d @ (%.0f,%.0f,%.0f): %d chunks %d meshed, %d drawn, busy=%d -> %s",
                 i, stops[i].x, stops[i].y, stops[i].z, st.loaded, st.meshed,
