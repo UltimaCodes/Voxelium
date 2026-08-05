@@ -46,6 +46,7 @@ public:
     struct Stats {
         int loaded = 0;
         int meshed = 0;
+        int unlit = 0;
         int uniformChunks = 0;
         int genQueue = 0;
         int jobsInFlight = 0;
@@ -164,6 +165,9 @@ private:
         bool sunlit = true;
         bool dirty = false;    // player-edited since load; needs saving before eviction
         bool detailed = true;  // false = coarse gen (no caves/trees), for far chunks
+        // a serialize+save job is running on a worker; the chunk cannot go back to the
+        // pool until it finishes, and the job must not be submitted twice
+        bool saving = false;
         // a detailed re-gen in flight into a second chunk (double buffer); the coarse mesh
         // stays drawn until this lands, so approaching a coarse chunk never flashes a hole
         Chunk* pendingDetail = nullptr;
@@ -194,7 +198,7 @@ private:
     };
 
     void rescan(ChunkPos center);
-    void processEvictions(Renderer& renderer);
+    void processEvictions(Renderer& renderer, JobSystem& jobs);
     void rebuildArena(Renderer& renderer);
     void rebuildVisibility(ChunkPos cameraChunk);
     void remeshNow(Renderer& renderer, ChunkPos pos);
@@ -260,6 +264,7 @@ private:
     // cached full-chunk scan for the HUD, refreshed a few times a second
     struct Scan {
         int meshed = 0;
+        int unlit = 0;
         int uniformChunks = 0;
         std::int64_t totalQuads = 0;
         std::size_t voxelBytes = 0;

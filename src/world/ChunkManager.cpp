@@ -152,17 +152,15 @@ void ChunkManager::processEvictions(Renderer& renderer, JobSystem& jobs) {
         // thread on disk work is exactly what the streaming design forbids. The job holds
         // a ref, so the chunk cannot return to the pool underneath it; this entry simply
         // waits out another pass or two of the evict list, which it is already on.
-        if ((e.dirty || e.detailed) && !e.saving) {
+        if (e.dirty && !e.saving) {
             e.saving = true;
             Chunk* voxels = e.voxels;
             const ChunkPos at = m_evictList[i];
-            const bool edited = e.dirty;
-            const bool detailed = e.detailed;
             voxels->retainJob();
-            jobs.submit([this, voxels, at, edited, detailed] {
+            jobs.submit([this, voxels, at] {
                 std::vector<std::uint8_t> bytes;
                 ChunkSerializer::serialize(*voxels, bytes);
-                m_regions.save(at, std::move(bytes), edited, detailed);
+                m_regions.save(at, std::move(bytes));
                 voxels->releaseJob();
             });
             ++i; // comes back once the job drops its ref
@@ -396,16 +394,10 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         ++m_jobsInFlight;
         jobs.submit([this, voxels, pos, detailed] {
             const auto t0 = Clock::now();
-            // Disk first: a saved chunk loads instead of regenerating. load() is
-            // thread-safe; the read happens here on the worker, never the main thread.
-            //
-            // A cached GENERATED chunk is only usable at the detail level it was made for
-            // — a coarse blob has no caves or trees, and a detailed one carries geometry
-            // the coarse path deliberately skips — so a mismatch regenerates. An EDITED
-            // chunk is used regardless, because losing a player's changes to satisfy an
-            // LOD preference would be the worse trade.
-            const RegionStore::Loaded got = m_regions.load(pos, *voxels);
-            if (!got.found || !(got.edited || got.detailed == detailed))
+            // disk first: a saved (player-edited) chunk loads instead of regenerating.
+            // load() is thread-safe; the read happens here on the worker, never the
+            // main thread. absent chunks fall back to deterministic gen.
+            if (!m_regions.load(pos, *voxels))
                 m_gen.generate(*voxels, pos, detailed);
             m_genNanos.fetch_add(nsSince(t0), std::memory_order_relaxed);
             m_genCount.fetch_add(1, std::memory_order_relaxed);
@@ -542,9 +534,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         it->second.pendingDetail = c2;
         ++m_jobsInFlight;
         jobs.submit([this, c2, pos] {
-            // this path always wants detail, so a cached coarse blob is no use here
-            const RegionStore::Loaded got = m_regions.load(pos, *c2);
-            if (!got.found || !(got.edited || got.detailed))
+            if (!m_regions.load(pos, *c2))
                 m_gen.generate(*c2, pos, /*detailed=*/true);
             c2->releaseJob();
             std::lock_guard lock(m_regenDoneMutex);
@@ -763,7 +753,7 @@ void ChunkManager::saveDirty() {
         if (e.dirty && e.voxels) {
             m_saveScratch.clear();
             ChunkSerializer::serialize(*e.voxels, m_saveScratch);
-            m_regions.save(pos, m_saveScratch, /*edited=*/true, e.detailed);
+            m_regions.save(pos, m_saveScratch);
             e.dirty = false;
             ++saved;
         }

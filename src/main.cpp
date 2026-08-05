@@ -444,7 +444,26 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                     ? 100.0 * as.largestFreeBlock / double(as.capacityQuads - as.usedQuads)
                     : 100.0);
     }
+    // Return leg. The outbound teleport lands on ground this run has never seen, so it can
+    // only pay the cost of caching evicted chunks; coming back is where a cache can be hit.
+    // Timing only the outbound half would report the bill and hide the refund.
     camera.position.x -= 512.0;
+    {
+        const auto backStart = std::chrono::steady_clock::now();
+        int backFrames = 0;
+        for (; backFrames < 20000; ++backFrames) {
+            rc.renderer.beginFrame();
+            world.update(jobs, rc.renderer, light, camera.position);
+            rc.renderer.endFrame();
+            if (backFrames > 0 && !world.busy())
+                break;
+        }
+        VX_INFO("stress: returned to origin in %.0f ms / %d updates",
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                          backStart)
+                    .count(),
+                backFrames);
+    }
     drain();
 
     int w = 0;
@@ -882,8 +901,9 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
                       settle ? "" : "_moving");
         vx::writeBmp24(litName, w, h, lit);
         const vx::ChunkManager::Stats st = world.stats();
-        VX_INFO("tour %d @ (%.0f,%.0f,%.0f): %d chunks %d meshed, %d drawn, busy=%d -> %s",
-                i, stops[i].x, stops[i].y, stops[i].z, st.loaded, st.meshed,
+        VX_INFO("tour %d @ (%.0f,%.0f,%.0f): %d chunks %d meshed %d UNLIT, %d drawn, "
+                "busy=%d -> %s",
+                i, stops[i].x, stops[i].y, stops[i].z, st.loaded, st.meshed, st.unlit,
                 rc.renderer.gpuVisibleChunks(), world.busy() ? 1 : 0, name);
     }
     glDeleteFramebuffers(1, &fbo);
