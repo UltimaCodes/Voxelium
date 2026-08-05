@@ -89,6 +89,13 @@ std::uint8_t coarseNeighborMask(ChunkPos pos, int lod, ChunkPos center) {
 
 } // namespace
 
+bool ChunkManager::columnPresent(ChunkPos col) const {
+    for (int cy = 0; cy < kWorldChunksY; ++cy)
+        if (!m_chunks.contains({col.x, cy, col.z}))
+            return false;
+    return true;
+}
+
 const Chunk* ChunkManager::voxelsAt(ChunkPos pos) const {
     const auto it = m_chunks.find(pos);
     return it != m_chunks.end() ? it->second.voxels : nullptr;
@@ -151,6 +158,7 @@ void ChunkManager::processEvictions(Renderer& renderer) {
         }
         m_pool.release(e.voxels);
         m_seededColumns.erase(ChunkPos{m_evictList[i].x, 0, m_evictList[i].z});
+        m_provisionalColumns.erase(ChunkPos{m_evictList[i].x, 0, m_evictList[i].z});
         m_chunks.erase(it);
         m_evictList[i] = m_evictList.back();
         m_evictList.pop_back();
@@ -220,6 +228,16 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             if (complete) {
                 m_seededColumns.insert(col);
                 m_seedQueue.push_back(col);
+                // this column just appeared next to columns that were lit as if it were
+                // solid rock; they need their light redone against the real terrain
+                static constexpr int kSide[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+                for (const auto& d : kSide) {
+                    const ChunkPos n{col.x + d[0], 0, col.z + d[1]};
+                    if (m_provisionalColumns.erase(n) != 0) {
+                        m_seededColumns.erase(n);
+                        m_seedQueue.push_back(n);
+                    }
+                }
             }
         }
     }
@@ -254,6 +272,17 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                 if (const auto cit = m_chunks.find({col.x, cy, col.z}); cit != m_chunks.end())
                     cit->second.lit = true;
             m_meshScanDirty = true; // newly lit -> meshable
+            // Sky light spreads sideways out of this column, and an absent neighbour reads
+            // as stone — so a column lit before its neighbours exist gets a dark edge that
+            // nothing would ever correct. Remember it and redo it when they turn up.
+            static constexpr int kSide[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+            bool missing = false;
+            for (const auto& d : kSide)
+                missing = missing || !columnPresent({col.x + d[0], 0, col.z + d[1]});
+            if (missing)
+                m_provisionalColumns.insert(col);
+            else
+                m_provisionalColumns.erase(col);
         };
         const auto remaining = [&] {
             return std::max(0.1, kSeedBudgetMs - msSince(seedStart));

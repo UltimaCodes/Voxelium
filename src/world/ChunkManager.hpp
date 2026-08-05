@@ -224,6 +224,13 @@ private:
     // dedup for m_remeshScratch. a linear scan is fine for one edit's handful of chunks
     // but goes quadratic on a batch, which is exactly the case setBlocks exists for.
     ankerl::unordered_dense::set<ChunkPos, ChunkPosHash> m_remeshSeen;
+    // Columns that were light-seeded while at least one horizontal neighbour column had
+    // not loaded yet. The light engine treats an absent chunk as SOLID STONE, so those
+    // columns were lit against a wall that does not exist, and m_seededColumns would
+    // otherwise mark them finished forever. They get re-seeded once the missing neighbour
+    // actually arrives.
+    ankerl::unordered_dense::set<ChunkPos, ChunkPosHash> m_provisionalColumns;
+    bool columnPresent(ChunkPos col) const;
     std::vector<ChunkPos> m_evictList; // outside the ring; may wait on in-flight jobs
 
     // a detailed re-gen finished on a worker; carries its own chunk so completion doesn't
