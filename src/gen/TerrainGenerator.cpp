@@ -111,12 +111,20 @@ void carveTestRoom(Chunk& chunk, ChunkPos pos) {
 TerrainGenerator::TerrainGenerator(int seed) : m_seed(seed) {
     // scales are feature sizes in blocks (SetScale == 1/frequency in this API)
     auto heightBase = FastNoise::New<FastNoise::Simplex>();
-    heightBase->SetScale(165.0f);
+    heightBase->SetScale(215.0f);
     auto fbm = FastNoise::New<FastNoise::FractalFBm>();
     fbm->SetSource(heightBase);
     fbm->SetOctaveCount(4);
     fbm->SetLacunarity(2.0f);
-    fbm->SetGain(0.5f);
+    // Gain sets how much the fine octaves contribute, and with the amplitude now reaching
+    // ~74 blocks in mountains the old 0.5 was the reason every slope was a 1-block
+    // staircase: the fourth octave has a ~20 block wavelength and carried 12.5% of that
+    // amplitude, i.e. ~9 blocks of height change across 20 blocks of ground. A gradient
+    // near 1 everywhere means terrain that only ever goes up-in-up-in, so a summit is a
+    // spike with no area on it and the snow line reads as a thin fringe instead of a
+    // capped peak. 0.38 drops that octave to ~4 blocks over 20, so the large scales carry
+    // the relief and the small ones only texture it.
+    fbm->SetGain(0.38f);
     auto warp = FastNoise::New<FastNoise::DomainWarpGradient>();
     warp->SetSource(fbm);
     warp->SetScale(125.0f);
