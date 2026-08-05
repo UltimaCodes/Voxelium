@@ -134,11 +134,18 @@ void main() {
 
     vec3 col = mix(refr, refl, fres) + uSunColor * 0.5 * spec; // glint fades at night
 
-    // shoreline foam: thin water gets an animated white fringe
+    // Shoreline foam: thin water gets an animated fringe. It has to be LIT like everything
+    // else - as a constant white it stayed full brightness after dark, so every shoreline
+    // glowed against black water, which is the "water is luminescent at night" and the
+    // white edge wherever water meets a block. Tie it to the sky light reaching this
+    // surface and to how much sun there is, so at night it goes to the same near-black the
+    // rest of the water does.
     float shore = 1.0 - smoothstep(0.0, 1.6, thickness);
     float fn = fbm2(vWorldRel.xz * 1.3 + vec2(uTime * 0.3, -uTime * 0.2));
     float foam = smoothstep(0.55, 0.95, shore * (0.55 + 0.6 * fn));
-    col = mix(col, vec3(0.92, 0.96, 1.0), foam);
+    float daylight = clamp(uSunL.y * 3.0 + 0.12, 0.0, 1.0);
+    vec3 foamCol = vec3(0.92, 0.96, 1.0) * vSky * (0.10 + 0.90 * daylight);
+    col = mix(col, foamCol, foam);
 
     outColor = vec4(col, 1.0); // fully composited here (refraction sampled directly)
 }
