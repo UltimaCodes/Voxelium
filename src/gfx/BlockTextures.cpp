@@ -16,12 +16,13 @@ namespace vx {
 namespace {
 
 constexpr int kTile = 16;
-constexpr int kLayers = 12;
+constexpr int kLayers = 14;
 
 // filename (without extension) per layer, looked up in assets/textures/
 constexpr const char* kNames[kLayers] = {"stone",    "dirt",     "grass_top", "grass_side",
                                          "glow",     "wood_side", "wood_top", "leaves",
-                                         "sand",     "snow",     "planks",    "bricks"};
+                                         "sand",     "snow",     "planks",    "bricks",
+                                         "coal_ore", "iron_ore"};
 
 // value hash in [0,1) — deterministic per texel so textures are identical every run
 float h01(int x, int y, int salt) {
@@ -148,10 +149,25 @@ Rgba genBricks(int x, int y) {
     return shade(0.62f, 0.26f, 0.20f, n); // clay red
 }
 
+// Ore is stone with a cluster of inclusions rather than a flat recolour, so it still
+// reads as the rock it is embedded in. The blobs come from thresholded value noise on a
+// coarse lattice, which keeps them clumped instead of salt-and-pepper.
+Rgba oreSpeckle(int x, int y, int z, float r, float g, float b) {
+    const Rgba base = genStone(x, y);
+    const float n = h01(x / 3, y / 3, z) * 0.6f + h01(x / 2, y / 2, z + 7) * 0.4f;
+    if (n < 0.62f)
+        return base;
+    const float d = 0.75f + 0.5f * h01(x, y, z + 21); // per-speck brightness
+    return shade(r, g, b, d);
+}
+Rgba genCoalOre(int x, int y) { return oreSpeckle(x, y, 31, 0.13f, 0.12f, 0.14f); }
+Rgba genIronOre(int x, int y) { return oreSpeckle(x, y, 47, 0.72f, 0.56f, 0.42f); }
+
 constexpr std::array<Gen, kLayers> kGens = {genStone,    genDirt,    genGrassTop,
                                             genGrassSide, genGlow,   genWoodSide,
                                             genWoodTop,  genLeaves,  genSand,
-                                            genSnow,    genPlanks,  genBricks};
+                                            genSnow,    genPlanks,  genBricks,
+                                            genCoalOre, genIronOre};
 
 } // namespace
 

@@ -564,6 +564,27 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         if (!ok)
             return 1;
 
+        // ores: depth-banded, so coal must outnumber iron and both must actually exist.
+        // counts a column of stone under spawn rather than trusting that it compiled.
+        {
+            int coal = 0, iron = 0, stone = 0;
+            for (int x = 0; x < 48; ++x)
+                for (int z = 0; z < 48; ++z) {
+                    const int surf = world.generator().surfaceHeight(x, z);
+                    for (int y = 4; y < surf - 4; ++y) {
+                        const vx::BlockId b = world.blockAtWorld({x, y, z});
+                        if (b == vx::blocks::CoalOre) ++coal;
+                        else if (b == vx::blocks::IronOre) ++iron;
+                        else if (b == vx::blocks::Stone) ++stone;
+                    }
+                }
+            const bool oreOk = coal > 0 && iron > 0 && coal > iron && stone > coal * 4;
+            VX_INFO("ores: %d coal, %d iron in %d stone -> %s", coal, iron, stone,
+                    oreOk ? "PASS" : "FAIL");
+            if (!oreOk)
+                return 1;
+        }
+
         const glm::ivec3 ep{18, world.generator().surfaceHeight(18, 18) + 6, 18};
         world.setBlock(rc.renderer, light, ep, vx::blocks::Stone);
         const bool placed = world.blockAtWorld(ep) == vx::blocks::Stone;

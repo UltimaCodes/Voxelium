@@ -191,6 +191,20 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
             for (int y = 0; y <= top; ++y) {
                 const int wy = baseY + y;
                 BlockId id = blocks::Stone;
+                // Ore veins. Depth bands rather than a flat chance, so digging down has a
+                // shape to it: coal is shallow and common, iron sits deeper and rarer.
+                // The hash is quantised to a 2x2x2 lattice so hits clump into small veins
+                // instead of scattering one isolated block at a time.
+                if (wy < h - 4) {
+                    const int depth = h - wy;
+                    const std::uint32_t vein = voxelHash(x >> 1, wy >> 1, z >> 1) ^
+                                               voxelHash(baseX >> 5, 0, baseZ >> 5);
+                    const std::uint32_t roll = vein % 1000u;
+                    if (depth > 8 && roll < 26u)
+                        id = blocks::CoalOre;
+                    else if (depth > 28 && roll >= 26u && roll < 38u)
+                        id = blocks::IronOre;
+                }
                 if (wy >= h - 3) {
                     if (coastal)
                         id = blocks::Sand;

@@ -31,7 +31,9 @@ inline constexpr BlockId Sand = 8;
 inline constexpr BlockId Snow = 9;
 inline constexpr BlockId Planks = 10;
 inline constexpr BlockId Bricks = 11;
-inline constexpr int kBlockCount = 12;
+inline constexpr BlockId CoalOre = 12;
+inline constexpr BlockId IronOre = 13;
+inline constexpr int kBlockCount = 14;
 
 inline constexpr int luminance(BlockId id) { return id == Glow ? 14 : 0; }
 

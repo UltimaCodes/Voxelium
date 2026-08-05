@@ -38,6 +38,8 @@ uint texLayer(uint block, uint dir) {
     if (block == 9u) return 9u;                              // snow
     if (block == 10u) return 10u;                            // planks
     if (block == 11u) return 11u;                            // bricks
+    if (block == 12u) return 12u;                            // coal ore
+    if (block == 13u) return 13u;                            // iron ore
     return 0u;
 }
 
