@@ -246,7 +246,15 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
                 for (int dz = 0; dz < f; ++dz)
                     for (int dy = 0; dy < f; ++dy)
                         for (int dx = 0; dx < f; ++dx) {
-                            const BlockId b = chunk.get(sx * f + dx, sy * f + dy, sz * f + dz);
+                            // Cross-plane foliage votes as AIR. It is sub-block decoration
+                            // that cannot survive a downsample, and this path never emits
+                            // cross quads (m_hasCross is only set at LOD 0) — so a cube it
+                            // won became solid-but-invisible: non-opaque, in no solidity
+                            // mask, no quads. That is a hole, and on a tufted grass surface
+                            // enough cubes win to shred a hillside into floating shelves
+                            // and dot a shoreline with a checkerboard of gaps.
+                            const BlockId raw = chunk.get(sx * f + dx, sy * f + dy, sz * f + dz);
+                            const BlockId b = blocks::isCross(raw) ? blocks::Air : raw;
                             if (b < blocks::kBlockCount)
                                 ++counts[b];
                             const std::uint16_t l = chunk.lightAt(sx * f + dx, sy * f + dy,
