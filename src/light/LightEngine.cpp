@@ -9,7 +9,12 @@ namespace vx {
 
 namespace {
 
-constexpr int kWorldTop = kWorldChunksY * kChunkSize; // exclusive
+// There is no world ceiling any more, so these are properties of the TERRAIN: the
+// generator never writes a solid voxel above kTerrainTop or below kTerrainBottom. Anything
+// out there that is not loaded is therefore open sky above and bedrock below — which is
+// what lets an unloaded neighbour be answered without a world bound.
+constexpr int kSkyAbove = kTerrainTop;
+constexpr int kRockBelow = kTerrainBottom;
 
 constexpr glm::ivec3 kStep[6] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
                                  {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
@@ -36,24 +41,22 @@ void LightEngine::resetChunkCache() {
 }
 
 BlockId LightEngine::blockAt(const glm::ivec3& wp) const {
-    if (wp.y >= kWorldTop)
-        return blocks::Air;
-    if (wp.y < 0)
+    if (wp.y < kRockBelow)
         return blocks::Stone;
     const Chunk* c = lookupChunk(chunkOf(wp));
-    if (!c)
-        return blocks::Stone; // unloaded = opaque; light stops at the loaded edge
-    return c->get(wp.x & 31, wp.y & 31, wp.z & 31);
+    if (c)
+        return c->get(wp.x & 31, wp.y & 31, wp.z & 31);
+    // Not loaded. Above the terrain there is provably nothing, so it is open air; anywhere
+    // else, treat it as opaque so light stops at the loaded edge instead of leaking.
+    return wp.y >= kSkyAbove ? blocks::Air : blocks::Stone;
 }
 
 int LightEngine::getLevel(const glm::ivec3& wp, int channel) const {
-    if (wp.y >= kWorldTop)
-        return channel == Sky ? 15 : 0;
-    if (wp.y < 0)
+    if (wp.y < kRockBelow)
         return 0;
     const Chunk* c = lookupChunk(chunkOf(wp));
     if (!c)
-        return 0;
+        return (channel == Sky && wp.y >= kSkyAbove) ? 15 : 0;
     const std::uint16_t v = c->lightAt(wp.x & 31, wp.y & 31, wp.z & 31);
     switch (channel) {
         case R: return light::red(v);
@@ -64,8 +67,7 @@ int LightEngine::getLevel(const glm::ivec3& wp, int channel) const {
 }
 
 void LightEngine::setLevel(const glm::ivec3& wp, int channel, int level) {
-    if (wp.y < 0 || wp.y >= kWorldTop)
-        return;
+    // No world bound to test: a voxel exists wherever a chunk is loaded, and nowhere else.
     Chunk* c = lookupChunk(chunkOf(wp));
     if (!c)
         return;
@@ -86,8 +88,7 @@ void LightEngine::setLevel(const glm::ivec3& wp, int channel, int level) {
 
 void LightEngine::markTouched(const glm::ivec3& wp) {
     const auto add = [this](ChunkPos p) {
-        if (p.y < 0 || p.y >= kWorldChunksY)
-            return;
+        // any chunk Y is legal now; a position with no chunk simply misses on lookup
         if (m_touchedSet.insert(p).second)
             m_touched.push_back(p);
     };
@@ -105,13 +106,16 @@ void LightEngine::markTouched(const glm::ivec3& wp) {
     if (z == 31) add({base.x, base.y, base.z + 1});
 }
 
-bool LightEngine::seedStackValid(Chunk** stack) const {
+bool LightEngine::seedStackValid(Chunk** stack, int& y0, int& y1, bool& skyAtTop) const {
+    m_world.columnRange(m_seed.chunkX, m_seed.chunkZ, y0, y1, skyAtTop);
+    if (y1 - y0 + 1 > kMaxStack)
+        return false; // range wider than the band should ever produce; refuse rather than overrun
     // Refetched every step, never cached across a yield: the column can be evicted or
     // have a chunk swapped under us (the coarse->detailed re-gen double buffer) between
     // frames, and a stale pointer here would be a use-after-free.
-    for (int cy = 0; cy < kWorldChunksY; ++cy) {
-        stack[cy] = m_world.chunkDataMutable({m_seed.chunkX, cy, m_seed.chunkZ});
-        if (!stack[cy])
+    for (int cy = y0; cy <= y1; ++cy) {
+        stack[cy - y0] = m_world.chunkDataMutable({m_seed.chunkX, cy, m_seed.chunkZ});
+        if (!stack[cy - y0])
             return false;
     }
     return true;
@@ -125,17 +129,23 @@ void LightEngine::beginSeedColumn(std::int32_t chunkX, std::int32_t chunkZ) {
     m_seed.cursor = 0;
     m_seed.phase = SeedPhase::Descent;
 
-    Chunk* stack[kWorldChunksY] = {};
-    if (!seedStackValid(stack)) {
+    Chunk* stack[kMaxStack] = {};
+    int y0 = 0, y1 = 0;
+    bool skyAtTop = false;
+    if (!seedStackValid(stack, y0, y1, skyAtTop)) {
         m_seed.phase = SeedPhase::Idle;
         m_seedAborted = true; // nothing was lit; the caller has to try again later
         return;
     }
-    // whole-chunk fast path: with heightmap-driven terrain a uniform-air chunk sits
-    // entirely above the surface, so it is all direct sky. cheap, so it isn't split.
-    for (int cy = 0; cy < kWorldChunksY; ++cy)
-        if (stack[cy]->uniform() && stack[cy]->uniformId() == blocks::Air)
-            stack[cy]->fillLight(light::kFullSky);
+    m_seed.y0 = y0;
+    m_seed.y1 = y1;
+    m_seed.skyAtTop = skyAtTop;
+    // whole-chunk fast path: a uniform-air chunk above the surface is all direct sky. Only
+    // valid when the column actually reaches the sky — buried air is dark, not lit.
+    if (skyAtTop)
+        for (int cy = y0; cy <= y1; ++cy)
+            if (stack[cy - y0]->uniform() && stack[cy - y0]->uniformId() == blocks::Air)
+                stack[cy - y0]->fillLight(light::kFullSky);
 }
 
 bool LightEngine::stepSeedColumn(double budgetMs) {
@@ -143,10 +153,12 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
     if (m_seed.phase == SeedPhase::Idle)
         return true;
 
-    Chunk* stack[kWorldChunksY] = {};
-    if (!seedStackValid(stack)) {
-        // column went away mid-seed. the partial work is dropped, so this is NOT a
-        // finished column even though there is nothing further to step.
+    Chunk* stack[kMaxStack] = {};
+    int y0 = 0, y1 = 0;
+    bool skyAtTop = false;
+    if (!seedStackValid(stack, y0, y1, skyAtTop) || y0 != m_seed.y0 || y1 != m_seed.y1) {
+        // column went away mid-seed, or the band moved under us. the partial work is
+        // dropped, so this is NOT a finished column even though there is nothing to step.
         m_seed.phase = SeedPhase::Idle;
         m_seedAborted = true;
         return true;
@@ -175,9 +187,18 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
                 return false;
             const int dz = m_seed.cursor >> 5;
             const int dx = m_seed.cursor & 31;
-            int y = kWorldTop - 1;
-            for (; y >= 0; --y) {
-                Chunk* c = stack[y >> 5];
+            const int topY = (m_seed.y1 + 1) * kChunkSize - 1;
+            const int botY = m_seed.y0 * kChunkSize;
+            int y = topY;
+            // Buried band: sky attenuates 1 per step and a chunk of separation is 32, so
+            // nothing above can reach here. Record the whole column as blocked and skip.
+            if (!m_seed.skyAtTop) {
+                m_seed.heights[dz][dx] = topY;
+                ++m_seed.cursor;
+                continue;
+            }
+            for (; y >= botY; --y) {
+                Chunk* c = stack[(y >> 5) - m_seed.y0];
                 if (c->uniform() && c->uniformId() == blocks::Air) {
                     y = y & ~31; // whole chunk already filled above; skip it
                     continue;
@@ -202,7 +223,10 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
                 return false;
             const int dz = m_seed.cursor >> 5;
             const int dx = m_seed.cursor & 31;
-            for (int sy = m_seed.heights[dz][dx] + 1; sy < kWorldTop; ++sy) {
+            // Up to the top of the resident range, not to a world ceiling — the spread
+            // only ever climbs from the surface it found during the descent anyway.
+            const int spreadTop = (m_seed.y1 + 1) * kChunkSize;
+            for (int sy = m_seed.heights[dz][dx] + 1; sy < spreadTop; ++sy) {
                 const glm::ivec3 p{baseX + dx, sy, baseZ + dz};
                 bool boundary = false;
                 for (int d = 0; d < 6 && !boundary; ++d) {
@@ -221,12 +245,13 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
     }
 
     // emissive blocks — palette check skips the scan for almost every chunk
-    while (m_seed.cursor < kWorldChunksY) {
+    while (m_seed.cursor < m_seed.y1 - m_seed.y0 + 1) {
         if (m_seed.cursor > 0 && over())
             return false;
-        const int cy = m_seed.cursor;
+        const int slot = m_seed.cursor; // index into the band, NOT an absolute chunk Y
+        const int cy = m_seed.y0 + slot;
         ++m_seed.cursor;
-        const Chunk* c = stack[cy];
+        const Chunk* c = stack[slot];
         if (!c->paletteHasEmissive())
             continue;
         for (int y = 0; y < kChunkSize; ++y)

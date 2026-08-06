@@ -127,6 +127,7 @@ public:
     // which the caller guarantees by draining first.
     void resetWorld(Renderer& renderer);
 
+
     // For the cull compute pass; call when consumeDirty() says the chunk set changed.
     // Assigns each drawable chunk its meta index (the visibility bitset uses the same
     // indexing), so the two must always be rebuilt together. Also fills the separate
@@ -274,6 +275,23 @@ private:
     // actually arrives.
     ankerl::unordered_dense::set<ChunkPos, ChunkPosHash> m_provisionalColumns;
     bool columnPresent(ChunkPos col) const;
+
+public:
+    // Resident chunk-Y range for a column, inclusive. There is no world ceiling, so this
+    // is the vertical band around the camera — EXCEPT that it is extended upward to just
+    // above the terrain surface whenever the band comes near it. That extension is what
+    // makes sky light exact without a world top to descend from: the generator never puts
+    // a solid voxel above kTerrainTop, so a descent starting above the surface starts in
+    // open sky by construction.
+    //
+    // skyAtTop says whether the top of that range is open sky (15) or buried (0). When the
+    // band sits well below the surface the answer is 0 and no descent is needed at all —
+    // sky attenuates 1 per step, so it cannot reach more than 15 blocks below the lowest
+    // lit voxel, and a whole chunk of separation is 32. That bound is what keeps digging
+    // deep from having to load every chunk back up to daylight.
+    void columnRange(int cx, int cz, int& y0, int& y1, bool& skyAtTop) const;
+
+private:
     std::vector<ChunkPos> m_evictList; // outside the ring; may wait on in-flight jobs
     // Voxels disturbed since the last falling tick. Duplicates are allowed: the tick
     // re-checks each one against the world anyway, so a repeat is a no-op and that is far

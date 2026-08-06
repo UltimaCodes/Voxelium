@@ -13,7 +13,7 @@
 namespace vx {
 
 // Disk-backed chunk storage in region files. A region groups kRegionSize x kRegionSize
-// columns (all kWorldChunksY tall) into one file so the world isn't a swarm of tiny
+// columns (unbounded in Y) into one file so the world isn't a swarm of tiny
 // files. Regions are held fully in memory once touched and written back on flush().
 //
 // Thread-safe: worker gen jobs read through load() while the main thread writes through
@@ -49,10 +49,12 @@ public:
 
 private:
     struct Region {
-        // one blob per local chunk slot; empty = absent
-        std::vector<std::vector<std::uint8_t>> slots;
+        // Sparse, keyed by (chunkY, localX, localZ). It used to be a dense vector sized
+        // kRegionSize^2 * kWorldChunksY, which cannot address a world with no ceiling —
+        // and would be almost entirely empty even if it could, since only edited chunks
+        // are ever stored.
+        ankerl::unordered_dense::map<std::int64_t, std::vector<std::uint8_t>> slots;
         bool dirty = false;
-        Region() : slots(std::size_t(kRegionSize) * kRegionSize * kWorldChunksY) {}
     };
 
     struct RegionKey {
@@ -67,7 +69,9 @@ private:
     };
 
     static RegionKey regionOf(ChunkPos pos);
-    static int localIndex(ChunkPos pos);
+    // (chunkY, localX, localZ) packed into one key. chunkY is signed and unbounded, so it
+    // takes the high bits and the two 0..15 locals sit in the low byte.
+    static std::int64_t localKey(ChunkPos pos);
     std::filesystem::path regionPath(RegionKey key) const;
     Region& ensureLoaded(RegionKey key); // caller holds the lock
     void writeRegion(RegionKey key, const Region& region) const;
