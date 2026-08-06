@@ -543,7 +543,13 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             const ChunkPos col{item.first.x, 0, item.first.z};
             if (!m_seededColumns.contains(col) && columnPresent(col)) {
                 bool ready = true;
-                for (int cy = 0; cy < kWorldChunksY && ready; ++cy)
+                // The resident band, not 0..kWorldChunksY. #27 left this walking the old
+                // fixed column: stand above y=384 or below 0 and none of those chunks is
+                // resident, so `ready` never came true and the self-heal never healed.
+                int y0 = 0, y1 = 0;
+                bool sky = false;
+                columnRange(col.x, col.z, y0, y1, sky);
+                for (int cy = y0; cy <= y1 && ready; ++cy)
                     if (const auto cit = m_chunks.find({col.x, cy, col.z});
                         cit == m_chunks.end() || cit->second.state == ChunkState::Generating)
                         ready = false;
@@ -708,7 +714,13 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         const ChunkPos col{r.pos.x, 0, r.pos.z};
         if (m_seededColumns.erase(col)) { // voxels came back with light wiped -> re-seed
             m_seedQueue.push_back(col);
-            for (int cy = 0; cy < kWorldChunksY; ++cy)
+            // Same #27 leftover as the seed sweep: clearing lit over 0..kWorldChunksY misses
+            // every resident chunk outside that range, which would then keep a lit flag for
+            // light that was just wiped — and meshing trusts lit.
+            int y0 = 0, y1 = 0;
+            bool sky = false;
+            columnRange(col.x, col.z, y0, y1, sky);
+            for (int cy = y0; cy <= y1; ++cy)
                 if (const auto cit = m_chunks.find({r.pos.x, cy, r.pos.z}); cit != m_chunks.end())
                     cit->second.lit = false;
         }

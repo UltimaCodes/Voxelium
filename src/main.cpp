@@ -1145,11 +1145,21 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
             for (int dz = -96; dz <= 96; dz += 3)
                 for (int dx = -96; dx <= 96; dx += 3) {
                     const int wx = cx + dx, wz = cz + dz;
-                    int top = vx::kWorldHeight - 1;
-                    while (top >= 0 && !vx::blocks::opaque(world.blockAtWorld({wx, top, wz})))
+                    // Start at the top of the RESIDENT band, not the old world ceiling.
+                    // #27 removed the ceiling, so y=383 is usually not loaded, and an absent
+                    // chunk reads as STONE — which ended the downward scan on its first step
+                    // and left this invariant reporting "0/0 ... -> ok" at three of the five
+                    // stops. A check that silently tests nothing is worse than no check.
+                    int by0 = 0, by1 = 0;
+                    bool bsky = false;
+                    world.columnRange(wx >> 5, wz >> 5, by0, by1, bsky);
+                    const int ceiling = by1 * vx::kChunkSize + vx::kChunkSize - 1;
+                    int top = ceiling;
+                    while (top >= by0 * vx::kChunkSize &&
+                           !vx::blocks::opaque(world.blockAtWorld({wx, top, wz})))
                         --top;
                     // sample a few air voxels above the surface, not all of them
-                    for (int y = top + 1; y < std::min(top + 12, vx::kWorldHeight); ++y) {
+                    for (int y = top + 1; y < std::min(top + 12, ceiling); ++y) {
                         const int sky = vx::light::sky(light.lightAt({wx, y, wz}));
                         ++checked;
                         if (sky != 15) {
@@ -1165,11 +1175,17 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
             if (bad)
                 VX_INFO("   first at (%d,%d,%d)", firstBad.x, firstBad.y, firstBad.z);
         }
+        // Both of these read stale by default and this harness only takes one sample per
+        // stop, so ask for fresh numbers rather than printing whatever was last cached:
+        // stats() re-scans every 20th call, and gpuVisibleChunks() is a ~3-frame-latency
+        // readback that a few frames per stop never catches up with. Reported 0 drawn at
+        // stop 0 and then the identical count at two different stops, which cost real time.
+        world.refreshStats();
         const vx::ChunkManager::Stats st = world.stats();
         VX_INFO("tour %d @ (%.0f,%.0f,%.0f): %d chunks %d meshed %d UNLIT, %d drawn, "
                 "busy=%d -> %s",
                 i, stops[i].x, stops[i].y, stops[i].z, st.loaded, st.meshed, st.unlit,
-                rc.renderer.gpuVisibleChunks(), world.busy() ? 1 : 0, name);
+                rc.renderer.debugReadDrawCount(), world.busy() ? 1 : 0, name);
     }
     glDeleteFramebuffers(1, &fbo);
     glDeleteRenderbuffers(1, &color);
