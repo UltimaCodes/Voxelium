@@ -62,6 +62,11 @@ private:
     void emitCross(std::vector<std::uint64_t>& out, GreedyStats& stats);
     void meshLayer(bool water, std::vector<std::uint64_t>& out, GreedyStats& stats);
     void addFace(int dir, int slice, int u, int v, BlockId block, std::uint16_t light);
+    // Per-corner water surface level for the face of water voxel (x,y,z) in direction dir,
+    // packed 4 corners x 3 bits. Averages the depth of the columns meeting at each corner,
+    // so a sheet that thins out ramps instead of stepping once per cell. Water quads never
+    // read the r/g/b nibbles of their light word, so this rides there for free.
+    std::uint32_t waterCorners(int x, int y, int z, int dir) const;
     // Per-corner vertex brightness (4 corners x 3 bits, 7 = full) for a face whose outer
     // (air) voxel is (ax,ay,az): ambient occlusion times the corner's own light relative
     // to the brightest corner. Each corner averages the light of the four voxels touching

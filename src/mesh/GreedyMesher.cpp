@@ -107,6 +107,49 @@ std::uint32_t GreedyMesher::cornerShade(int ax, int ay, int az, int dir,
     return packed;
 }
 
+// Average water level of the four columns meeting at grid lattice point (lx, lz) at
+// height y. Only cells that actually hold water count — averaging in the dry land at a
+// shoreline would drag the edge of the water down into the beach.
+static int levelAtLattice(const BlockId* grid, int lx, int y, int lz,
+                          int (*gidx)(int, int, int), int fallback) {
+    int sum = 0, n = 0;
+    for (int dz = -1; dz <= 0; ++dz)
+        for (int dx = -1; dx <= 0; ++dx) {
+            const BlockId b = grid[gidx(lx + dx, y, lz + dz)];
+            const int lvl = blocks::waterLevel(b);
+            if (lvl > 0) {
+                sum += lvl;
+                ++n;
+            }
+        }
+    return n > 0 ? (sum + n / 2) / n : fallback;
+}
+
+std::uint32_t GreedyMesher::waterCorners(int x, int y, int z, int dir) const {
+    const int own = blocks::waterLevel(m_grid[gi(x, y, z)]);
+    // Lattice point per corner, in the same corner order chunk.vert unpacks. A top face
+    // has all four on the surface; a side face has its two upper corners there, and both
+    // sit on the plane the face lies in.
+    int lx[4], lz[4];
+    for (int i = 0; i < 4; ++i) {
+        const int cu = kCornerCX[dir][i];
+        const int cv = kCornerCY[dir][i];
+        switch (dir) {
+            case 0: lx[i] = x + 1;  lz[i] = z + cu; break; // +X plane
+            case 1: lx[i] = x;      lz[i] = z + cu; break; // -X plane
+            case 4: lx[i] = x + cu; lz[i] = z + 1;  break; // +Z plane
+            case 5: lx[i] = x + cu; lz[i] = z;      break; // -Z plane
+            default: lx[i] = x + cu; lz[i] = z + cv; break; // +Y / -Y: both axes in plane
+        }
+    }
+    std::uint32_t packed = 0;
+    for (int i = 0; i < 4; ++i) {
+        const int lvl = levelAtLattice(m_grid, lx[i], y, lz[i], gi, own);
+        packed |= std::uint32_t(std::clamp(lvl - 1, 0, 7)) << (i * 3);
+    }
+    return packed;
+}
+
 void GreedyMesher::addFace(int dir, int slice, int u, int v, BlockId block,
                            std::uint16_t light) {
     std::int16_t idx = m_heads[dir][slice];
@@ -329,8 +372,16 @@ void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, Greedy
                     // per-corner shade and can't be merged (interpolating across a merged
                     // span would smear it), so emit it 1x1. Uniform faces stay mergeable,
                     // which is why open terrain and solid rock cost the same as before.
+                    // Water carries its per-corner SURFACE LEVEL in the r/g/b nibbles it
+                    // never reads, leaving sky in the top nibble. Two cells only merge when
+                    // their corners agree, which is precisely when the surface between them
+                    // is flat — so a merged quad is safe to draw with one height and a
+                    // sloping sheet drops to 1x1 and ramps.
+                    const std::uint32_t wc = water ? waterCorners(x, y, z, dir) : 0u;
                     if (m_smoothAO) {
                         const std::uint32_t shade = cornerShade(ax, ay, az, dir, lv);
+                        if (water)
+                            lv = std::uint16_t(wc | (std::uint32_t(light::sky(lv)) << 12));
                         if (shade != kQuadShadeFull) {
                             out.push_back(packQuad(x, y, z, 1, 1, dir, block, shade, lv));
                             if (water)
@@ -342,6 +393,10 @@ void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, Greedy
                             continue;
                         }
                     }
+                    // LOD > 0 skips cornerShade entirely, so fold the corners in here too
+                    // or a distant water quad would read its own light as a height
+                    if (water && !m_smoothAO)
+                        lv = std::uint16_t(wc | (std::uint32_t(light::sky(lv)) << 12));
                     // merge on the light the quad will actually store
                     addFace(dir, s, b, a, block, lv);
                 }

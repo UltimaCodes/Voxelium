@@ -43,10 +43,13 @@ void main() {
     // Flowing water carries its depth in the block id (Water = 8 = full source, 14..20 are
     // L7..L1). A shallower cell sits lower in its voxel, so a spreading sheet visibly
     // thins out toward its edge instead of every cell being a full block of water.
-    uint blockId = q.y & 255u;
-    float level = blockId == 5u ? 8.0 : (blockId >= 14u && blockId <= 20u
-                                             ? float(1u + (20u - blockId))
-                                             : 8.0);
+    // Per-corner surface level, packed 4 x 3 bits into the r/g/b nibbles of the light word
+    // by GreedyMesher::waterCorners — water only ever reads sky out of that word, so those
+    // twelve bits were free. Each corner is the average depth of the columns meeting there,
+    // which is what makes a thinning sheet RAMP; using the cell's own level gave every
+    // depth change a hard step, and that was the jagged water.
+    uint corners = q.y >> 16;
+    float level = float(((corners >> (uint(corner) * 3u)) & 7u) + 1u);
     // How far this cell's surface sits below the top of its voxel, plus the swell.
     float drop = 0.10 + (8.0 - level) * 0.105;
     vec2 p = world.xz;
