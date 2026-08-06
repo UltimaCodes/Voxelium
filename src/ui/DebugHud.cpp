@@ -169,7 +169,7 @@ bool DebugHud::lampPicker(bool& open, int& swatch) {
 }
 
 void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, float& fovDeg,
-                        FxToggles& fx, bool& quit) {
+                        FxToggles& fx, bool& quit, bool& resetWorld) {
     if (!open)
         return;
 
@@ -219,6 +219,26 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     ImGui::Checkbox("ssgi", &fx.ssgi);
     ImGui::SameLine();
     ImGui::Checkbox("god rays", &fx.volumetric);
+
+    ImGui::SeparatorText("world");
+    // Two-step, because it throws away every edit in the save. Held behind a modal rather
+    // than a bare button for the same reason you would not put "delete save" next to
+    // "vsync" and trust a steady hand.
+    if (ImGui::Button("reset world..."))
+        ImGui::OpenPopup("reset world?");
+    if (ImGui::BeginPopupModal("reset world?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("Discards every block you have placed or broken.");
+        ImGui::TextDisabled("Terrain regenerates from the seed, so the land comes back "
+                            "exactly as it was. Only your edits are discarded.");
+        if (ImGui::Button("reset")) {
+            resetWorld = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("cancel"))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
 
     ImGui::SeparatorText("post");
     ImGui::Checkbox("taa (anti-alias)", &fx.taa);

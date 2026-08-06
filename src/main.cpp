@@ -1522,6 +1522,7 @@ int main(int argc, char** argv) {
     // Lamp picker: opened by middle-clicking a lamp, and it remembers which one so the
     // choice can be applied to that block as well as to everything placed afterwards.
     bool lampPickerOpen = false;
+    bool cursorCaptured = false; // mirrors what we last told the window, so we only tell it on change
     glm::ivec3 lampPickerTarget{0};
     // Hold-to-break. Progress is per TARGET, not per click: looking away resets it, so you
     // cannot chip at one block, switch, and come back to a half-broken one.
@@ -1545,9 +1546,7 @@ int main(int argc, char** argv) {
         const bool esc = window->keyDown(GLFW_KEY_ESCAPE);
         if (esc && !escHeld) {
             settingsOpen = !settingsOpen; // ESC pauses into the settings menu, not quit
-            if (settingsOpen)
-                window->setCursorCaptured(false);
-            else // closing the menu commits whatever was just changed
+            if (!settingsOpen) // closing the menu commits whatever was just changed
                 vx::Settings::save(settingsFile, fx, vsync, caveCull, world->radius,
                                    camera.fovYDeg);
         }
@@ -1597,10 +1596,21 @@ int main(int argc, char** argv) {
 
         renderer.beginFrame();
         hud.beginFrame();
-        if (settingsOpen) {
-            // paused in the settings menu: freeze look/move/edit, keep streaming + drawing
+        // One authority on who owns the mouse: the window is focused and no menu is up.
+        // Menus are the ONLY thing that hands the cursor back — alt-tabbing counts because
+        // focus is gone. Everything below reads this rather than testing buttons itself.
+        const bool menuOpen = settingsOpen || lampPickerOpen;
+        const bool mouseOurs = window->focused() && !menuOpen && !hud.wantsMouse();
+        if (mouseOurs != cursorCaptured) {
+            cursorCaptured = mouseOurs;
+            window->setCursorCaptured(mouseOurs);
+        }
+
+        if (settingsOpen || lampPickerOpen) {
+            // paused in a menu: freeze look/move/edit, keep streaming + drawing
         } else if (walkMode) {
-            camera.lookOnly(*window);
+            if (mouseOurs)
+                camera.lookOnly(*window);
             physAccum += double(dt);
             while (physAccum >= vx::Player::kTickDt) {
                 vx::PlayerInput in;
@@ -1642,7 +1652,7 @@ int main(int argc, char** argv) {
             }
             camera.position = player.eye();
         } else {
-            camera.update(*window, dt, hud.wantsMouse(), hud.wantsKeyboard());
+            camera.update(*window, dt, hud.wantsMouse(), hud.wantsKeyboard(), mouseOurs);
         }
 
         if (!settingsOpen && !lampPickerOpen && camera.flying()) {
@@ -1688,7 +1698,6 @@ int main(int argc, char** argv) {
                     // another onto its face. The repaint happens when a swatch is chosen.
                     lampPickerOpen = true;
                     lampPickerTarget = hit.voxel;
-                    window->setCursorCaptured(false);
                 } else {
                     const int put = placeBlock == vx::blocks::LampFirst
                                         ? int(vx::blocks::LampFirst + fx.lampSwatch)
@@ -1817,8 +1826,26 @@ int main(int argc, char** argv) {
             vx::Settings::save(settingsFile, fx, vsync, caveCull, world->radius,
                                camera.fovYDeg);
         }
+        bool resetWorldNow = false;
         hud.settings(settingsOpen, vsync, caveCull, world->radius, camera.fovYDeg, fx,
-                     quitRequested);
+                     quitRequested, resetWorldNow);
+        if (resetWorldNow) {
+            // resetWorld hands chunks back to the pool, so no worker may still be reading
+            // one. Settle first: update() drains results, and once the world is streamed it
+            // schedules nothing new, so this converges rather than spinning.
+            VX_INFO("world reset: draining workers...");
+            for (int guard = 0; guard < 20000 && world->busy(); ++guard) {
+                renderer.beginFrame();
+                world->update(*jobs, renderer, *light, camera.position);
+                renderer.endFrame();
+            }
+            world->resetWorld(renderer);
+            world->collectDrawInfo(drawInfo, waterInfo);
+            renderer.updateChunkMeta(drawInfo);
+            renderer.updateWaterMeta(waterInfo);
+            shadowMap.invalidate();
+            VX_INFO("world reset: save discarded, terrain regenerating from the seed");
+        }
         if (vsync != vsyncBefore)
             window->setVsync(vsync);
         hud.render();

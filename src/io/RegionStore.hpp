@@ -35,6 +35,11 @@ public:
     // Writes every dirty region to disk. Main thread; call on save-all and shutdown.
     void flush();
 
+    // Drop every cached region and delete the region files. The save only ever holds the
+    // player's diffs from procedural gen, so this is exactly "give me the world the seed
+    // describes again" rather than a destructive wipe of anything generated.
+    void discardAll();
+
     struct Stats {
         int regionsResident = 0;
         int chunksStored = 0;

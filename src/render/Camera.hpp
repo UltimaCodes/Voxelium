@@ -20,7 +20,11 @@ public:
     float baseSpeed = 8.0f;      // units/sec
     float sensitivity = 0.12f;   // degrees per pixel of mouse travel
 
-    void update(Window& window, float dt, bool uiWantsMouse, bool uiWantsKeyboard);
+    // lookEnabled is the single authority on whether the mouse is ours this frame: the
+    // window is focused and no menu is open. It used to be "right button held", which is
+    // why the cursor was never captured on its own.
+    void update(Window& window, float dt, bool uiWantsMouse, bool uiWantsKeyboard,
+                bool lookEnabled);
 
     // Walk mode: cursor always captured, mouse look only — position comes from the
     // player. Reuses the capture state so mode switches hand off cleanly.

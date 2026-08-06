@@ -746,6 +746,44 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     m_phaseSum.uploadMs += m_uploadMsLast;
 }
 
+void ChunkManager::resetWorld(Renderer& renderer) {
+    m_regions.discardAll();
+
+    // Hand every arena range back before dropping the entries that own them, or the
+    // allocator keeps blocks nothing will ever free.
+    for (auto& item : m_chunks) {
+        Entry& e = item.second;
+        if (e.range.count != 0)
+            renderer.free(e.range);
+        if (e.waterRange.count != 0)
+            renderer.free(e.waterRange);
+        if (e.pendingDetail)
+            m_pool.release(e.pendingDetail);
+        if (e.voxels)
+            m_pool.release(e.voxels);
+    }
+    m_chunks.clear();
+    m_seededColumns.clear();
+    m_provisionalColumns.clear();
+    m_seedQueue.clear();
+    m_seedDeferred.clear();
+    m_genQueue.clear();
+    m_evictList.clear();
+    m_uploads.clear();
+    m_fallQueue.clear();
+    m_pendingMesh = 0;
+
+    // The arena still holds the freed ranges in its fence ring; reset it outright rather
+    // than waiting three frames for ranges nothing references any more.
+    renderer.hardReset();
+
+    m_center = {INT32_MIN, 0, INT32_MIN}; // forces the next update() to rescan from scratch
+    m_lastRadius = -1;
+    m_meshScanDirty = true;
+    m_dirty = true;
+    m_visDirty = true;
+}
+
 void ChunkManager::collectDrawInfo(std::vector<ChunkDrawInfo>& out,
                                    std::vector<ChunkDrawInfo>& water) {
     out.clear();

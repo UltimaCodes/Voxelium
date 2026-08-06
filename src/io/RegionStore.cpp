@@ -183,4 +183,14 @@ RegionStore::Stats RegionStore::stats() const {
     return s;
 }
 
+void RegionStore::discardAll() {
+    std::lock_guard lock(m_mutex);
+    m_regions.clear();
+    std::error_code ec; // best effort: a locked file must not take the process down
+    if (std::filesystem::exists(m_dir, ec))
+        for (const auto& e : std::filesystem::directory_iterator(m_dir, ec))
+            if (e.path().extension() == ".vxr")
+                std::filesystem::remove(e.path(), ec);
+}
+
 } // namespace vx

@@ -121,6 +121,12 @@ public:
     // stored. Main thread.
     void saveDirty();
 
+    // Throw the save away and rebuild the world from the seed. Only edited chunks are ever
+    // stored, so this is "give me the procedural world back", not a wipe. Everything
+    // resident is released and re-streamed; safe to call only when no jobs are in flight,
+    // which the caller guarantees by draining first.
+    void resetWorld(Renderer& renderer);
+
     // For the cull compute pass; call when consumeDirty() says the chunk set changed.
     // Assigns each drawable chunk its meta index (the visibility bitset uses the same
     // indexing), so the two must always be rebuilt together. Also fills the separate

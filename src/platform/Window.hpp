@@ -39,6 +39,9 @@ public:
 
     // Captured = cursor hidden + locked, raw motion if the platform has it (fly mode).
     void setCursorCaptured(bool captured);
+    // Whether the OS focus is on this window. Mouse capture follows it: alt-tabbing away
+    // must hand the cursor back, and coming back must take it again without a click.
+    bool focused() const;
 
     // Call after ImGui installs its GLFW callbacks: wraps the scroll callback so both
     // ImGui and the engine see scroll events. Engine side accumulates into a delta that

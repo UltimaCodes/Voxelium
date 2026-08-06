@@ -77,6 +77,10 @@ void Window::setTitle(const char* title) { glfwSetWindowTitle(m_window, title); 
 
 void Window::setVsync(bool on) { glfwSwapInterval(on ? 1 : 0); }
 
+bool Window::focused() const {
+    return m_window && glfwGetWindowAttrib(m_window, GLFW_FOCUSED) != 0;
+}
+
 void Window::setCursorCaptured(bool captured) {
     glfwSetInputMode(m_window, GLFW_CURSOR, captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
     if (captured && glfwRawMouseMotionSupported())

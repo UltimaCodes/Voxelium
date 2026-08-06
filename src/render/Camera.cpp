@@ -12,12 +12,12 @@ namespace vx {
 
 static const glm::vec3 kUp{0.0f, 1.0f, 0.0f};
 
-void FlyCamera::update(Window& window, float dt, bool uiWantsMouse, bool uiWantsKeyboard) {
+void FlyCamera::update(Window& window, float dt, bool uiWantsMouse, bool uiWantsKeyboard,
+                       bool lookEnabled) {
     // Drain scroll every frame so it can't pile up while not flying.
     const double scroll = window.consumeScrollY();
 
-    const bool rmb = window.mouseDown(GLFW_MOUSE_BUTTON_RIGHT);
-    const bool wantFly = rmb && (m_flying || !uiWantsMouse);
+    const bool wantFly = lookEnabled && (m_flying || !uiWantsMouse);
     if (wantFly && !m_flying) {
         m_flying = true;
         window.setCursorCaptured(true);

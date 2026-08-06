@@ -56,7 +56,7 @@ public:
     bool lampPicker(bool& open, int& swatch);
 
     void settings(bool& open, bool& vsync, bool& caveCull, int& radius, float& fovDeg,
-                  FxToggles& fx, bool& quit);
+                  FxToggles& fx, bool& quit, bool& resetWorld);
     void render();
 
     void toggle() { m_visible = !m_visible; }
