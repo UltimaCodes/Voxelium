@@ -7,6 +7,10 @@
 
 namespace vx {
 
+// Sea level, shared so spawn placement can keep the player above water rather than
+// dropping them onto a seabed.
+inline constexpr int kSeaLevelForSpawn = 62;
+
 // Real world gen: warped fractal simplex heights, biome amplitude from a low-frequency
 // continentalness noise through a spline, cheese + noodle caves, glow deposits on cave
 // floors. Fully deterministic from the seed and chunk-independent — every value is a

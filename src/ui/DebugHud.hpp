@@ -55,6 +55,11 @@ public:
     // colours that exist, so offering more would mean quietly snapping the answer.
     bool lampPicker(bool& open, int& swatch);
 
+    // Full-screen "generating world" panel with a progress bar. Shown while the world
+    // settles at startup so the first frame the player sees has its LOD, shadows and
+    // chunks already in place instead of assembling itself around them.
+    void loadingScreen(float progress, const char* phase);
+
     void settings(bool& open, bool& vsync, bool& caveCull, int& radius, float& fovDeg,
                   FxToggles& fx, bool& quit, bool& resetWorld);
     void render();

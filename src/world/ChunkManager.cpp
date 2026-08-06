@@ -52,7 +52,16 @@ int lodForDist2(std::int64_t d2, int radius) {
         const double d = chunks * s;
         return std::int64_t(d * d);
     };
-    if (d2 <= band(8)) return 0;
+    // Full detail runs to 12 chunks, up from 8: the first downsample was well inside the
+    // range you can still resolve individual blocks at, so it read as the ground coarsening
+    // in front of you.
+    //
+    // ONLY that band moved. The 1 -> 2 transition is where kCoarseLod kicks in and chunks
+    // start generating without caves or trees, and at the default radius 16 the loaded ring
+    // is only 17 chunks — push that threshold out to 24 and nothing is ever coarse, which
+    // silently turns the whole coarse-gen optimisation off and costs +78% quads. It stays
+    // at 14. The smoke regen group samples a column at 15 chunks precisely to hold this.
+    if (d2 <= band(12)) return 0;
     if (d2 <= band(14)) return 1;
     if (d2 <= band(22)) return 2;
     if (d2 <= band(30)) return 3;

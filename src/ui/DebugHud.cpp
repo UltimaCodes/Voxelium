@@ -168,6 +168,25 @@ bool DebugHud::lampPicker(bool& open, int& swatch) {
     return picked;
 }
 
+void DebugHud::loadingScreen(float progress, const char* phase) {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->Pos);
+    ImGui::SetNextWindowSize(vp->Size);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.06f, 0.08f, 1.0f));
+    ImGui::Begin("##loading", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    const float cx = vp->Size.x * 0.5f;
+    ImGui::SetCursorPos(ImVec2(cx - 120.0f, vp->Size.y * 0.5f - 40.0f));
+    ImGui::TextUnformatted("generating world");
+    ImGui::SetCursorPos(ImVec2(cx - 200.0f, vp->Size.y * 0.5f - 12.0f));
+    ImGui::ProgressBar(progress, ImVec2(400.0f, 18.0f), "");
+    ImGui::SetCursorPos(ImVec2(cx - 200.0f, vp->Size.y * 0.5f + 14.0f));
+    ImGui::TextDisabled("%s", phase);
+    ImGui::End();
+    ImGui::PopStyleColor();
+}
+
 void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, float& fovDeg,
                         FxToggles& fx, bool& quit, bool& resetWorld) {
     if (!open)

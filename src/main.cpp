@@ -1446,7 +1446,17 @@ int main(int argc, char** argv) {
     VX_INFO("job system: %d workers", jobs->workerCount());
 
     vx::FlyCamera camera;
-    camera.position = {16.0, 110.0, 16.0};
+    // Spawn ON the ground, not at a fixed altitude. y was hardcoded to 110, which is inside
+    // the rock anywhere the terrain rises above it — and with exponential relief putting
+    // peaks past 300, that is a lot of the world. surfaceHeight is the generator's own
+    // answer for this column, so it lands on whatever is actually there.
+    {
+        constexpr int kSpawnX = 16, kSpawnZ = 16;
+        const int ground = world->generator().surfaceHeight(kSpawnX, kSpawnZ);
+        camera.position = {double(kSpawnX) + 0.5,
+                           double(std::max(ground, vx::kSeaLevelForSpawn) + 3),
+                           double(kSpawnZ) + 0.5};
+    }
     camera.yawDeg = -35.0f;
     camera.pitchDeg = -25.0f;
 
@@ -1494,6 +1504,50 @@ int main(int argc, char** argv) {
     vx::FxToggles fx;
     fx.taa = true; // temporal AA on by default in the live app
     TaaState taaState;
+    // Settle the world before the player ever sees it. Streaming in front of someone is
+    // what makes LOD swaps, shadow cascades and chunk pop-in obvious; doing it behind a
+    // panel means the first real frame already has all three in place. Bounded, because a
+    // world that never settles must not be an infinite loading screen — if the budget runs
+    // out we start anyway and it streams as it always did.
+    {
+        constexpr int kMaxFrames = 4000;
+        const int target = std::max(1, world->radius * world->radius * vx::kWorldChunksY);
+        for (int f = 0; f < kMaxFrames; ++f) {
+            window->pollEvents();
+            if (window->shouldClose())
+                break;
+            renderer.beginFrame();
+            world->update(*jobs, renderer, *light, camera.position);
+            renderer.endFrame();
+            if (f > 30 && !world->busy() && light->idle())
+                break;
+
+            int fbw = 0, fbh = 0;
+            window->framebufferSize(fbw, fbh);
+            if (fbw > 0 && fbh > 0) {
+                const vx::ChunkManager::Stats ls = world->stats();
+                // meshed-vs-expected is a rough but honest progress signal; it is what the
+                // player is actually waiting for, and it is monotonic
+                const float p = std::clamp(float(ls.meshed) / float(target), 0.0f, 1.0f);
+                char phase[96];
+                std::snprintf(phase, sizeof(phase), "%d chunks meshed, %d queued", ls.meshed,
+                              ls.genQueue);
+                hud.beginFrame();
+                hud.loadingScreen(p, phase);
+                glViewport(0, 0, fbw, fbh);
+                glClearColor(0.05f, 0.06f, 0.08f, 1.0f);
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                hud.render();
+                window->swapBuffers();
+            }
+        }
+        world->collectDrawInfo(drawInfo, waterInfo);
+        renderer.updateChunkMeta(drawInfo);
+        renderer.updateWaterMeta(waterInfo);
+        shadowMap.invalidate();
+        VX_INFO("world ready: %d chunks meshed", world->stats().meshed);
+    }
+
     double prevTime = glfwGetTime();
     double physAccum = 0.0;
     bool f3Held = false;
