@@ -47,13 +47,24 @@ void main() {
     float level = blockId == 5u ? 8.0 : (blockId >= 14u && blockId <= 20u
                                              ? float(1u + (20u - blockId))
                                              : 8.0);
-    if (dir == 2u) { // top surface: drop under the block top, organic bob
-        vec2 p = world.xz;
-        float wave = 0.055 * sin(dot(vec2(0.80, 0.20), p) * 0.28 + uTime * 1.1) +
-                     0.040 * sin(dot(vec2(-0.30, 0.95), p) * 0.41 + uTime * 1.5) +
-                     0.024 * sin(dot(vec2(0.55, -0.72), p) * 0.67 + uTime * 2.1);
-        world.y -= (0.10 + (8.0 - level) * 0.105) - wave;
-    }
+    // How far this cell's surface sits below the top of its voxel, plus the swell.
+    float drop = 0.10 + (8.0 - level) * 0.105;
+    vec2 p = world.xz;
+    float wave = 0.055 * sin(dot(vec2(0.80, 0.20), p) * 0.28 + uTime * 1.1) +
+                 0.040 * sin(dot(vec2(-0.30, 0.95), p) * 0.41 + uTime * 1.5) +
+                 0.024 * sin(dot(vec2(0.55, -0.72), p) * 0.67 + uTime * 2.1);
+
+    // The drop used to be applied to the TOP FACE ONLY. Side faces then still spanned the
+    // full block, so every shallow cell had walls standing proud of its own surface: a rim
+    // of water sticking up around a lower top, with a gap you could see straight through
+    // where the neighbour was shallower still. That is the jagged, glitchy shoreline.
+    //
+    // The upper edge of a side face is the same surface, so it has to move with it — and
+    // the wave is sampled from that corner's own world position, so the wall meets the top
+    // exactly instead of shearing away from it as the swell moves.
+    bool topEdge = (dir != 2u && dir != 3u) && uv.y >= h - 0.001;
+    if (dir == 2u || topEdge)
+        world.y -= drop - wave;
 
     vWorldRel = world;
     vDir = dir;
