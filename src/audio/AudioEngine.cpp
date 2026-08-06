@@ -24,11 +24,26 @@ bool decodable(const std::filesystem::path& ext) {
            ext == ".flac" || ext == ".FLAC";
 }
 
-// "step_grass3" -> "step_grass". variants of one sound differ only by a trailing number.
+// "step_grass3" -> "step_grass". Variants of one sound differ only by a trailing number.
+//
+// The catch is that block sounds are looked up by numeric id — "break_3" for grass — so
+// stripping every trailing digit turned that into "break_", which nothing ever asked for.
+// Per-block sounds therefore never resolved at all; only the generic fallback did. Three
+// cases, distinguished by what sits in front of the digits:
+//   step_grass3  -> step_grass   an ordinary variant
+//   break_3      -> break_3      the digits ARE the name, so keep them
+//   step_1-2     -> step_1       '-' marks a variant of a numbered name explicitly
 std::string baseName(std::string stem) {
-    while (!stem.empty() && std::isdigit(static_cast<unsigned char>(stem.back())))
-        stem.pop_back();
-    return stem;
+    std::size_t end = stem.size();
+    while (end > 0 && std::isdigit(static_cast<unsigned char>(stem[end - 1])))
+        --end;
+    if (end == stem.size())
+        return stem; // no trailing digits at all
+    if (end > 0 && stem[end - 1] == '-')
+        return stem.substr(0, end - 1);
+    if (end > 0 && stem[end - 1] == '_')
+        return stem; // "_3" is a block id, not a variant index
+    return stem.substr(0, end);
 }
 
 } // namespace

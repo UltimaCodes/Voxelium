@@ -8,6 +8,7 @@ vxsave_smoke/
 cmake-build-*/
 *.bmp
 
-# user-supplied audio: only the README is tracked
+# audio: the bundled CC0 footsteps are tracked, anything else you drop in is yours
 sounds/*
 !sounds/README.md
+!sounds/*.flac

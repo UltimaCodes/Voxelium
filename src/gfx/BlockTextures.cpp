@@ -204,7 +204,7 @@ void fillCrack(int stage, Rgba* slot) {
         if (a > p.a)
             p = {12, 10, 10, a};
     };
-    const int branches = 2 + stage * 2;
+    const int branches = 2 + stage; // 2..6, not 2..10: this is a 16x16 tile
     for (int b = 0; b < branches; ++b) {
         // fixed salt per branch so a stage always contains the previous stage's cracks —
         // the animation has to look like damage accumulating, not like it is being redrawn
@@ -212,7 +212,7 @@ void fillCrack(int stage, Rgba* slot) {
         const float ang = (float(b) + 0.5f) * 6.2831853f / float(branches) +
                           h01(b, 0, 91) * 0.9f;
         float dx = std::cos(ang), dy = std::sin(ang);
-        const int len = 4 + stage * 2;
+        const int len = 3 + stage; // a branch reaching 11 texels crosses the whole face
         for (int t = 0; t < len; ++t) {
             const float wob = (h01(b, t, 92) - 0.5f) * 0.9f;
             const float na = std::atan2(dy, dx) + wob;
@@ -220,10 +220,10 @@ void fillCrack(int stage, Rgba* slot) {
             dy = std::sin(na);
             x += dx;
             y += dy;
-            mark(int(x), int(y), 230);
-            if (stage >= 3) { // widen once the block is nearly gone
-                mark(int(x) + 1, int(y), 130);
-                mark(int(x), int(y) + 1, 130);
+            mark(int(x), int(y), 190);
+            if (stage >= 4) { // widen only on the last stage, when it is about to go
+                mark(int(x) + 1, int(y), 110);
+                mark(int(x), int(y) + 1, 110);
             }
         }
     }
