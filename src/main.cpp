@@ -369,8 +369,15 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         const int skyInRoom = vx::light::sky(light.lightAt({16, 48, 16}));
         const int glowAbove = vx::light::block(light.lightAt({16, 46, 16}));
         const int glowEdge = vx::light::block(light.lightAt({16, 48, 19}));
-        // open air near the top of the world — always full sky (trees/terrain can't reach)
-        const int skySurface = vx::light::sky(light.lightAt({16, vx::kWorldHeight - 4, 16}));
+        // Open air just above the ground — always full sky. This used to probe near the
+        // top of the world; there is no top any more (#27), and the resident vertical band
+        // does not reach y=380, so that sampled an unloaded chunk and read 0.
+        // Open air above the ground — always full sky. Two things this has to clear:
+        // there is no world top any more (#27) so it must sit inside the resident vertical
+        // band, and it must be above the TREES, which now reach ~20 blocks (a pine trunk is
+        // up to 14 plus its tiers). +6 landed inside a canopy and read 0, correctly.
+        const int skyProbeY = world.generator().surfaceHeight(16, 16) + 34;
+        const int skySurface = vx::light::sky(light.lightAt({16, skyProbeY, 16}));
         bool ok = skyInRoom == 0 && glowAbove == 13 && glowEdge > 0 && glowEdge < 13 &&
                   skySurface == 15;
         VX_INFO("light: room sky %d (want 0), above-glow %d (want 13), edge %d, surface sky "
@@ -657,6 +664,11 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
             // convergence — a flat floor with a rim is what has a settled state to reach.
             const int sx = 60, sz = 60;
             const int sy = world.generator().surfaceHeight(sx, sz) + 6;
+            // #27 removed the world ceiling, so a column is no longer loaded end to end —
+            // only a band around the camera is. An edit outside that band lands nowhere,
+            // which is exactly what a player would see, so stand at the basin first.
+            camera.position = {double(sx), double(sy) + 2.0, double(sz)};
+            drain();
             std::vector<vx::ChunkManager::BlockEdit> basin;
             for (int dx = -6; dx <= 6; ++dx)
                 for (int dz = -6; dz <= 6; ++dz) {
@@ -906,37 +918,63 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         if (!live)
             return 1;
 
-        // A region file records how many chunk slots a column has, which encodes
-        // kWorldChunksY. Raising the world height is a legitimate change (M22 wants it and
-        // it does NOT require cubic chunks), so what matters is that an old save is
-        // rejected rather than read with the wrong stride. Forge a header from a
-        // differently-tall world and check load() refuses it.
-        const std::filesystem::path badDir = outPath.parent_path() / "vxsave_height";
+        // The save format used to encode the world height in its slot count, and the test
+        // here checked that a differently-tall world was rejected. There is no world height
+        // any more (#27), so what has to hold is the version gate: an old v1 region must be
+        // refused rather than read with the wrong stride and silently mined for garbage.
+        const std::filesystem::path badDir = outPath.parent_path() / "vxsave_oldfmt";
         std::error_code bec;
         std::filesystem::remove_all(badDir, bec);
         std::filesystem::create_directories(badDir, bec);
         {
-            constexpr int kOtherHeight = vx::kWorldChunksY * 2;
-            const int slots = 16 * 16 * kOtherHeight; // kRegionSize is 16
             std::vector<std::uint8_t> f{'V', 'X', 'R', 'G'};
             const auto put32 = [&](std::uint32_t v) {
                 for (int i = 0; i < 4; ++i)
                     f.push_back(std::uint8_t(v >> (8 * i)));
             };
-            put32(1); // version
-            put32(std::uint32_t(slots));
-            f.resize(f.size() + std::size_t(slots) * 8, 0); // empty slot directory
+            put32(1);      // version 1: the dense-slot-grid format
+            put32(16 * 16 * 12); // its slot count, which used to encode the world height
+            f.resize(f.size() + std::size_t(16 * 16 * 12) * 8, 0);
             std::ofstream out(badDir / "r.0.0.vxr", std::ios::binary);
             out.write(reinterpret_cast<const char*>(f.data()), std::streamsize(f.size()));
         }
         vx::RegionStore probe(badDir);
         vx::Chunk scratch;
         const bool rejected = !probe.load({0, 0, 0}, scratch);
-        VX_INFO("persistence: region from a %d-tall world rejected %s", vx::kWorldChunksY * 2,
+        VX_INFO("persistence: v1 region refused by the version gate %s",
                 rejected ? "PASS" : "FAIL");
         std::filesystem::remove_all(badDir, bec);
         if (!rejected)
             return 1;
+
+        // #27: chunk Y is unbounded, so a chunk far outside the old 0..11 range has to
+        // store and reload. Negative Y is the case the old dense slot index could not even
+        // address — it multiplied Y into an offset and would have run off the front.
+        {
+            const std::filesystem::path deepDir = outPath.parent_path() / "vxsave_deep";
+            std::filesystem::remove_all(deepDir, bec);
+            vx::Chunk deep;
+            deep.makeUniform(vx::blocks::Stone);
+            deep.set(3, 4, 5, vx::blocks::Bricks);
+            std::vector<std::uint8_t> bytes;
+            vx::ChunkSerializer::serialize(deep, bytes);
+            const vx::ChunkPos far{2, -40, -3}; // 1280 blocks below the old world floor
+            {
+                vx::RegionStore rs(deepDir);
+                rs.save(far, bytes);
+                rs.flush();
+            }
+            vx::Chunk back;
+            vx::RegionStore rs2(deepDir);
+            const bool got = rs2.load(far, back);
+            const bool ok = got && back.get(3, 4, 5) == vx::blocks::Bricks &&
+                            back.get(0, 0, 0) == vx::blocks::Stone;
+            VX_INFO("persistence: chunk at y=%d round-tripped %s", far.y,
+                    ok ? "PASS" : "FAIL");
+            std::filesystem::remove_all(deepDir, bec);
+            if (!ok)
+                return 1;
+        }
     }
 
     // screenshot from inside the glow room

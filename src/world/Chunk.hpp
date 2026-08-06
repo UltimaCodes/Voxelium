@@ -13,13 +13,24 @@ using BlockId = std::uint16_t;
 inline constexpr int kChunkSize = 32;
 inline constexpr int kChunkSize3 = kChunkSize * kChunkSize * kChunkSize;
 
-// World height in chunks. 12 => 384 blocks. Exponential relief (M22) puts peaks at
-// spline 240 + up to 74 of amplitude, and a 256-block world clamped everything above 248
-// flat — mountains came out as plateaus because they were being sheared off against the
-// ceiling, not because that was their shape. Most vertical chunks are uniform air (above) or uniform stone (below), which cost
-// nothing, so this barely moves memory or quad counts — only the surface band meshes.
-inline constexpr int kWorldChunksY = 12;
-inline constexpr int kWorldHeight = kWorldChunksY * kChunkSize;
+// THERE IS NO WORLD CEILING. ChunkPos.y is a plain int and chunks exist at any Y; the
+// resident set is a vertical band around the camera, exactly the way the horizontal radius
+// already worked. Nothing below is a bound on where you may build or dig.
+//
+// kVerticalRadius is how many chunks above and below the camera stay loaded. It is a
+// streaming budget, not a limit: walk up and the band comes with you.
+inline constexpr int kVerticalRadius = 7; // 7 => 480 blocks of resident column
+
+// Where the GENERATOR puts terrain. This is a property of the noise, not of the world, and
+// exists so light and generation can bound their work: the generator never writes a solid
+// voxel above kTerrainTop, so everything above it is open sky by construction — which is
+// what lets sky light be seeded without a world top to descend from.
+inline constexpr int kTerrainTop = 384;
+inline constexpr int kTerrainBottom = 0; // bedrock floor; nothing generates below
+
+// Legacy alias. A few places still want "how tall is generated terrain" in chunks.
+inline constexpr int kWorldChunksY = kTerrainTop / kChunkSize;
+inline constexpr int kWorldHeight = kTerrainTop;
 
 namespace blocks {
 inline constexpr BlockId Air = 0;

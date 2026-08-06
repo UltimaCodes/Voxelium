@@ -128,6 +128,12 @@ private:
     // the spread phase, so it has to survive across the yield between them.
     enum class SeedPhase : std::uint8_t { Idle, Descent, Spread, Emissive };
     struct SeedState {
+        // Resident chunk-Y range this seed was started against, and whether its top is
+        // open sky. Captured at begin and re-checked every step: if the band moved under
+        // us the partial work is invalid, because the descent origin changed.
+        int y0 = 0;
+        int y1 = 0;
+        bool skyAtTop = false;
         SeedPhase phase = SeedPhase::Idle;
         std::int32_t chunkX = 0;
         std::int32_t chunkZ = 0;
@@ -136,7 +142,11 @@ private:
     };
     SeedState m_seed;
     bool m_seedAborted = false;
-    bool seedStackValid(Chunk** stack) const; // refetch + validate the column's chunks
+    // Refetch + validate the column's resident chunks. The range is no longer 0..world
+    // top — there is no world top — so it comes back through y0/y1, and skyAtTop says
+    // whether the descent starts in open sky or buried.
+    static constexpr int kMaxStack = 2 * kVerticalRadius + 4; // band, plus the surface reach
+    bool seedStackValid(Chunk** stack, int& y0, int& y1, bool& skyAtTop) const;
 
     ChunkManager& m_world;
     std::vector<glm::ivec3> m_queue[kChannels];

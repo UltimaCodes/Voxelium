@@ -108,8 +108,30 @@ std::uint8_t coarseNeighborMask(ChunkPos pos, int lod, ChunkPos center, int radi
 
 } // namespace
 
+void ChunkManager::columnRange(int cx, int cz, int& y0, int& y1, bool& skyAtTop) const {
+    const int surf = m_gen.surfaceHeight(cx * kChunkSize + kChunkSize / 2,
+                                         cz * kChunkSize + kChunkSize / 2);
+    // chunk holding the first open-air voxel above the surface
+    const int surfChunk = (surf + 1) >= 0 ? (surf + 1) / kChunkSize
+                                          : -((-(surf + 1) + kChunkSize - 1) / kChunkSize);
+    y0 = m_center.y - kVerticalRadius;
+    const int bandTop = m_center.y + kVerticalRadius;
+    if (bandTop + 1 >= surfChunk) {
+        y1 = std::max(bandTop, surfChunk);
+        skyAtTop = true;
+    } else {
+        y1 = bandTop; // buried: a chunk of separation is 32 blocks, sky reaches 15
+        skyAtTop = false;
+    }
+}
+
 bool ChunkManager::columnPresent(ChunkPos col) const {
-    for (int cy = 0; cy < kWorldChunksY; ++cy)
+    // "Complete" now means the resident range is present, because that is all there ever
+    // will be — an unbounded column can never be fully loaded.
+    int y0 = 0, y1 = 0;
+    bool sky = false;
+    columnRange(col.x, col.z, y0, y1, sky);
+    for (int cy = y0; cy <= y1; ++cy)
         if (!m_chunks.contains({col.x, cy, col.z}))
             return false;
     return true;
@@ -128,17 +150,24 @@ void ChunkManager::rescan(ChunkPos center) {
     m_evictList.clear();
     for (const auto& item : m_chunks)
         if (std::abs(item.first.x - center.x) > dataR + 1 ||
-            std::abs(item.first.z - center.z) > dataR + 1)
+            std::abs(item.first.z - center.z) > dataR + 1 ||
+            std::abs(item.first.y - center.y) > kVerticalRadius + 1)
             m_evictList.push_back(item.first);
 
     m_genQueue.clear();
+    // Vertical band around the camera, not a fixed column: there is no world ceiling, so
+    // "the whole column" is not a finite thing to load. Walk up and the band follows.
     for (int dz = -dataR; dz <= dataR; ++dz)
-        for (int dx = -dataR; dx <= dataR; ++dx)
-            for (int y = 0; y < kWorldChunksY; ++y) {
+        for (int dx = -dataR; dx <= dataR; ++dx) {
+            int y0 = 0, y1 = 0;
+            bool sky = false;
+            columnRange(center.x + dx, center.z + dz, y0, y1, sky);
+            for (int y = y0; y <= y1; ++y) {
                 const ChunkPos pos{center.x + dx, y, center.z + dz};
                 if (!m_chunks.contains(pos))
                     m_genQueue.push_back(pos);
             }
+        }
     std::sort(m_genQueue.begin(), m_genQueue.end(), [center](ChunkPos a, ChunkPos b) {
         return horizontalDist2(a, center) > horizontalDist2(b, center);
     });
@@ -259,7 +288,10 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         const ChunkPos col{pos.x, 0, pos.z};
         if (!m_seededColumns.contains(col)) {
             bool complete = true;
-            for (int cy = 0; cy < kWorldChunksY && complete; ++cy) {
+            int cy0 = 0, cy1 = 0;
+            bool colSky = false;
+            columnRange(col.x, col.z, cy0, cy1, colSky);
+            for (int cy = cy0; cy <= cy1 && complete; ++cy) {
                 const auto cit = m_chunks.find({pos.x, cy, pos.z});
                 complete = cit != m_chunks.end() && cit->second.state != ChunkState::Generating;
             }
@@ -306,7 +338,10 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         // A column only counts as lit once it is FULLY seeded — a half-seeded one would
         // otherwise get meshed dark.
         const auto markLit = [&](ChunkPos col) {
-            for (int cy = 0; cy < kWorldChunksY; ++cy)
+            int my0 = 0, my1 = 0;
+            bool mSky = false;
+            columnRange(col.x, col.z, my0, my1, mSky);
+            for (int cy = my0; cy <= my1; ++cy)
                 if (const auto cit = m_chunks.find({col.x, cy, col.z}); cit != m_chunks.end()) {
                     cit->second.lit = true;
                     // A RE-seed changes light in a chunk that is already meshed, and the
