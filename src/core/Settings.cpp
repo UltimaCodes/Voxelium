@@ -1,6 +1,7 @@
 #include "core/Settings.hpp"
 
 #include "core/Log.hpp"
+#include "world/Chunk.hpp" // lamp swatch count, for clamping on load
 
 #include <algorithm>
 #include <charconv>
@@ -81,9 +82,7 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
         else if (key == "crosshairG") readFloat(val, fx.crosshair[1]);
         else if (key == "crosshairB") readFloat(val, fx.crosshair[2]);
         else if (key == "crosshairA") readFloat(val, fx.crosshair[3]);
-        else if (key == "lampR") readFloat(val, fx.lampColour[0]);
-        else if (key == "lampG") readFloat(val, fx.lampColour[1]);
-        else if (key == "lampB") readFloat(val, fx.lampColour[2]);
+        else if (key == "lampSwatch") readInt(val, fx.lampSwatch);
         else if (key == "volume") readFloat(val, fx.volume);
         else if (key == "renderScale") readFloat(val, fx.renderScale);
         else if (key == "vsync") readBool(val, vsync);
@@ -101,8 +100,10 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
     fx.dayLengthSec = std::clamp(fx.dayLengthSec, 20.0f, 1200.0f);
     fx.exposure = std::clamp(fx.exposure, 0.4f, 2.5f);
     fx.bloomStrength = std::clamp(fx.bloomStrength, 0.0f, 1.5f);
-    for (float& c : fx.lampColour)
-        c = c < 0.0f ? 0.0f : (c > 1.0f ? 1.0f : c);
+    fx.lampSwatch = fx.lampSwatch < 0 ? 0
+                                      : (fx.lampSwatch >= blocks::kLampCount
+                                             ? blocks::kLampCount - 1
+                                             : fx.lampSwatch);
     for (float& c : fx.crosshair)
         c = std::clamp(c, 0.0f, 1.0f);
     fx.volume = std::clamp(fx.volume, 0.0f, 1.0f);

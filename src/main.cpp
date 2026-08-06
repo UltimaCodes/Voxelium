@@ -391,14 +391,24 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
             world.setBlock(rc.renderer, light, {lx, ly, lz}, vx::BlockId(vx::blocks::LampFirst + 4));
             const std::uint16_t gv = light.lightAt({lx, ly + 1, lz});
             const int gg = vx::light::green(gv), gbl = vx::light::blue(gv);
+            // White is its own swatch, and it is the one that used to be unreachable: a
+            // wheel of saturated hues cannot express it, so picking white gave you whatever
+            // vivid colour happened to be nearest. All three channels must come out equal.
+            world.setBlock(rc.renderer, light, {lx, ly, lz},
+                           vx::BlockId(vx::blocks::LampFirst + vx::blocks::kLampCount - 1));
+            const std::uint16_t wv = light.lightAt({lx, ly + 1, lz});
+            const int wr = vx::light::red(wv), wg = vx::light::green(wv),
+                      wb = vx::light::blue(wv);
+            const bool whiteOk = wr >= 13 && wr == wg && wg == wb;
             // and removing it has to take the colour with it, through the removal BFS
             world.setBlock(rc.renderer, light, {lx, ly, lz}, vx::blocks::Air);
             const std::uint16_t off = light.lightAt({lx, ly + 1, lz});
             const int rest = vx::light::red(off) + vx::light::green(off) + vx::light::blue(off);
-            const bool lampOk = bb > br && bb >= 13 && gg > gbl && gg >= 13 && rest == 0;
-            VX_INFO("light: lamp blue r%d b%d, lamp green g%d b%d, block light after removal "
+            const bool lampOk =
+                bb > br && bb >= 13 && gg > gbl && gg >= 13 && whiteOk && rest == 0;
+            VX_INFO("light: lamp blue r%d b%d, green g%d b%d, white %d/%d/%d, after removal "
                     "%d (want 0) -> %s",
-                    br, bb, gg, gbl, rest, lampOk ? "PASS" : "FAIL");
+                    br, bb, gg, gbl, wr, wg, wb, rest, lampOk ? "PASS" : "FAIL");
             if (!lampOk)
                 return 1;
         }
@@ -1469,6 +1479,10 @@ int main(int argc, char** argv) {
     bool hotbarOpen = false;
     bool escHeld = false;
     bool settingsOpen = false;
+    // Lamp picker: opened by middle-clicking a lamp, and it remembers which one so the
+    // choice can be applied to that block as well as to everything placed afterwards.
+    bool lampPickerOpen = false;
+    glm::ivec3 lampPickerTarget{0};
     constexpr int kHotbar[] = {vx::blocks::Stone,  vx::blocks::Dirt,   vx::blocks::Grass,
                                vx::blocks::Sand,   vx::blocks::Snow,   vx::blocks::Wood,
                                vx::blocks::Planks, vx::blocks::Bricks, vx::blocks::Leaves,
@@ -1578,7 +1592,7 @@ int main(int argc, char** argv) {
             camera.update(*window, dt, hud.wantsMouse(), hud.wantsKeyboard());
         }
 
-        if (!settingsOpen && camera.flying()) {
+        if (!settingsOpen && !lampPickerOpen && camera.flying()) {
             const bool lmb = window->mouseDown(GLFW_MOUSE_BUTTON_LEFT);
             const bool mmb = window->mouseDown(GLFW_MOUSE_BUTTON_MIDDLE);
             if ((lmb && !lmbHeld) || (mmb && !mmbHeld)) {
@@ -1601,12 +1615,15 @@ int main(int argc, char** argv) {
                         // so recolouring is a block swap — and the emitter-swap path in the
                         // light engine is what makes the old hue actually go away.
                         const vx::BlockId aimed = world->blockAtWorld(hit.voxel);
-                        const vx::BlockId lamp = vx::blocks::nearestLamp(
-                            fx.lampColour[0], fx.lampColour[1], fx.lampColour[2]);
+                        const vx::BlockId lamp =
+                            vx::BlockId(vx::blocks::LampFirst + fx.lampSwatch);
                         if (vx::blocks::isLamp(aimed)) {
-                            if (aimed != lamp)
-                                world->setBlock(renderer, *light, hit.voxel, lamp);
-                            audio.playIfPresent("place_" + std::to_string(int(lamp)), at);
+                            // Aiming at a lamp means you want to recolour that lamp, not
+                            // stack another one onto its face. Open the picker on it; the
+                            // repaint happens when a swatch is actually chosen.
+                            lampPickerOpen = true;
+                            lampPickerTarget = hit.voxel;
+                            window->setCursorCaptured(false);
                         } else {
                             const int put = placeBlock == vx::blocks::LampFirst ? int(lamp)
                                                                                : placeBlock;
@@ -1723,6 +1740,15 @@ int main(int argc, char** argv) {
         const bool vsyncBefore = vsync;
         bool quitRequested = false;
         hud.diagnostics(stats, camera);
+        if (hud.lampPicker(lampPickerOpen, fx.lampSwatch)) {
+            // repaint the lamp that was middle-clicked; an emitter-to-emitter swap, which
+            // is the path that has to retract the old hue's light as well as add the new
+            if (vx::blocks::isLamp(world->blockAtWorld(lampPickerTarget)))
+                world->setBlock(renderer, *light, lampPickerTarget,
+                                vx::BlockId(vx::blocks::LampFirst + fx.lampSwatch));
+            vx::Settings::save(settingsFile, fx, vsync, caveCull, world->radius,
+                               camera.fovYDeg);
+        }
         hud.settings(settingsOpen, vsync, caveCull, world->radius, camera.fovYDeg, fx,
                      quitRequested);
         if (vsync != vsyncBefore)

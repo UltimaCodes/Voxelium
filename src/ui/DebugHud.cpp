@@ -128,6 +128,46 @@ void DebugHud::diagnostics(const FrameStats& stats, const FlyCamera& camera) {
     ImGui::End();
 }
 
+bool DebugHud::lampPicker(bool& open, int& swatch) {
+    if (!open)
+        return false;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->GetCenter().x, vp->GetCenter().y), ImGuiCond_Always,
+                            ImVec2(0.5f, 0.5f));
+    ImGui::Begin("lamp colour", &open,
+                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize);
+
+    bool picked = false;
+    constexpr int kPerRow = 12; // hues across, so saturated sits directly above its pale
+    for (int i = 0; i < blocks::kLampCount; ++i) {
+        const blocks::LampRgb& c = blocks::kLampRGB[std::size_t(i)];
+        const ImVec4 col(float(c.r) / 15.0f, float(c.g) / 15.0f, float(c.b) / 15.0f, 1.0f);
+        ImGui::PushID(i);
+        // the current swatch keeps a border so you can see what a lamp already is
+        const ImGuiColorEditFlags f =
+            ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop;
+        if (i == swatch)
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, i == swatch ? 2.0f : 0.0f);
+        if (ImGui::ColorButton("##sw", col, f, ImVec2(26.0f, 26.0f))) {
+            swatch = i;
+            picked = true;
+        }
+        ImGui::PopStyleVar();
+        if (i == swatch)
+            ImGui::PopStyleColor();
+        ImGui::PopID();
+        if (i % kPerRow != kPerRow - 1 && i != blocks::kLampCount - 1)
+            ImGui::SameLine();
+    }
+    ImGui::TextDisabled("everything you place next uses this colour");
+    ImGui::End();
+    if (picked)
+        open = false;
+    return picked;
+}
+
 void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, float& fovDeg,
                         FxToggles& fx, bool& quit) {
     if (!open)
@@ -156,12 +196,6 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     ImGui::SetNextItemWidth(-110.0f);
     ImGui::ColorEdit4("crosshair", fx.crosshair,
                       ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_AlphaPreviewHalf);
-    ImGui::ColorEdit3("lamp colour", fx.lampColour);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Colour for placed lamps, and for repainting one you middle-click.\n"
-                          "Snapped to the nearest of %d storable hues: a lamp's colour is its\n"
-                          "block id, because voxels carry no per-block data.",
-                          vx::blocks::kLampHues);
     ImGui::SetNextItemWidth(-110.0f);
     ImGui::SliderFloat("volume", &fx.volume, 0.0f, 1.0f, "%.2f");
 

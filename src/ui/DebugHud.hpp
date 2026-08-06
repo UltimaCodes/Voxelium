@@ -49,6 +49,12 @@ public:
     // F3 window: read-only diagnostics, no controls.
     void diagnostics(const FrameStats& stats, const FlyCamera& camera);
     // ESC window: all the knobs. Sets open=false on Resume, quit=true on Quit.
+    // Swatch picker for lamps. Opens where you middle-clicked one; picking sets `swatch`
+    // and returns true so the caller can repaint that lamp. Deliberately a grid of the
+    // real block colours rather than a free colour control: these are the only lamp
+    // colours that exist, so offering more would mean quietly snapping the answer.
+    bool lampPicker(bool& open, int& swatch);
+
     void settings(bool& open, bool& vsync, bool& caveCull, int& radius, float& fovDeg,
                   FxToggles& fx, bool& quit);
     void render();

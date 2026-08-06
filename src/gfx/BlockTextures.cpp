@@ -21,7 +21,7 @@ constexpr int kNamedLayers = 15;
 // the lamp hues tack onto the end, one layer each, generated from blocks::kLampRGB so
 // the face you see and the light it casts can never drift apart
 constexpr int kLampLayer0 = kNamedLayers;
-constexpr int kLayers = kNamedLayers + blocks::kLampHues;
+constexpr int kLayers = kNamedLayers + blocks::kLampCount;
 
 // filename (without extension) per layer, looked up in assets/textures/
 constexpr const char* kNames[kNamedLayers] = {"stone",    "dirt",     "grass_top", "grass_side",
@@ -168,8 +168,6 @@ Rgba oreSpeckle(int x, int y, int z, float r, float g, float b) {
 Rgba genCoalOre(int x, int y) { return oreSpeckle(x, y, 31, 0.13f, 0.12f, 0.14f); }
 Rgba genIronOre(int x, int y) { return oreSpeckle(x, y, 47, 0.72f, 0.56f, 0.42f); }
 
-// Loose pebbles: a few grey tones scattered per texel rather than one tinted noise field,
-// so it reads as aggregate next to stone instead of as dirty stone.
 // Lamp faces: a bright core falling off to a darker rim, so the block reads as a fitting
 // with a lit centre rather than a flat colour swatch. Hue comes from the same table the
 // emitted light does.
@@ -178,12 +176,15 @@ Rgba lampTexel(int hue, int x, int y) {
     const float d = std::sqrt(dx * dx + dy * dy) / 8.0f;
     const float core = 1.0f - 0.42f * d + 0.10f * h01(x, y, 70 + hue);
     const float w = 0.35f * (1.0f - d); // lift the middle toward white: that is the source
-    const float r = float(blocks::kLampRGB[hue][0]) / 15.0f;
-    const float g = float(blocks::kLampRGB[hue][1]) / 15.0f;
-    const float b = float(blocks::kLampRGB[hue][2]) / 15.0f;
+    const auto& c = blocks::kLampRGB[std::size_t(hue)];
+    const float r = float(c.r) / 15.0f;
+    const float g = float(c.g) / 15.0f;
+    const float b = float(c.b) / 15.0f;
     return shade(r + w * (1.0f - r), g + w * (1.0f - g), b + w * (1.0f - b), core);
 }
 
+// Loose pebbles: a few grey tones scattered per texel rather than one tinted noise field,
+// so it reads as aggregate next to stone instead of as dirty stone.
 Rgba genGravel(int x, int y) {
     const float pick = h01(x, y, 61);
     const float tone = pick < 0.30f ? 0.42f : (pick < 0.62f ? 0.55f : (pick < 0.86f ? 0.66f : 0.34f));

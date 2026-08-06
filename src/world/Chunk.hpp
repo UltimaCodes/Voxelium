@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -48,22 +49,43 @@ inline constexpr BlockId Gravel = 21;
 // at all. So the hue IS the id, the same block-id-as-data trick the water levels use: no
 // storage, serializer or region-format change, and a hue costs exactly one id.
 //
-// Twelve steps round the wheel is the resolution that buys. It is not arbitrary: block
-// light is 4 bits per channel, so the emitted colour is coarse before it ever leaves the
-// lamp, and finer hue steps would be quantised away by the light itself.
+// Twelve hues at two saturations, plus white. Block light is 4 bits per channel, so the
+// emitted colour is coarse before it ever leaves the lamp and finer steps would be
+// quantised away by the light itself — 25 is near the point where more ids buy nothing.
+// The player picks from these swatches directly rather than from a free colour control, so
+// what is offered is exactly what is storable and nothing has to be silently snapped.
 inline constexpr int kLampHues = 12;
+inline constexpr int kLampShades = 2; // saturated, then washed halfway to white
+// +1 for plain white. A wheel of saturated hues alone cannot express "a white lamp", and a
+// nearest-colour search over saturated entries answers a pale pick with a vivid one — which
+// is exactly what made picking white do nothing sensible.
+inline constexpr int kLampCount = kLampHues * kLampShades + 1;
 inline constexpr BlockId LampFirst = 22;
-inline constexpr BlockId LampLast = LampFirst + kLampHues - 1;
+inline constexpr BlockId LampLast = LampFirst + kLampCount - 1;
 inline constexpr int kBlockCount = LampLast + 1;
 inline constexpr bool isLamp(BlockId id) { return id >= LampFirst && id <= LampLast; }
 
-// Saturated: one or two channels near full, the rest near zero. The three channels
-// attenuate independently, so a hue that starts near-white reads as a white pool with a
-// tinted rim — carrying the colour out to the falloff is the whole point of having three.
-inline constexpr int kLampRGB[kLampHues][3] = {
-    {15, 0, 0},  {15, 7, 0}, {15, 14, 0}, {8, 15, 0},  {0, 15, 0},  {0, 15, 8},
-    {0, 14, 14}, {0, 7, 15}, {0, 0, 15},  {8, 0, 15},  {15, 0, 14}, {15, 0, 7},
+struct LampRgb {
+    int r, g, b;
 };
+
+// Built rather than written out: the pale row is the saturated row mixed halfway to white,
+// so the two can never drift apart, and adding a hue means adding one line above.
+inline constexpr std::array<LampRgb, kLampCount> makeLampTable() {
+    constexpr int hue[kLampHues][3] = {
+        {15, 0, 0},  {15, 7, 0}, {15, 14, 0}, {8, 15, 0},  {0, 15, 0},  {0, 15, 8},
+        {0, 14, 14}, {0, 7, 15}, {0, 0, 15},  {8, 0, 15},  {15, 0, 14}, {15, 0, 7},
+    };
+    std::array<LampRgb, kLampCount> t{};
+    for (int i = 0; i < kLampHues; ++i) {
+        t[std::size_t(i)] = {hue[i][0], hue[i][1], hue[i][2]};
+        t[std::size_t(kLampHues + i)] = {(hue[i][0] + 15) / 2, (hue[i][1] + 15) / 2,
+                                         (hue[i][2] + 15) / 2};
+    }
+    t[std::size_t(kLampHues * kLampShades)] = {15, 15, 15};
+    return t;
+}
+inline constexpr std::array<LampRgb, kLampCount> kLampRGB = makeLampTable();
 
 // Blocks with nothing under them fall. Sand and gravel only — dirt and stone staying put
 // is what keeps a cliff a cliff.
@@ -77,34 +99,14 @@ inline constexpr int luminance(BlockId id) { return (id == Glow || isLamp(id)) ?
 // furthest, blue dies first, so its pool goes orange at the edges the way firelight does.
 // This table is the entire interface for adding an emitter.
 inline constexpr int emitR(BlockId id) {
-    return id == Glow ? 14 : (isLamp(id) ? kLampRGB[id - LampFirst][0] : 0);
+    return id == Glow ? 14 : (isLamp(id) ? kLampRGB[std::size_t(id - LampFirst)].r : 0);
 }
 inline constexpr int emitG(BlockId id) {
-    return id == Glow ? 10 : (isLamp(id) ? kLampRGB[id - LampFirst][1] : 0);
+    return id == Glow ? 10 : (isLamp(id) ? kLampRGB[std::size_t(id - LampFirst)].g : 0);
 }
 inline constexpr int emitB(BlockId id) {
-    return id == Glow ? 5 : (isLamp(id) ? kLampRGB[id - LampFirst][2] : 0);
+    return id == Glow ? 5 : (isLamp(id) ? kLampRGB[std::size_t(id - LampFirst)].b : 0);
 }
-// Nearest lamp id to a linear rgb colour. The settings menu offers a free colour picker
-// because that is the familiar control, but only these twelve are storable, so the pick is
-// snapped here rather than pretending otherwise. Compares against the emitted colour, not
-// against the texture, because the light is what the player is actually choosing.
-inline BlockId nearestLamp(float r, float g, float b) {
-    int best = 0;
-    float bestD = 1e9f;
-    for (int i = 0; i < kLampHues; ++i) {
-        const float dr = r - float(kLampRGB[i][0]) / 15.0f;
-        const float dg = g - float(kLampRGB[i][1]) / 15.0f;
-        const float db = b - float(kLampRGB[i][2]) / 15.0f;
-        const float d = dr * dr + dg * dg + db * db;
-        if (d < bestD) {
-            bestD = d;
-            best = i;
-        }
-    }
-    return BlockId(LampFirst + best);
-}
-
 inline constexpr bool emissive(BlockId id) {
     return emitR(id) > 0 || emitG(id) > 0 || emitB(id) > 0;
 }
