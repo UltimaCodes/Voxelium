@@ -84,7 +84,10 @@ void main() {
         wpos.x += 0.09 * cc.y * sin(uTime * 1.7 + ph);
         wpos.z += 0.07 * cc.y * sin(uTime * 2.0 + ph * 1.3);
         vWorldRel = wpos;
-        vUv = cc;
+        // Flip V: cc.y is 0 at the BOTTOM of the voxel, but texture row 0 is the TOP of
+        // the tile. Without this the blades render upside down, which also hangs them from
+        // the top of the block — the "floating grass".
+        vUv = vec2(cc.x, 1.0 - cc.y);
         vLayer = texLayer(block, dir);
         vDir = dir;
         uint sh12 = ((q.y >> 8u) & 255u) | (((q.x >> 28u) & 15u) << 8u);

@@ -1,5 +1,8 @@
 #include "render/Overlay.hpp"
 
+#include "gfx/BlockTextures.hpp"
+#include "world/Chunk.hpp"
+
 #include "gfx/Shader.hpp"
 
 #include <glad/gl.h>
@@ -7,22 +10,16 @@
 namespace vx {
 
 namespace {
-// block id -> texture-array layer for the hotbar icon (a representative face). -1 means
-// no texture (water) -> drawn as a solid tint. mirrors chunk.vert texLayer / BlockTextures.
+// Block id -> texture-array layer for the hotbar icon. Defers to blockTopLayer so that
+// every block added since gets an icon automatically; this used to be a hand-written
+// switch that had silently fallen behind, leaving gravel, lamps and the ores all drawn as
+// the same flat blue "no texture" tint. Water genuinely has no tile, so it keeps the tint.
 int iconLayerFor(int block) {
-    switch (block) {
-        case 1: return 0; // stone
-        case 2: return 1; // dirt
-        case 3: return 3; // grass -> grassy side reads better than the flat top
-        case 4: return 4; // glow
-        case 6: return 5; // wood side
-        case 7: return 7; // leaves
-        case 8: return 8; // sand
-        case 9: return 9; // snow
-        case 10: return 10; // planks
-        case 11: return 11; // bricks
-        default: return -1; // water and anything untextured
-    }
+    if (block == blocks::Water || blocks::isWater(BlockId(block)))
+        return -1;
+    if (block == blocks::Grass)
+        return 3; // grassy side reads better in a slot than the flat top
+    return blockTopLayer(block);
 }
 } // namespace
 
