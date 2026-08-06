@@ -1081,6 +1081,12 @@ int ChunkManager::stepFalling(Renderer& renderer, LightEngine& light) {
     return setBlocks(renderer, light, m_fluidEdits);
 }
 
+// Depth lost per cell of horizontal travel. At 1 a source reached seven cells in every
+// direction — a puddle the size of a small room from a single block, which is what made
+// placed water sprawl across the landscape. At 2 it thins out in four, which reads as a
+// spill rather than a flood, and it halves the cells a tick has to touch.
+static constexpr int kFluidDecay = 2;
+
 int ChunkManager::stepFluid(Renderer& renderer, LightEngine& light,
                             const glm::dvec3& around) {
     // Radius is small on purpose: fluid only has to be right where it can be seen moving,
@@ -1111,8 +1117,8 @@ int ChunkManager::stepFluid(Renderer& renderer, LightEngine& light,
                 } else {
                     static constexpr int kSide[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
                     for (const auto& d : kSide)
-                        want = std::max(want,
-                                        blocks::waterLevel(blockAtWorld({x + d[0], y, z + d[1]})) - 1);
+                        want = std::max(want, blocks::waterLevel(blockAtWorld(
+                                                  {x + d[0], y, z + d[1]})) - kFluidDecay);
                     // water only spreads sideways once it has something to sit on
                     if (want > 0 && !blocks::opaque(blockAtWorld({x, y - 1, z})) &&
                         !blocks::isWater(blockAtWorld({x, y - 1, z})))

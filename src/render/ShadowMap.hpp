@@ -19,7 +19,12 @@ public:
     // up"). the far cascade is the cost (vertex-bound — every quad drawn per cascade),
     // which is the price of consistent shadows without terrain LOD; per-cascade culling
     // keeps it bounded and each cascade is texel-snapped so nothing swims.
-    static constexpr float kSplits[kCascades] = {28.0f, 82.0f, 220.0f};
+    // Cascade far distances. The last one is where shadows stop entirely, and it used to
+    // sit at 220 while full-detail terrain now runs to 12 chunks (384 blocks) — so the
+    // ground ahead of you was simply unshadowed until you walked into range, which reads
+    // as the shadows following you around. 420 puts the edge past the detailed band, and
+    // the existing fade over the last 10% hides the cut instead of stepping into it.
+    static constexpr float kSplits[kCascades] = {32.0f, 110.0f, 420.0f};
 
     bool init(unsigned int shadowProgram);
     void shutdown();
