@@ -127,6 +127,7 @@ public:
     // which the caller guarantees by draining first.
     void resetWorld(Renderer& renderer);
 
+
     // For the cull compute pass; call when consumeDirty() says the chunk set changed.
     // Assigns each drawable chunk its meta index (the visibility bitset uses the same
     // indexing), so the two must always be rebuilt together. Also fills the separate

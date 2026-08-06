@@ -561,14 +561,20 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         const int desired = lodForDist2(horizontalDist2(item.first, center), radius);
         const bool firstMesh = e.state == ChunkState::Ready;
         const bool reLod = e.state == ChunkState::Meshed && e.lod != desired;
-        if (!(firstMesh || reLod) || e.meshingLod == desired)
-            continue;
-        // a coarse chunk that's now close enough to want detail: re-generate it (with
-        // caves) rather than re-meshing the cave-less data at a detailed LOD
-        if (reLod && !e.detailed && desired < kCoarseLod && !e.voxels->uniform()) {
+        // A coarse chunk close enough to want detail re-generates (with caves) rather than
+        // re-meshing cave-less data at a fine LOD. This is deliberately NOT keyed off a LOD
+        // change: it used to require reLod, so a chunk that got its FIRST mesh at a fine LOD
+        // while still coarse was stuck cave-less forever — e.lod already equalled desired,
+        // so reLod could never fire for it again. That happens whenever the camera moves
+        // between a chunk being queued for generation (which picks coarse/detailed) and
+        // being meshed (which picks the LOD), which vertical streaming made common.
+        if (e.state == ChunkState::Meshed && !e.detailed && desired < kCoarseLod &&
+            !e.voxels->uniform()) {
             m_regenScratch.push_back(item.first);
             continue;
         }
+        if (!(firstMesh || reLod) || e.meshingLod == desired)
+            continue;
         bool ready = true;
         for (const auto& o : kFaceOffsets) {
             const ChunkPos n{item.first.x + o[0], item.first.y + o[1], item.first.z + o[2]};
@@ -775,6 +781,13 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             e.state = ChunkState::Meshed;
             m_dirty = true;
             m_visDirty = true;
+            // A landed mesh is a state change the LOD scan has to see. reLod only fires for
+            // chunks in state Meshed, so one that was still Meshing when the camera moved
+            // was skipped — and nothing re-flagged the scan afterwards, so it kept its old
+            // LOD forever and a coarse chunk never regenerated detailed. busy() reported
+            // settled the whole time, which is what made it look like a test fixture bug
+            // rather than a lost re-LOD.
+            m_meshScanDirty = true;
         }
         // Light moved while this job was out. The geometry it brought back is still the
         // newest there is, so keep it and send the chunk round once more rather than
