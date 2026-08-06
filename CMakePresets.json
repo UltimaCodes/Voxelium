@@ -24,6 +24,19 @@
       "binaryDir": "${sourceDir}/build/gcc",
       "cacheVariables": { "CMAKE_C_COMPILER": "gcc", "CMAKE_CXX_COMPILER": "g++" },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    },
+    {
+      "name": "harden",
+      "displayName": "Windows / GCC, optimized WITH libstdc++ assertions",
+      "description": "Release speed plus _GLIBCXX_ASSERTIONS and frame pointers. Debug's container assertions are what caught the light-vs-worker race, but a Debug build is too slow to reach the states a long stream-in produces; this config gets the same assertions at a speed that does.",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/build/harden",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_CXX_FLAGS": "-D_GLIBCXX_ASSERTIONS -fno-omit-frame-pointer -g"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     }
   ],
   "buildPresets": [
@@ -32,6 +45,7 @@
     { "name": "mingw-debug", "configurePreset": "mingw", "configuration": "Debug" },
     { "name": "mingw-release", "configurePreset": "mingw", "configuration": "Release" },
     { "name": "gcc-debug", "configurePreset": "gcc", "configuration": "Debug" },
-    { "name": "gcc-release", "configurePreset": "gcc", "configuration": "Release" }
+    { "name": "gcc-release", "configurePreset": "gcc", "configuration": "Release" },
+    { "name": "harden-release", "configurePreset": "harden", "configuration": "Release" }
   ]
 }

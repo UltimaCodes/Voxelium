@@ -59,12 +59,26 @@ can be as specific or as lazy as you like:
 
 | id | block | | id | block |
 |---|---|---|---|---|
-| 1 | stone | | 7 | leaves |
-| 2 | dirt | | 8 | sand |
-| 3 | grass | | 9 | snow |
-| 4 | glow | | 10 | planks |
-| 5 | water | | 11 | bricks |
-| 6 | wood | | | |
+| 1 | stone | | 9 | snow |
+| 2 | dirt | | 10 | planks |
+| 3 | grass | | 11 | bricks |
+| 4 | glow | | 12 | coal ore |
+| 5 | water (source) | | 13 | iron ore |
+| 6 | wood | | 21 | gravel |
+| 7 | leaves | | 47 | grass tuft |
+| 8 | sand | | 48 | flower |
+
+Three groups are ranges rather than single ids, because this engine has no per-voxel
+metadata and uses the block id itself to carry the data:
+
+| ids | what |
+|---|---|
+| 14–20 | flowing water, `WaterL1`–`WaterL7` (depth is the id) |
+| 22–46 | the 25 lamp colours (hue is the id) |
+
+A per-id file for those means 7 or 25 copies of the same clip, so leave them on the
+generic fallback unless you actually want a shallow puddle to sound different from a deep
+one.
 
 So `break.wav` alone gives every block the same break sound; adding `break_3.wav` gives
 grass its own and leaves the rest on the generic one.

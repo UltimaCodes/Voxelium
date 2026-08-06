@@ -19,7 +19,12 @@ linux:
     cmake --preset gcc
     cmake --build --preset gcc-release
 
-there's also an `msvc` preset if you have VS lying around. I don't.
+there's also an `msvc` preset if you have VS lying around. I don't, so it's unverified.
+
+`harden` is the same build with libstdc++ container assertions turned on (`cmake --preset
+harden`, `cmake --build --preset harden-release`). worth running when you suspect a data
+race — the assertions are the reason a real one got caught, and unlike a debug build this
+one is fast enough to actually stream a world.
 
 works out of the box in JetBrains Rider/CLion — open the repo folder, pick the `mingw`
 preset (or the IDE's bundled toolchain), hit run.
@@ -34,7 +39,9 @@ controls:
 - F3 debug HUD, ESC settings/pause, F4 hotbar, F5 walk/fly, F2 save edited chunks
 - fly: hold RMB, wasd + space/ctrl, shift = fast, scroll = speed
 - walk: wasd, space to jump, mouse look
-- LMB break block, MMB place; F4 opens the hotbar (keys 1-8 or scroll to pick a block)
+- LMB **hold** to break (blocks have hardness, and the crack shows on the block), MMB place
+- MMB while looking at a lamp opens its colour picker; the colour sticks for lamps you place
+- F4 opens the hotbar (keys 1-8 or scroll to pick a block)
 
 ESC opens the settings menu (it pauses too): every shader toggle (shadows, ssao,
 volumetric, bloom, clouds, ssgi, taa) plus a day/night cycle (time of day + day length),
@@ -46,9 +53,13 @@ graph, timings, chunk/arena stats, log.
 all 12 milestones from [SPEC.md](SPEC.md), each written up with real numbers in `docs/`:
 binary greedy meshing + vertex pulling (8-byte quads, no VBO), palette-compressed chunks,
 a jthread job system, GPU-driven culling with the whole world in one indirect draw call,
-cave culling, flood-fill block+sky lighting, FastNoise2 terrain with caves, player physics
-+ block editing, a forward HDR pipeline (cascaded shadows, SSAO, volumetrics, bloom, ACES),
-and region-file persistence.
+cave culling, flood-fill RGB block + sky lighting, FastNoise2 terrain with caves and ores,
+player physics + block editing, a forward HDR pipeline (cascaded shadows, SSAO,
+volumetrics, bloom, ACES), flowing water, falling sand and gravel, cross-plane grass and
+flowers, particles, and region-file persistence.
+
+there's no world height limit either — chunks exist at any Y, so you can dig or build as
+far as you like and the loaded band follows you.
 
 `voxelium --smoke [out.bmp]` renders offscreen, checks that pixels actually got drawn,
 writes a screenshot and exits 0/1. headless self-check, useful for CI later.
