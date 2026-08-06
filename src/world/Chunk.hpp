@@ -62,7 +62,7 @@ inline constexpr int kLampShades = 2; // saturated, then washed halfway to white
 inline constexpr int kLampCount = kLampHues * kLampShades + 1;
 inline constexpr BlockId LampFirst = 22;
 inline constexpr BlockId LampLast = LampFirst + kLampCount - 1;
-inline constexpr int kBlockCount = LampLast + 1;
+inline constexpr int kBlockCount = 49; // through Flower
 inline constexpr bool isLamp(BlockId id) { return id >= LampFirst && id <= LampLast; }
 
 struct LampRgb {
@@ -87,6 +87,15 @@ inline constexpr std::array<LampRgb, kLampCount> makeLampTable() {
 }
 inline constexpr std::array<LampRgb, kLampCount> kLampRGB = makeLampTable();
 
+// Cross-plane foliage: grass tufts and flowers, drawn as two diagonal quads through the
+// voxel rather than as a cube. They ride the ordinary opaque quad list using dir 6 and 7,
+// which the quad format's 3-bit dir field always had spare — so no third mesh layer, no
+// second meta buffer and no extra draw call. Non-opaque, so they neither block light nor
+// hide the faces behind them, and non-solid, so you walk through them.
+inline constexpr BlockId GrassTuft = 47;
+inline constexpr BlockId Flower = 48;
+inline constexpr bool isCross(BlockId id) { return id == GrassTuft || id == Flower; }
+
 // Blocks with nothing under them fall. Sand and gravel only — dirt and stone staying put
 // is what keeps a cliff a cliff.
 inline constexpr bool falls(BlockId id) { return id == Sand || id == Gravel; }
@@ -97,6 +106,8 @@ inline constexpr int luminance(BlockId id) { return (id == Glow || isLamp(id)) ?
 // any real material property: loose ground gives way at once, worked blocks resist, stone
 // and ore are the reason you go looking for a better tool later.
 inline constexpr float hardness(BlockId id) {
+    if (isCross(id))
+        return 0.02f; // foliage comes away the instant you touch it
     if (id == Leaves)
         return 0.12f;
     if (id == Sand || id == Gravel || id == Snow)
@@ -135,7 +146,9 @@ inline constexpr bool emissive(BlockId id) {
 inline constexpr bool isWater(BlockId id) {
     return id == Water || (id >= WaterL1 && id <= WaterL7);
 }
-inline constexpr bool opaque(BlockId id) { return id != Air && !isWater(id); }
+inline constexpr bool opaque(BlockId id) {
+    return id != Air && !isWater(id) && !isCross(id);
+}
 
 // 8 = full source, 1 = thinnest film, 0 = not water. The source level never decays; every
 // other level is recomputed from its neighbours each fluid tick.

@@ -19,14 +19,17 @@ namespace {
 constexpr int kTile = 16;
 constexpr int kCrackStages = 5;
 constexpr int kNamedLayers = 15;
+constexpr int kCrossLayers = 2; // grass tuft, flower
 // the lamp hues tack onto the end, one layer each, generated from blocks::kLampRGB so
 // the face you see and the light it casts can never drift apart
 constexpr int kLampLayer0 = kNamedLayers;
 constexpr int kLampLayerEnd = kNamedLayers + blocks::kLampCount;
+// cross-plane foliage tiles: mostly transparent, so they are generated rather than tinted
+constexpr int kCrossLayer0 = kLampLayerEnd;
 // Break-progress crack stages, appended last so the block overlay can sample them out of
 // the same array the world already has bound — no second texture, no second sampler.
-constexpr int kCrackLayer0 = kLampLayerEnd;
-constexpr int kLayers = kLampLayerEnd + kCrackStages;
+constexpr int kCrackLayer0 = kLampLayerEnd + kCrossLayers;
+constexpr int kLayers = kCrackLayer0 + kCrackStages;
 
 // filename (without extension) per layer, looked up in assets/textures/
 constexpr const char* kNames[kNamedLayers] = {"stone",    "dirt",     "grass_top", "grass_side",
@@ -226,6 +229,41 @@ void fillCrack(int stage, Rgba* slot) {
     }
 }
 
+// A tuft of blades rising from the bottom of the tile, transparent everywhere else. Drawn
+// on two diagonal planes, so what matters is the silhouette, not the interior detail.
+void fillCross(int which, Rgba* slot) {
+    for (int i = 0; i < kTile * kTile; ++i)
+        slot[i] = {0, 0, 0, 0};
+    const int blades = which == 0 ? 7 : 5;
+    for (int b = 0; b < blades; ++b) {
+        const int x0 = 1 + int(h01(b, which, 80) * float(kTile - 3));
+        const int h = 6 + int(h01(b, which, 81) * 8.0f);
+        const float lean = (h01(b, which, 82) - 0.5f) * 0.45f;
+        for (int t = 0; t < h; ++t) {
+            const int x = x0 + int(lean * float(t));
+            const int y = kTile - 1 - t; // y is top-down, so grow upward from the base
+            if (x < 0 || x >= kTile || y < 0)
+                continue;
+            // darker at the root, brighter at the tip
+            const float m = 0.55f + 0.45f * float(t) / float(h);
+            slot[y * kTile + x] = shade(0.30f, 0.58f, 0.22f, m);
+            slot[y * kTile + x].a = 255;
+        }
+        if (which == 1 && b < 3) { // flower heads on the first few blades
+            const int y = kTile - 1 - h;
+            for (int dy = -1; dy <= 0; ++dy)
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const int x = x0 + int(lean * float(h)) + dx;
+                    const int yy = y + dy;
+                    if (x < 0 || x >= kTile || yy < 0 || yy >= kTile)
+                        continue;
+                    slot[yy * kTile + x] = shade(0.92f, 0.82f, 0.30f, 1.0f);
+                    slot[yy * kTile + x].a = 255;
+                }
+        }
+    }
+}
+
 // Loose pebbles: a few grey tones scattered per texel rather than one tinted noise field,
 // so it reads as aggregate next to stone instead of as dirty stone.
 Rgba genGravel(int x, int y) {
@@ -266,6 +304,10 @@ unsigned int createBlockTextureArray(const std::filesystem::path& textureDir) {
     int loaded = 0;
     for (int layer = 0; layer < kLayers; ++layer) {
         Rgba* slot = pixels.data() + std::size_t(layer) * kTile * kTile;
+        if (layer >= kCrossLayer0 && layer < kCrackLayer0) { // foliage: generated, has alpha
+            fillCross(layer - kCrossLayer0, slot);
+            continue;
+        }
         if (layer >= kCrackLayer0) { // crack stages: generated, never loaded
             fillCrack(layer - kCrackLayer0, slot);
             continue;
@@ -326,6 +368,10 @@ int blockTopLayer(int b) {
     }
     if (blocks::isLamp(BlockId(b)))
         return kLampLayer0 + (b - blocks::LampFirst);
+    if (b == blocks::GrassTuft)
+        return kCrossLayer0;
+    if (b == blocks::Flower)
+        return kCrossLayer0 + 1;
     return 0;
 }
 

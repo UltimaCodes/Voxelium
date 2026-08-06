@@ -26,6 +26,7 @@ public:
 
 private:
     void placeTrees(Chunk& chunk, ChunkPos pos) const;
+    void placeFoliage(Chunk& chunk, ChunkPos pos) const;
 
     int m_seed;
     FastNoise::SmartNode<> m_height;    // domain-warped fbm, [-1,1]

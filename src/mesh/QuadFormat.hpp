@@ -78,7 +78,9 @@ inline std::uint64_t packQuad(int x, int y, int z, int w, int h, int dir,
                               std::uint32_t light = 0) {
     assert(x >= 0 && x < 32 && y >= 0 && y < 32 && z >= 0 && z < 32);
     assert(w >= 1 && w <= 32 && h >= 1 && h <= 32);
-    assert(dir >= 0 && dir < 6);
+    // 0..5 are the six face directions; 6 and 7 are the cross-plane foliage quads, which
+    // is what the third bit was always there for.
+    assert(dir >= 0 && dir < 8);
     assert(block < kQuadMaxBlockId);
     assert(shade <= kQuadShadeFull);
     return packQuadBits(x, y, z, w, h, dir, block, shade, light);

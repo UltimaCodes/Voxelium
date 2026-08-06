@@ -21,13 +21,18 @@ layout(binding = 0) uniform sampler2DArray uBlockTex;
 layout(binding = 1) uniform sampler2DArrayShadow uShadowMap;
 layout(binding = 5) uniform sampler2DArray uShadowDepth; // raw depth, for the PCSS blocker search
 
-const vec3 kNormal[6] = vec3[6](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0),
-                                vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1));
+// 8 entries, not 6: dir 6 and 7 are the cross-plane foliage quads. They face up, so a
+// tuft takes the sun the way the ground it grows out of does rather than going dark
+// whenever you view it side-on. Indexing this with vDir at 6 would otherwise be out of
+// bounds, which is undefined rather than merely wrong.
+const vec3 kNormal[8] = vec3[8](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0),
+                                vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1),
+                                vec3(0, 1, 0), vec3(0, 1, 0));
 // Per-face shading. The spread used to be 0.50..1.00, which reads fine on a wall but turns
 // terraced ground into corduroy: looking down a slope you see a lit top, then the side of
 // the block above, alternating every block, and a 2x brightness step between them makes
 // every stair a hard band. Compressed to 0.66..1.00 — still clearly directional, no stripes.
-const float kShade[6] = float[6](0.86, 0.86, 1.00, 0.66, 0.76, 0.76);
+const float kShade[8] = float[8](0.86, 0.86, 1.00, 0.66, 0.76, 0.76, 1.0, 1.0);
 
 // fixed 16-tap Poisson disk — a soft penumbra without per-pixel rotation, so shadow
 // edges don't crawl/shimmer when the camera moves (rotated PCF looks softer but needs
@@ -91,7 +96,12 @@ float sunShadow(vec3 pos, vec3 N) {
 
 void main() {
     vec3 N = kNormal[vDir];
-    vec3 albedo = texture(uBlockTex, vec3(vUv, float(vLayer))).rgb;
+    vec4 texel = texture(uBlockTex, vec3(vUv, float(vLayer)));
+    // Cross-plane foliage is alpha cut out: the tile is mostly empty and the empty part has
+    // to leave the world behind it showing, not a transparent-black rectangle.
+    if (vDir >= 6u && texel.a < 0.5)
+        discard;
+    vec3 albedo = texel.rgb;
 
     // Grass side faces (layer 3) get the grass colour blended over their top edge. Without
     // it a terraced hillside alternates green tops with brown risers every single block,

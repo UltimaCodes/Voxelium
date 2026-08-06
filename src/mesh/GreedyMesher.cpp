@@ -134,6 +134,7 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
     std::fill(std::begin(m_grid), std::end(m_grid), blocks::Air);
     std::fill(std::begin(m_gridLight), std::end(m_gridLight), light::kFullSky);
     m_hasWater = false;
+    m_hasCross = false;
 
     if (lod == 0) {
         for (int z = 0; z < kChunkSize; ++z)
@@ -143,6 +144,7 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
                     m_grid[gi(x, y, z)] = b;
                     m_gridLight[gi(x, y, z)] = chunk.lightAt(x, y, z);
                     m_hasWater = m_hasWater || blocks::isWater(b);
+                    m_hasCross = m_hasCross || blocks::isCross(b);
                 }
         // copy the six neighbour border planes into the pad so seam faces cull correctly
         const auto pad = [&](int face, int px, int py, int pz, int nx, int ny, int nz) {
@@ -261,6 +263,32 @@ void GreedyMesher::buildColumns() {
         }
 }
 
+// Cross-plane foliage. These never appear in the solidity masks — they are non-opaque, so
+// the face passes treat them as air — which is exactly what we want: they cost the world
+// nothing except their own two quads and hide none of the geometry behind them.
+//
+// dir 6 and 7 are the two diagonal planes. They carry no merged area, so they are counted
+// in stats.quads but deliberately NOT in stats.areaPerDir: that array is the mesher oracle,
+// indexed 0..5 by real face direction, and adding to it would both overrun it and break the
+// naive-vs-greedy comparison it exists to make.
+void GreedyMesher::emitCross(std::vector<std::uint64_t>& out, GreedyStats& stats) {
+    for (int z = 0; z < kChunkSize; ++z)
+        for (int y = 0; y < kChunkSize; ++y)
+            for (int x = 0; x < kChunkSize; ++x) {
+                const BlockId b = m_grid[gi(x, y, z)];
+                if (!blocks::isCross(b))
+                    continue;
+                // lit by its own cell: foliage occupies the air it grows in
+                const std::uint16_t lv = m_gridLight[gi(x, y, z)];
+                if (light::sky(lv) != 0)
+                    stats.sunlit = true;
+                for (int d = 6; d <= 7; ++d) {
+                    out.push_back(packQuad(x, y, z, 1, 1, d, b, kQuadShadeFull, lv));
+                    ++stats.quads;
+                }
+            }
+}
+
 void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, GreedyStats& stats) {
     m_planes.clear();
     std::memset(m_heads, 0xFF, sizeof(m_heads));
@@ -376,6 +404,8 @@ GreedyStats GreedyMesher::mesh(const Chunk& chunk, const Chunk* const* neighbors
     fillGrid(chunk, neighbors, lod);
     buildColumns();
     meshLayer(/*water=*/false, outOpaque, stats);
+    if (m_hasCross)
+        emitCross(outOpaque, stats);
     if (m_hasWater)
         meshLayer(/*water=*/true, outWater, stats);
     stats.triangles = (stats.quads + stats.waterQuads) * 2;

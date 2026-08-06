@@ -211,6 +211,7 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
     if (baseY > hMax && baseY > kSeaLevel) {
         chunk.makeUniform(blocks::Air);
         placeTrees(chunk, pos);
+        placeFoliage(chunk, pos);
         carveTestRoom(chunk, pos); // no-op unless the room overlaps
         return;
     }
@@ -352,6 +353,7 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
         }
 
     placeTrees(chunk, pos); // trees even in coarse gen — cheap, and stops them popping in
+    placeFoliage(chunk, pos);
     carveTestRoom(chunk, pos);
 }
 
@@ -360,6 +362,33 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
 // that fall inside it. Fully deterministic from the seed — the same tree is computed
 // identically by every chunk it touches, so trunks/canopies cross borders seamlessly
 // without any neighbor lookups.
+// Grass tufts and flowers on top of grass. Per-column and purely positional, so like the
+// trees it needs no neighbour lookups — but unlike them it never reaches past its own
+// column, so there is no overlap scan and no canopy-radius bound to get wrong.
+void TerrainGenerator::placeFoliage(Chunk& chunk, ChunkPos pos) const {
+    const int baseX = pos.x * kChunkSize;
+    const int baseY = pos.y * kChunkSize;
+    const int baseZ = pos.z * kChunkSize;
+    for (int z = 0; z < kChunkSize; ++z)
+        for (int x = 0; x < kChunkSize; ++x) {
+            const int wx = baseX + x, wz = baseZ + z;
+            const int surf = surfaceHeight(wx, wz);
+            if (surf < kSeaLevel + 2 || surf >= kSnowLine)
+                continue; // not on beaches, underwater, or up in the snow
+            const int y = surf + 1 - baseY;
+            if (y < 0 || y >= kChunkSize)
+                continue;
+            if (chunk.get(x, y, z) != blocks::Air)
+                continue; // a tree trunk or a cave mouth already owns this cell
+            const std::uint32_t h = cellHash(wx * 7 + m_seed, wz * 13);
+            const std::uint32_t roll = h % 100u;
+            if (roll < 26u)
+                chunk.set(x, y, z, blocks::GrassTuft);
+            else if (roll < 30u)
+                chunk.set(x, y, z, blocks::Flower);
+        }
+}
+
 void TerrainGenerator::placeTrees(Chunk& chunk, ChunkPos pos) const {
     const int baseX = pos.x * kChunkSize;
     const int baseY = pos.y * kChunkSize;

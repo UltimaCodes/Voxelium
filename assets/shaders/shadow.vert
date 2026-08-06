@@ -26,6 +26,13 @@ void main() {
     float h = float(((q.x >> 20) & 31u) + 1u);
     uint dir = (q.x >> 25) & 7u;
 
+    // Cross-plane foliage (dir 6/7) casts no shadow: collapse it to a degenerate triangle.
+    // kCorner has six entries, so indexing it at 6 would be out of bounds, and a field of
+    // grass self-shadowing at cascade resolution is noise rather than detail anyway.
+    if (dir >= 6u) {
+        gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
     vec2 c = kCorner[dir][corner];
     vec2 uv = c * vec2(w, h) + (c * 2.0 - 1.0) * kBloat;
     vec3 pos = origin;

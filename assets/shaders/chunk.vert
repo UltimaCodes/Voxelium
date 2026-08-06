@@ -42,8 +42,13 @@ uint texLayer(uint block, uint dir) {
     if (block == 13u) return 13u;                            // iron ore
     if (block == 21u) return 14u;                            // gravel
     if (block >= 22u && block <= 46u) return block - 7u;     // 25 lamp swatches -> 15..39
+    if (block == 47u) return 40u;                            // grass tuft
+    if (block == 48u) return 41u;                            // flower
     return 0u;
 }
+
+// corner order for the cross planes, matching kTri
+const vec2 kQuadCorner[4] = vec2[4](vec2(0, 0), vec2(0, 1), vec2(1, 1), vec2(1, 0));
 
 const float kBloat = 0.001; // greedy T-junction pinhole fix (docs/M4)
 
@@ -56,6 +61,39 @@ void main() {
     float h = float(((q.x >> 20) & 31u) + 1u);
     uint dir = (q.x >> 25) & 7u;
     uint block = q.y & 255u;
+
+    // dir 6/7 are the two diagonal planes of a cross-plane foliage voxel — the values the
+    // 3-bit dir field never used. They are quads like any other, just not axis aligned.
+    if (dir >= 6u) {
+        vec2 cc = kQuadCorner[corner];
+        vec3 p = (dir == 6u) ? vec3(cc.x, cc.y, cc.x) : vec3(cc.x, cc.y, 1.0 - cc.x);
+        vec3 wpos = origin + p + uOffsets[gl_DrawID].xyz;
+        // Backface culling would eat whichever plane faces away, and there is no second
+        // winding stored. Decide the winding here instead: flip the corner order when the
+        // quad's centre is on the far side of its own plane from the eye (the eye is the
+        // origin in camera-relative space), which gives a double-sided quad for free.
+        vec3 n = (dir == 6u) ? vec3(0.7071, 0.0, -0.7071) : vec3(0.7071, 0.0, 0.7071);
+        vec3 centre = origin + vec3(0.5) + uOffsets[gl_DrawID].xyz;
+        if (dot(n, centre) > 0.0) {
+            cc = kQuadCorner[3 - corner];
+            p = (dir == 6u) ? vec3(cc.x, cc.y, cc.x) : vec3(cc.x, cc.y, 1.0 - cc.x);
+            wpos = origin + p + uOffsets[gl_DrawID].xyz;
+        }
+        // same wind wobble the leaves get, scaled by height up the blade so the root stays
+        float ph = wpos.x * 0.5 + wpos.z * 0.5;
+        wpos.x += 0.09 * cc.y * sin(uTime * 1.7 + ph);
+        wpos.z += 0.07 * cc.y * sin(uTime * 2.0 + ph * 1.3);
+        vWorldRel = wpos;
+        vUv = cc;
+        vLayer = texLayer(block, dir);
+        vDir = dir;
+        uint sh12 = ((q.y >> 8u) & 255u) | (((q.x >> 28u) & 15u) << 8u);
+        vShade = float((sh12 >> (uint(corner) * 3u)) & 7u) / 7.0;
+        vLight = vec4(float((q.y >> 16) & 15u), float((q.y >> 20) & 15u),
+                      float((q.y >> 24) & 15u), float((q.y >> 28) & 15u)) / 15.0;
+        gl_Position = uViewProj * vec4(wpos, 1.0);
+        return;
+    }
 
     vec2 c = kCorner[dir][corner];
     vec2 uv = c * vec2(w, h) + (c * 2.0 - 1.0) * kBloat;

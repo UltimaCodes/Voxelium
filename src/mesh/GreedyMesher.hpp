@@ -58,6 +58,8 @@ private:
 
     void fillGrid(const Chunk& chunk, const Chunk* const* neighbors, int lod);
     void buildColumns();
+    // two diagonal quads per cross-plane foliage voxel, into the opaque list
+    void emitCross(std::vector<std::uint64_t>& out, GreedyStats& stats);
     void meshLayer(bool water, std::vector<std::uint64_t>& out, GreedyStats& stats);
     void addFace(int dir, int slice, int u, int v, BlockId block, std::uint16_t light);
     // Per-corner vertex brightness (4 corners x 3 bits, 7 = full) for a face whose outer
@@ -82,6 +84,7 @@ private:
     std::int16_t m_heads[6][kChunkSize];
     std::vector<Plane> m_planes;
     bool m_hasWater = false;
+    bool m_hasCross = false;
     bool m_smoothAO = false; // LOD 0 only: distant chunks don't bother (pad is air anyway)
     std::uint8_t m_coarseNeighbors = 0; // faces meshed as a cross-LOD skirt
 };
