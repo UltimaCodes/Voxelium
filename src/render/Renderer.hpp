@@ -87,17 +87,26 @@ private:
     Range tryAlloc(std::span<const std::uint64_t> quads, std::uint32_t need);
     bool reclaimPendingFrees(); // wait out the fence ring, recycle everything in it
 
-    // 24M quads = 192 MB. taller terrain (256-block world, bigger mountains) pushes the
-    // working set up; this leaves generous headroom over the ~8-9M live at radius 16 so
-    // fragmentation during streaming churn doesn't trigger the (stalling) hardReset.
-    static constexpr std::uint32_t kArenaQuads = 24u << 20;
+    // 48M quads = 384 MB. Sized for radius 32, which the render-distance slider offers and
+    // the settings clamp allows, so it is a supported setting and not an exotic one.
+    // Measured settled (2026-08-07): radius 16 holds 5.29M quads, radius 32 holds 21.31M —
+    // #27's vertical band roughly quadrupled the far case. At the old 24M that is 85% full
+    // with the largest free block down to 1.38M, and a moving `--tour 32` failed to alloc
+    // and hard-reset the arena at every one of its five stops. A hardReset is a glFinish
+    // plus a re-upload of every live chunk: precisely the stall Tier 0 #4 removed.
+    // 2.25x the settled radius-32 set is the headroom fragmentation actually needs.
+    static constexpr std::uint32_t kArenaQuads = 48u << 20;
     // Drawable chunks the GPU meta/command/visibility buffers can hold. This is a HARD
     // cap: anything past it gets no meta entry, so it is not drawn and does not appear in
     // the shadow cull either — invisible geometry that also casts no shadow. 8192 was
     // already under water at the DEFAULT radius 16 (~8700 meshed chunks), so several
-    // hundred chunks were being dropped silently. Costs ~32 B/chunk across meta+water
-    // meta+commands+offsets, so 32768 is ~3 MB and covers radius 32 with room to spare.
-    static constexpr std::uint32_t kMaxChunks = 32768;
+    // hundred chunks were being dropped silently.
+    //
+    // 32768 "covered radius 32 with room to spare" only before #27. Measured 2026-08-07:
+    // 7778 drawable at radius 16, 30861 settled at radius 32, and a moving `--tour 32`
+    // logged 36318 — over the cap, so it was silently dropping chunks again. At ~32 B per
+    // chunk across meta + water meta + commands + offsets, 65536 costs ~2 MB.
+    static constexpr std::uint32_t kMaxChunks = 65536;
     static constexpr int kFrameRing = 3;
 
     unsigned int m_drawProgram = 0;
