@@ -251,7 +251,12 @@ void ChunkManager::rebuildArena(Renderer& renderer) {
 
 void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& light,
                           const glm::dvec3& cameraPos) {
-    const ChunkPos center{int(std::floor(cameraPos.x / kChunkSize)), 0,
+    // Y is part of the centre now. It was hard-coded to 0 because the world was a fixed
+    // stack of columns and the vertical extent never moved — with the ceiling gone, that
+    // pinned the resident band around y=0 no matter where the camera actually was, so
+    // flying up left you outside your own loaded world.
+    const ChunkPos center{int(std::floor(cameraPos.x / kChunkSize)),
+                          int(std::floor(cameraPos.y / kChunkSize)),
                           int(std::floor(cameraPos.z / kChunkSize))};
     const auto phase0 = Clock::now();
     if (center != m_center || radius != m_lastRadius) {

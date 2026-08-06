@@ -323,9 +323,15 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
     // far chunks generate coarse (no caves); approaching one must re-generate it detailed.
     // needs a radius past the coarse threshold, so bump briefly then drop back.
     {
+        // Counts over the RESIDENT band, not a fixed 0..world-top column: with the ceiling
+        // gone (#27) only a band around the camera is loaded, so a fixed range silently
+        // counts unloaded chunks as empty.
         const auto caveAir = [&](int cx, int cz) {
             int n = 0;
-            for (int y = 0; y < vx::kWorldChunksY; ++y) {
+            int by0 = 0, by1 = 0;
+            bool bsky = false;
+            world.columnRange(cx, cz, by0, by1, bsky);
+            for (int y = by0; y <= by1; ++y) {
                 const vx::Chunk* c = world.chunkData({cx, y, cz});
                 if (!c)
                     continue;
@@ -345,7 +351,11 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         world.radius = 16;
         drain();
         const int farAir = caveAir(cx, 0);
-        camera.position = {double(cx * 32 + 16), 110.0, 16.0}; // move next to it -> re-gen
+        // Stand ON that column's surface. y was hard-coded to 110, which with vertical
+        // streaming puts the band nowhere near the ground once terrain rises above it.
+        camera.position = {double(cx * 32 + 16),
+                           double(world.generator().surfaceHeight(cx * 32 + 16, 16) + 3),
+                           16.0}; // move next to it -> re-gen
         // a big move triggers heavy re-streaming; the detailed re-gens land over several
         // settle cycles (the coarse mesh covers meanwhile), so wait for them to finish
         int nearAir = 0;
