@@ -1192,13 +1192,21 @@ int runBenchmark(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         const char* name;
         glm::dvec3 pos;
         float yaw, pitch;
+        // Blocks above the terrain surface at pos.xz. Nonzero means pos.y is IGNORED and
+        // the camera comes from the generator instead. The ground view was pinned at y=96;
+        // #22 raised the terrain over it and it spent everything since sealed inside stone,
+        // drawing zero chunks into a number that still counted toward the mean.
+        int aboveSurface = 0;
     };
     // one looking across the surface (shadow + terrain heavy), one high looking down
     // (maximum chunk count in frame), one at ground level in trees (overdraw)
     const View views[] = {
-        {"surface", {16.0, 110.0, 16.0}, -35.0f, -15.0f},
-        {"aerial", {16.0, 190.0, 16.0}, -35.0f, -55.0f},
-        {"ground", {96.0, 96.0, 96.0}, 25.0f, -2.0f},
+        {"surface", {16.0, 110.0, 16.0}, -35.0f, -15.0f, 0},
+        {"aerial", {16.0, 190.0, 16.0}, -35.0f, -55.0f, 0},
+        // (96,96) was the old spot; #22's relief turned it into a 289-high peak, above the
+        // snow line and treeless. This column measures 111 with 2515 leaves and 1162 cross
+        // quads within 32 blocks — actual canopy overdraw, which is what the view is for.
+        {"ground", {128.0, 0.0, 384.0}, 25.0f, -2.0f, 2},
     };
 
     world.radius = radius;
@@ -1242,6 +1250,9 @@ int runBenchmark(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
 
     for (const View& v : views) {
         camera.position = v.pos;
+        if (v.aboveSurface)
+            camera.position.y =
+                world.generator().surfaceHeight(int(v.pos.x), int(v.pos.z)) + v.aboveSurface;
         camera.yawDeg = v.yaw;
         camera.pitchDeg = v.pitch;
 
@@ -1289,9 +1300,14 @@ int runBenchmark(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         // drawn, not loaded: what survives frustum + cave culling is what an occlusion
         // pass would have left to remove, so this is the ceiling on #6
         VX_INFO("bench %-8s | shadow %5.2f | scene %5.2f | post %5.2f | frame %6.2f ms | "
-                "%d of %d chunks drawn, %lld quads",
+                "%d of %d chunks drawn, %lld quads, cam y=%.0f",
                 v.name, mSh, mSc, mPo, mFr, rc.renderer.gpuVisibleChunks(), int(di.size()),
-                static_cast<long long>(world.stats().totalQuads));
+                static_cast<long long>(world.stats().totalQuads), camera.position.y);
+        // A view that draws nothing still contributes its ~1 ms to the mean, which reads as
+        // a faster engine. That is how the ground view stayed dead unnoticed, so say it.
+        if (rc.renderer.gpuVisibleChunks() == 0)
+            VX_ERROR("bench %s drew NO chunks — the camera is sealed inside terrain and this "
+                     "view measures nothing", v.name);
 
         // same view again at 70% internal resolution — shows what render scale buys
         vx::FxToggles scaled = fx;
