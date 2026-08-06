@@ -307,6 +307,28 @@ unsigned int createBlockTextureArray(const std::filesystem::path& textureDir) {
     return tex;
 }
 
+int blockTopLayer(int b) {
+    switch (b) {
+        case blocks::Stone: return 0;
+        case blocks::Dirt: return 1;
+        case blocks::Grass: return 2;
+        case blocks::Glow: return 4;
+        case blocks::Wood: return 6;
+        case blocks::Leaves: return 7;
+        case blocks::Sand: return 8;
+        case blocks::Snow: return 9;
+        case blocks::Planks: return 10;
+        case blocks::Bricks: return 11;
+        case blocks::CoalOre: return 12;
+        case blocks::IronOre: return 13;
+        case blocks::Gravel: return 14;
+        default: break;
+    }
+    if (blocks::isLamp(BlockId(b)))
+        return kLampLayer0 + (b - blocks::LampFirst);
+    return 0;
+}
+
 int crackStages() { return kCrackStages; }
 int crackLayer(int stage) {
     const int s = stage < 0 ? 0 : (stage >= kCrackStages ? kCrackStages - 1 : stage);

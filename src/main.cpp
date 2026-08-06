@@ -18,6 +18,7 @@
 #include "render/Camera.hpp"
 #include "render/Frustum.hpp"
 #include "render/Overlay.hpp"
+#include "render/Particles.hpp"
 #include "render/PostFx.hpp"
 #include "render/Renderer.hpp"
 #include "render/ShadowMap.hpp"
@@ -154,6 +155,7 @@ struct RenderContext {
     vx::ShadowMap& shadows;
     vx::PostFx& postfx;
     vx::Overlay& overlay;
+    vx::Particles* particles; // null in the offscreen paths that never spawn any
     unsigned int drawProgram;
     unsigned int waterProgram;
     unsigned int blockTex;
@@ -244,6 +246,15 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
                           cam.cameraFrac);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
+
+    // Particles after the water, still inside the HDR pass so they are tonemapped and
+    // bloomed with everything else rather than pasted on afterwards.
+    if (rc.particles && rc.particles->liveCount() > 0) {
+        const glm::vec3 fwd = camera.forward();
+        const glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0.0f, 1.0f, 0.0f)));
+        const glm::vec3 up = glm::cross(right, fwd);
+        rc.particles->draw(cam.viewProj, camera.position, right, up, rc.blockTex);
+    }
 
     // block-selection wireframe, in the HDR scene so it depth-tests against the world
     if (hasSelection) {
@@ -715,6 +726,26 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                     stepOk ? 1 : 0, stack, airAbove ? 1 : 0, settleTick,
                     fallOk ? "PASS" : "FAIL");
             if (!fallOk)
+                return 1;
+        }
+
+        // M19: particles must live, then die, and the pool must compact back to empty.
+        // The swap-remove in update() is the part worth guarding: get it wrong and either
+        // particles leak forever or the draw call submits stale slots.
+        if (rc.particles) {
+            const int before = rc.particles->liveCount();
+            for (int i = 0; i < 40; ++i)
+                rc.particles->spawnBlockBreak({double(i), 70.0, 0.0}, 0);
+            const int spawned = rc.particles->liveCount();
+            for (int i = 0; i < 200; ++i) // 200 * 16ms = 3.2s, past the longest life
+                rc.particles->update(0.016f);
+            const int after = rc.particles->liveCount();
+            // capacity is a hard cap, never exceeded, and everything expires
+            const bool partOk = before == 0 && spawned > 0 &&
+                                spawned <= vx::Particles::kCapacity && after == 0;
+            VX_INFO("particles: %d spawned (cap %d), %d alive after 3.2 s -> %s", spawned,
+                    vx::Particles::kCapacity, after, partOk ? "PASS" : "FAIL");
+            if (!partOk)
                 return 1;
         }
 
@@ -1390,9 +1421,13 @@ int main(int argc, char** argv) {
     vx::Overlay overlay;
     if (!overlay.init(shaders))
         return 1;
+    vx::Particles particles;
+    if (!particles.init(shaders))
+        return 1;
     vx::shutdownShaderCache(); // every program is built by here
     const GLuint blockTex = vx::createBlockTextureArray(assets / "textures");
-    RenderContext rc{renderer, shadowMap, postfx, overlay, drawProgram, waterProgram, blockTex};
+    RenderContext rc{renderer,     shadowMap,    postfx,   overlay, &particles,
+                     drawProgram, waterProgram, blockTex};
 
     // isolate the smoke test's save data so repeated runs start clean and can't touch a
     // real world save
@@ -1429,6 +1464,7 @@ int main(int argc, char** argv) {
     if (bench) {
         const int rcB = runBenchmark(rc, *world, *jobs, *light, camera, *window, benchRadius);
         hud.shutdown();
+        particles.shutdown();
         overlay.shutdown();
         postfx.shutdown();
         shadowMap.shutdown();
@@ -1439,6 +1475,7 @@ int main(int argc, char** argv) {
     if (smoke) {
         const int rc2 = runSmokeTest(rc, *world, *jobs, *light, camera, hud, *window, smokeOut);
         hud.shutdown();
+        particles.shutdown();
         overlay.shutdown();
         postfx.shutdown();
         shadowMap.shutdown();
@@ -1587,6 +1624,14 @@ int main(int argc, char** argv) {
                                                glm::floor(player.position.y) - 1,
                                                glm::floor(player.position.z));
                         const int id = world->blockAtWorld(under);
+                        // a puff off the ground you are actually standing on
+                        if (vx::blocks::opaque(vx::BlockId(id)))
+                            particles.spawnFootstep(
+                                {player.position.x, double(under.y) + 1.0, player.position.z},
+                                vx::blockTopLayer(id));
+                        else if (vx::blocks::isWater(vx::BlockId(id)))
+                            particles.spawnSplash(
+                                {player.position.x, double(under.y) + 1.0, player.position.z});
                         if (!audio.playIfPresent("step_" + std::to_string(id),
                                                  player.position, 0.5f))
                             audio.playAt("step", player.position, 0.5f);
@@ -1622,6 +1667,7 @@ int main(int argc, char** argv) {
                 breaking = true;
                 if (breakProgress >= 1.0f) {
                     const glm::dvec3 at(hit.voxel);
+                    particles.spawnBlockBreak(at, vx::blockTopLayer(int(id)));
                     world->setBlock(renderer, *light, hit.voxel, vx::blocks::Air);
                     if (!audio.playIfPresent("break_" + std::to_string(int(id)), at))
                         audio.playAt("break", at);
@@ -1660,6 +1706,7 @@ int main(int argc, char** argv) {
         audio.setMasterVolume(fx.volume);
 
         world->update(*jobs, renderer, *light, camera.position);
+        particles.update(float(dt));
 
         // Fluid runs on its own slow clock, not per frame: water moving at 60 Hz looks
         // like a nervous twitch rather than a flow, and each tick is a batched edit that
@@ -1787,6 +1834,7 @@ int main(int argc, char** argv) {
     audio.shutdown();
     world->saveDirty(); // persist edits before teardown (workers join after this)
     hud.shutdown();
+    particles.shutdown();
     overlay.shutdown();
     postfx.shutdown();
     shadowMap.shutdown();

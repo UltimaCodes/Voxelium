@@ -17,6 +17,11 @@ unsigned int createBlockTextureArray(const std::filesystem::path& textureDir);
 // Break-progress crack stages live at the end of the same array, so the block-break
 // overlay samples the texture the world already has bound. crackLayer(0) is the first
 // hairline, crackStages() - 1 is about to shatter.
+// Representative texture layer for a block, for things outside the chunk shader that need
+// to look like that block (particles, icons). Mirrors texLayer() in chunk.vert for the top
+// face; keep the two in step.
+int blockTopLayer(int blockId);
+
 int crackStages();
 int crackLayer(int stage);
 

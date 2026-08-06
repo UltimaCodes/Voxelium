@@ -31,6 +31,7 @@ add_executable(voxelium
     src/mesh/GreedyMesher.cpp
     src/mesh/NaiveMesher.cpp
     src/platform/Window.cpp
+    src/render/Particles.cpp
     src/render/Camera.cpp
     src/render/Overlay.cpp
     src/render/PostFx.cpp
