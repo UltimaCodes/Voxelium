@@ -31,7 +31,9 @@ bool Overlay::init(const std::filesystem::path& shaderDir) {
     m_crossProg =
         loadProgram(shaderDir / "overlay_cross.vert", shaderDir / "overlay_cross.frag");
     m_hudProg = loadProgram(shaderDir / "hud_quad.vert", shaderDir / "hud_quad.frag");
-    if (!m_boxProg || !m_crossProg || !m_hudProg)
+    m_crackProg =
+        loadProgram(shaderDir / "overlay_crack.vert", shaderDir / "overlay_crack.frag");
+    if (!m_boxProg || !m_crossProg || !m_hudProg || !m_crackProg)
         return false;
     glCreateVertexArrays(1, &m_vao); // attribute-less; the shaders pull from gl_VertexID
     return true;
@@ -59,6 +61,23 @@ void Overlay::drawSelection(const glm::mat4& viewProj, const glm::vec3& camRelMi
     glDrawArrays(GL_LINES, 0, 24);
     glLineWidth(1.0f);
     glDepthMask(GL_TRUE);
+}
+
+void Overlay::drawBreak(const glm::mat4& viewProj, const glm::vec3& camRelMin,
+                        int crackLayer, unsigned int blockTexArray) const {
+    glProgramUniformMatrix4fv(m_crackProg, 0, 1, GL_FALSE, &viewProj[0][0]);
+    glProgramUniform3fv(m_crackProg, 4, 1, &camRelMin.x);
+    glProgramUniform1i(m_crackProg, 5, 0);
+    glProgramUniform1f(m_crackProg, 6, float(crackLayer));
+    glUseProgram(m_crackProg);
+    glBindTextureUnit(0, blockTexArray);
+    glBindVertexArray(m_vao);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE); // sits on the block without perturbing the scene depth
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
 }
 
 void Overlay::drawCrosshair(int fbWidth, int fbHeight, const glm::vec4& color) const {

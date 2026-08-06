@@ -17,11 +17,16 @@ namespace vx {
 namespace {
 
 constexpr int kTile = 16;
+constexpr int kCrackStages = 5;
 constexpr int kNamedLayers = 15;
 // the lamp hues tack onto the end, one layer each, generated from blocks::kLampRGB so
 // the face you see and the light it casts can never drift apart
 constexpr int kLampLayer0 = kNamedLayers;
-constexpr int kLayers = kNamedLayers + blocks::kLampCount;
+constexpr int kLampLayerEnd = kNamedLayers + blocks::kLampCount;
+// Break-progress crack stages, appended last so the block overlay can sample them out of
+// the same array the world already has bound — no second texture, no second sampler.
+constexpr int kCrackLayer0 = kLampLayerEnd;
+constexpr int kLayers = kLampLayerEnd + kCrackStages;
 
 // filename (without extension) per layer, looked up in assets/textures/
 constexpr const char* kNames[kNamedLayers] = {"stone",    "dirt",     "grass_top", "grass_side",
@@ -183,6 +188,44 @@ Rgba lampTexel(int hue, int x, int y) {
     return shade(r + w * (1.0f - r), g + w * (1.0f - g), b + w * (1.0f - b), core);
 }
 
+// One crack stage: branches walking out from the centre, more of them and thicker as the
+// stage rises. Transparent everywhere else — this is drawn OVER the block, so anything it
+// does not touch has to leave the block's own texture showing.
+void fillCrack(int stage, Rgba* slot) {
+    for (int i = 0; i < kTile * kTile; ++i)
+        slot[i] = {0, 0, 0, 0};
+    const auto mark = [&](int x, int y, std::uint8_t a) {
+        if (x < 0 || x >= kTile || y < 0 || y >= kTile)
+            return;
+        Rgba& p = slot[y * kTile + x];
+        if (a > p.a)
+            p = {12, 10, 10, a};
+    };
+    const int branches = 2 + stage * 2;
+    for (int b = 0; b < branches; ++b) {
+        // fixed salt per branch so a stage always contains the previous stage's cracks —
+        // the animation has to look like damage accumulating, not like it is being redrawn
+        float x = 7.5f, y = 7.5f;
+        const float ang = (float(b) + 0.5f) * 6.2831853f / float(branches) +
+                          h01(b, 0, 91) * 0.9f;
+        float dx = std::cos(ang), dy = std::sin(ang);
+        const int len = 4 + stage * 2;
+        for (int t = 0; t < len; ++t) {
+            const float wob = (h01(b, t, 92) - 0.5f) * 0.9f;
+            const float na = std::atan2(dy, dx) + wob;
+            dx = std::cos(na);
+            dy = std::sin(na);
+            x += dx;
+            y += dy;
+            mark(int(x), int(y), 230);
+            if (stage >= 3) { // widen once the block is nearly gone
+                mark(int(x) + 1, int(y), 130);
+                mark(int(x), int(y) + 1, 130);
+            }
+        }
+    }
+}
+
 // Loose pebbles: a few grey tones scattered per texel rather than one tinted noise field,
 // so it reads as aggregate next to stone instead of as dirty stone.
 Rgba genGravel(int x, int y) {
@@ -223,6 +266,10 @@ unsigned int createBlockTextureArray(const std::filesystem::path& textureDir) {
     int loaded = 0;
     for (int layer = 0; layer < kLayers; ++layer) {
         Rgba* slot = pixels.data() + std::size_t(layer) * kTile * kTile;
+        if (layer >= kCrackLayer0) { // crack stages: generated, never loaded
+            fillCrack(layer - kCrackLayer0, slot);
+            continue;
+        }
         if (layer >= kLampLayer0) { // lamps are generated only — one per hue, no filenames
             for (int y = 0; y < kTile; ++y)
                 for (int x = 0; x < kTile; ++x)
@@ -258,6 +305,12 @@ unsigned int createBlockTextureArray(const std::filesystem::path& textureDir) {
     glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY, &aniso);
     glTextureParameterf(tex, GL_TEXTURE_MAX_ANISOTROPY, aniso);
     return tex;
+}
+
+int crackStages() { return kCrackStages; }
+int crackLayer(int stage) {
+    const int s = stage < 0 ? 0 : (stage >= kCrackStages ? kCrackStages - 1 : stage);
+    return kCrackLayer0 + s;
 }
 
 } // namespace vx

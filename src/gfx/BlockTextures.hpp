@@ -14,4 +14,10 @@ namespace vx {
 // Layer/name order matches texLayer() in chunk.vert; keep the two in sync.
 unsigned int createBlockTextureArray(const std::filesystem::path& textureDir);
 
+// Break-progress crack stages live at the end of the same array, so the block-break
+// overlay samples the texture the world already has bound. crackLayer(0) is the first
+// hairline, crackStages() - 1 is about to shatter.
+int crackStages();
+int crackLayer(int stage);
+
 } // namespace vx

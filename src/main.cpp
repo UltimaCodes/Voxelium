@@ -168,7 +168,8 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
                  bool caveCull, int fbW, int fbH, unsigned int targetFbo, float time,
                  FrameTimers* timers, bool hasSelection = false,
                  const glm::vec3& selMinCamRel = glm::vec3(0.0f), bool underwater = false,
-                 TaaState* taa = nullptr, float fogEnd = 1e9f) {
+                 TaaState* taa = nullptr, float fogEnd = 1e9f, int crackLayer = -1,
+                 unsigned int blockTex = 0) {
     const float aspect = float(fbW) / float(fbH);
     // internal render size; the final tonemap still runs at fbW x fbH and upscales. the
     // aspect is unchanged because both axes scale together.
@@ -245,8 +246,11 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     glDisable(GL_BLEND);
 
     // block-selection wireframe, in the HDR scene so it depth-tests against the world
-    if (hasSelection)
+    if (hasSelection) {
         rc.overlay.drawSelection(cam.viewProj, selMinCamRel);
+        if (crackLayer >= 0)
+            rc.overlay.drawBreak(cam.viewProj, selMinCamRel, crackLayer, blockTex);
+    }
     if (timers) timers->scene.end();
 
     if (timers) timers->post.begin();
@@ -1458,7 +1462,6 @@ int main(int argc, char** argv) {
     bool f3Held = false;
     bool f2Held = false;
     bool f5Held = false;
-    bool lmbHeld = false;
     bool mmbHeld = false;
     bool walkMode = false;
     bool vsync = false;
@@ -1483,6 +1486,11 @@ int main(int argc, char** argv) {
     // choice can be applied to that block as well as to everything placed afterwards.
     bool lampPickerOpen = false;
     glm::ivec3 lampPickerTarget{0};
+    // Hold-to-break. Progress is per TARGET, not per click: looking away resets it, so you
+    // cannot chip at one block, switch, and come back to a half-broken one.
+    glm::ivec3 breakTarget{INT32_MIN, 0, 0};
+    float breakProgress = 0.0f;
+    bool breaking = false;
     constexpr int kHotbar[] = {vx::blocks::Stone,  vx::blocks::Dirt,   vx::blocks::Grass,
                                vx::blocks::Sand,   vx::blocks::Snow,   vx::blocks::Wood,
                                vx::blocks::Planks, vx::blocks::Bricks, vx::blocks::Leaves,
@@ -1595,47 +1603,56 @@ int main(int argc, char** argv) {
         if (!settingsOpen && !lampPickerOpen && camera.flying()) {
             const bool lmb = window->mouseDown(GLFW_MOUSE_BUTTON_LEFT);
             const bool mmb = window->mouseDown(GLFW_MOUSE_BUTTON_MIDDLE);
-            if ((lmb && !lmbHeld) || (mmb && !mmbHeld)) {
-                const auto hit = vx::raycastVoxels(
-                    camera.position, camera.forward(), 6.0, [&](const glm::ivec3& p) {
-                        return vx::blocks::opaque(world->blockAtWorld(p));
-                    });
-                if (hit.hit) {
-                    // sound names follow the block id so a user can be as specific as they
-                    // like: break_3 for grass, or just break for everything
+            const auto hit = vx::raycastVoxels(
+                camera.position, camera.forward(), 6.0, [&](const glm::ivec3& p) {
+                    return vx::blocks::opaque(world->blockAtWorld(p));
+                });
+
+            // Breaking is held, not clicked. Anything that changes what you are aiming at
+            // -- or letting go -- drops the progress, which is what makes the crack read as
+            // damage to THAT block rather than to a global timer.
+            breaking = false;
+            if (lmb && hit.hit) {
+                if (hit.voxel != breakTarget) {
+                    breakTarget = hit.voxel;
+                    breakProgress = 0.0f;
+                }
+                const vx::BlockId id = world->blockAtWorld(hit.voxel);
+                breakProgress += float(dt) / std::max(0.05f, vx::blocks::hardness(id));
+                breaking = true;
+                if (breakProgress >= 1.0f) {
                     const glm::dvec3 at(hit.voxel);
-                    if (lmb && !lmbHeld) {
-                        const int id = world->blockAtWorld(hit.voxel);
-                        world->setBlock(renderer, *light, hit.voxel, vx::blocks::Air);
-                        if (!audio.playIfPresent("break_" + std::to_string(id), at))
-                            audio.playAt("break", at);
-                    } else {
-                        // Middle-clicking a lamp repaints THAT lamp to the menu colour
-                        // rather than placing against it. A lamp's colour is its block id,
-                        // so recolouring is a block swap — and the emitter-swap path in the
-                        // light engine is what makes the old hue actually go away.
-                        const vx::BlockId aimed = world->blockAtWorld(hit.voxel);
-                        const vx::BlockId lamp =
-                            vx::BlockId(vx::blocks::LampFirst + fx.lampSwatch);
-                        if (vx::blocks::isLamp(aimed)) {
-                            // Aiming at a lamp means you want to recolour that lamp, not
-                            // stack another one onto its face. Open the picker on it; the
-                            // repaint happens when a swatch is actually chosen.
-                            lampPickerOpen = true;
-                            lampPickerTarget = hit.voxel;
-                            window->setCursorCaptured(false);
-                        } else {
-                            const int put = placeBlock == vx::blocks::LampFirst ? int(lamp)
-                                                                               : placeBlock;
-                            world->setBlock(renderer, *light, hit.voxel + hit.normal,
-                                            vx::BlockId(put));
-                            if (!audio.playIfPresent("place_" + std::to_string(put), at))
-                                audio.playAt("place", at);
-                        }
-                    }
+                    world->setBlock(renderer, *light, hit.voxel, vx::blocks::Air);
+                    if (!audio.playIfPresent("break_" + std::to_string(int(id)), at))
+                        audio.playAt("break", at);
+                    breakProgress = 0.0f;
+                    breakTarget = {INT32_MIN, 0, 0};
+                    breaking = false;
+                }
+            } else {
+                breakProgress = 0.0f;
+                breakTarget = {INT32_MIN, 0, 0};
+            }
+
+            if (mmb && !mmbHeld && hit.hit) {
+                const glm::dvec3 at(hit.voxel);
+                const vx::BlockId aimed = world->blockAtWorld(hit.voxel);
+                if (vx::blocks::isLamp(aimed)) {
+                    // Aiming at a lamp means you want to recolour that lamp, not stack
+                    // another onto its face. The repaint happens when a swatch is chosen.
+                    lampPickerOpen = true;
+                    lampPickerTarget = hit.voxel;
+                    window->setCursorCaptured(false);
+                } else {
+                    const int put = placeBlock == vx::blocks::LampFirst
+                                        ? int(vx::blocks::LampFirst + fx.lampSwatch)
+                                        : placeBlock;
+                    world->setBlock(renderer, *light, hit.voxel + hit.normal,
+                                    vx::BlockId(put));
+                    if (!audio.playIfPresent("place_" + std::to_string(put), at))
+                        audio.playAt("place", at);
                 }
             }
-            lmbHeld = lmb;
             mmbHeld = mmb;
         }
 
@@ -1702,8 +1719,12 @@ int main(int argc, char** argv) {
             // fog the outer ~8% of the loaded radius so the world edge reads as haze
             const float fogEnd =
                 fx.fog ? float(world->radius) * float(vx::kChunkSize) * 0.92f : 1e9f;
+            // crack stage from break progress; -1 while nothing is being broken
+            const int crack =
+                breaking ? vx::crackLayer(int(breakProgress * float(vx::crackStages())))
+                         : -1;
             renderFrame(rc, camera, fx, caveCull, fbW, fbH, 0, float(now), &timers, hasSel,
-                        selMin, eyeUnderwater, &taaState, fogEnd);
+                        selMin, eyeUnderwater, &taaState, fogEnd, crack, blockTex);
             if (hotbarOpen)
                 overlay.drawHotbar(fbW, fbH, kHotbar, kHotbarCount, hotbarSel, blockTex);
         }

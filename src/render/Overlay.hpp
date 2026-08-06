@@ -19,6 +19,12 @@ public:
     // so it occludes correctly. Call inside the HDR scene pass.
     void drawSelection(const glm::mat4& viewProj, const glm::vec3& camRelMin) const;
 
+    // Crack overlay on the block being broken: the six faces of the voxel, drawn a hair
+    // proud of it with the crack stage from the block texture array. Same pass as the
+    // selection wireframe.
+    void drawBreak(const glm::mat4& viewProj, const glm::vec3& camRelMin, int crackLayer,
+                   unsigned int blockTexArray) const;
+
     // Screen-space crosshair at the centre of the current framebuffer, in `color`
     // (straight alpha). Call after post, on the final image.
     void drawCrosshair(int fbWidth, int fbHeight, const glm::vec4& color) const;
@@ -30,6 +36,7 @@ public:
 
 private:
     unsigned int m_boxProg = 0;
+    unsigned int m_crackProg = 0;
     unsigned int m_crossProg = 0;
     unsigned int m_hudProg = 0;
     unsigned int m_vao = 0;

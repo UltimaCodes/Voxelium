@@ -93,6 +93,25 @@ inline constexpr bool falls(BlockId id) { return id == Sand || id == Gravel; }
 
 inline constexpr int luminance(BlockId id) { return (id == Glow || isLamp(id)) ? 14 : 0; }
 
+// Seconds of held click to break a block. Ordered by what it feels like to dig, not by
+// any real material property: loose ground gives way at once, worked blocks resist, stone
+// and ore are the reason you go looking for a better tool later.
+inline constexpr float hardness(BlockId id) {
+    if (id == Leaves)
+        return 0.12f;
+    if (id == Sand || id == Gravel || id == Snow)
+        return 0.30f;
+    if (id == Dirt || id == Grass)
+        return 0.42f;
+    if (id == Wood || id == Planks || id == Glow || isLamp(id))
+        return 0.70f;
+    if (id == CoalOre || id == IronOre)
+        return 1.60f;
+    if (id == Bricks)
+        return 1.30f;
+    return 1.10f; // stone and anything new: slow enough to notice, short enough to bear
+}
+
 // Emitted colour of a light-emitting block, 0..15 per channel. The three channels
 // propagate independently, so an emitter's hue survives all the way out to its falloff
 // rather than being a white blob tinted at the end. Glow is a warm ember: red carries
