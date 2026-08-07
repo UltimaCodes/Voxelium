@@ -54,6 +54,11 @@ public:
         std::int64_t totalQuads = 0;
         std::size_t voxelBytes = 0;
         std::size_t quadBytes = 0;
+        // Chunks that arrived into a column already marked seeded and were lit on the
+        // spot. Nonzero is normal (it is what vertical movement does); it is here because
+        // the smoke asserts it is nonzero — without that, a change that stops chunks ever
+        // landing this way would leave the vertical group passing while testing nothing.
+        int lateSeeds = 0;
         double genMsAvg = 0.0;
         double meshMsAvg = 0.0;
         double uploadMsLast = 0.0;
@@ -345,6 +350,7 @@ private:
     bool m_lastCaveCull = false;
     int m_jobsInFlight = 0; // main-thread view: submit increments, result-drain decrements
     int m_pendingMesh = 0;
+    int m_lateSeeds = 0; // see Stats::lateSeeds
     // the per-frame mesh scan is O(loaded chunks); only run it when something could have
     // created mesh work (gen/light/LOD change) instead of every frame. set by those events,
     // cleared once scanned. when the world is idle there is provably nothing to mesh.

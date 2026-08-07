@@ -47,6 +47,18 @@ public:
     std::int32_t seedColumnX() const { return m_seed.chunkX; }
     std::int32_t seedColumnZ() const { return m_seed.chunkZ; }
 
+    // One chunk that appeared inside a column already marked seeded. The band can grow
+    // without anything being evicted — the load range is center.y +- kVerticalRadius while
+    // eviction only fires past kVerticalRadius + 1 — so descend one chunk and every column
+    // you are standing in gains a chunk while staying in m_seededColumns. The column seed
+    // never runs again, and since meshing waits on light, that chunk is never meshed.
+    //
+    // Deliberately NOT a column re-seed: that relights every chunk in the column and
+    // remeshes the lot, and a one-chunk descent would do it to every resident column at
+    // once. `skyAbove` says this chunk is the new TOP of a column that reaches daylight,
+    // which is the only case with nothing overhead to take light from.
+    void seedNewChunk(ChunkPos pos, bool skyAbove);
+
     // Call on any voxel edit, after the chunk itself was updated.
     void onBlockChanged(const glm::ivec3& wp, BlockId oldId, BlockId newId);
 

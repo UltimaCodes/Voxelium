@@ -314,6 +314,24 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                     }
                 }
             }
+        } else if (it != m_chunks.end() && !it->second.lit) {
+            // The column was already seeded when this chunk turned up, so the column seed
+            // will never run for it — and meshing waits on lit, so it would never be
+            // meshed either. The band grows without evicting anything: the load range is
+            // center.y +- kVerticalRadius while eviction only fires past
+            // kVerticalRadius + 1, so descending one chunk hands every column you are
+            // standing in a new bottom chunk and drops none. Measured at 550 chunks in one
+            // column each, at a single --tour 32 stop.
+            //
+            // Light just this chunk. Re-seeding the column would relight and remesh all
+            // fifteen of them, times every resident column, for one chunk of descent.
+            int cy0 = 0, cy1 = 0;
+            bool colSky = false;
+            columnRange(col.x, col.z, cy0, cy1, colSky);
+            ++m_lateSeeds;
+            light.seedNewChunk(pos, colSky && pos.y >= cy1);
+            it->second.lit = true;
+            m_meshScanDirty = true;
         }
     }
     m_genDoneScratch.clear();
@@ -1207,6 +1225,7 @@ ChunkManager::Stats ChunkManager::stats() const {
     s.genQueue = int(m_genQueue.size());
     s.jobsInFlight = m_jobsInFlight;
     s.pendingUploads = int(m_uploads.size());
+    s.lateSeeds = m_lateSeeds;
     s.uploadMsLast = m_uploadMsLast;
     const int gc = m_genCount.load(std::memory_order_relaxed);
     const int mc = m_meshCount.load(std::memory_order_relaxed);

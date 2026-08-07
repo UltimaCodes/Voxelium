@@ -275,6 +275,58 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
     return true;
 }
 
+void LightEngine::seedNewChunk(ChunkPos pos, bool skyAbove) {
+    resetChunkCache();
+    Chunk* c = m_world.chunkDataMutable(pos);
+    if (!c)
+        return;
+    const int baseX = pos.x * kChunkSize;
+    const int baseY = pos.y * kChunkSize;
+    const int baseZ = pos.z * kChunkSize;
+
+    if (const Chunk* above = m_world.chunkData({pos.x, pos.y + 1, pos.z})) {
+        // Take the sky from the layer overhead rather than recomputing a descent:
+        // propagateStep already carries full-strength sky straight down with no
+        // attenuation, so re-propagating that layer writes exactly what the descent would
+        // have, and it costs nothing where the neighbour above is dark (almost everywhere
+        // at these depths — the BFS dies on the first step).
+        for (int z = 0; z < kChunkSize; ++z)
+            for (int x = 0; x < kChunkSize; ++x)
+                if (light::sky(above->lightAt(x, 0, z)) > 0)
+                    enqueue(Sky, {baseX + x, baseY + kChunkSize, baseZ + z});
+    } else if (skyAbove) {
+        // New top of the band on a column that reaches daylight. Nothing above to descend
+        // from, so this chunk IS the sky — the generator never writes solid above
+        // kTerrainTop, which is what makes that safe to assert rather than trace.
+        for (int y = 0; y < kChunkSize; ++y)
+            for (int z = 0; z < kChunkSize; ++z)
+                for (int x = 0; x < kChunkSize; ++x) {
+                    if (blocks::opaque(c->get(x, y, z)))
+                        continue;
+                    c->setLight(x, y, z, light::withSky(c->lightAt(x, y, z), 15));
+                    enqueue(Sky, {baseX + x, baseY + y, baseZ + z});
+                }
+    }
+
+    // Emitters inside it. Natural cave lamps live at exactly the depths the band's bottom
+    // sweeps through, so skipping this leaves lit caves dark.
+    if (c->paletteHasEmissive())
+        for (int y = 0; y < kChunkSize; ++y)
+            for (int z = 0; z < kChunkSize; ++z)
+                for (int x = 0; x < kChunkSize; ++x) {
+                    const BlockId id = c->get(x, y, z);
+                    if (!blocks::emissive(id))
+                        continue;
+                    const glm::ivec3 wp{baseX + x, baseY + y, baseZ + z};
+                    const int e[3] = {blocks::emitR(id), blocks::emitG(id), blocks::emitB(id)};
+                    for (int ch = R; ch <= B; ++ch)
+                        if (e[ch] > 0) {
+                            setLevel(wp, ch, e[ch]);
+                            enqueue(ch, wp);
+                        }
+                }
+}
+
 void LightEngine::seedColumn(std::int32_t chunkX, std::int32_t chunkZ) {
     beginSeedColumn(chunkX, chunkZ);
     while (!stepSeedColumn(1e9)) {

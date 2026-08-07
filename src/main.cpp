@@ -374,6 +374,50 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
             return 1;
     }
 
+    // Moving vertically must not strand the chunk that enters the bottom of the band.
+    // The load range is center.y +- kVerticalRadius while eviction only fires past
+    // kVerticalRadius + 1, so descending one chunk grows every resident column WITHOUT
+    // evicting anything from it. The column therefore stays in m_seededColumns, its new
+    // chunk is never offered for light, and meshing waits on light — so it is never meshed
+    // and never drawn. Measured at 550 stranded chunks, one per column, at --tour 32
+    // stop 4, and invisible before the stats cache was made to report fresh numbers.
+    {
+        // Two things have to hold at once or this proves nothing, and both were learned the
+        // hard way from versions of this test that passed with the fix reverted:
+        //   1. EXACTLY ONE CHUNK per step. Eviction fires at |y - center.y| >
+        //      kVerticalRadius + 1, so a two-chunk move evicts from the top of the column,
+        //      which drops it out of m_seededColumns and re-seeds the whole thing.
+        //   2. Into territory never loaded. The band has to actually GROW; stepping back
+        //      through chunks that were resident earlier creates nothing.
+        // Hence a fresh column far from anywhere the smoke has been, and single steps.
+        const double vxz = 2000.0;
+        const double vsurf = world.generator().surfaceHeight(int(vxz), int(vxz));
+        camera.position = {vxz, vsurf + 160.0, vxz};
+        drain();
+        world.refreshStats();
+        const int before = world.stats().unlit;
+        int worst = before;
+        for (int step = 1; step <= 3; ++step) {
+            camera.position.y -= 32.0; // one chunk, straight down, no horizontal movement
+            drain();
+            world.refreshStats();
+            worst = std::max(worst, world.stats().unlit);
+        }
+        // lateSeeds > 0 is part of the assertion, not colour: it is what proves the descent
+        // actually put chunks into already-seeded columns. Two earlier versions of this
+        // test moved too far, or through chunks that were already resident, and passed
+        // with the fix reverted because that path was never reached.
+        const int late = world.stats().lateSeeds;
+        const bool vertOk = before == 0 && worst == 0 && late > 0;
+        VX_INFO("vertical: unlit settled %d, worst over 3 one-chunk descents %d, %d chunks "
+                "landed in already-seeded columns (want >0) -> %s",
+                before, worst, late, vertOk ? "PASS" : "FAIL");
+        if (!vertOk)
+            return 1;
+        camera.position = {16.0, 110.0, 16.0};
+        drain();
+    }
+
     // lighting checks against the enclosed glow room in the terrain
     {
         const int skyInRoom = vx::light::sky(light.lightAt({16, 48, 16}));
