@@ -43,10 +43,11 @@ controls:
 - MMB while looking at a lamp opens its colour picker; the colour sticks for lamps you place
 - F4 opens the hotbar (keys 1-8 or scroll to pick a block)
 
-ESC opens the settings menu (it pauses too): every shader toggle (shadows, ssao,
-volumetric, bloom, clouds, ssgi, taa) plus a day/night cycle (time of day + day length),
-exposure, fov, vsync and render distance. F3 is the read-only diagnostics overlay — frame
-graph, timings, chunk/arena stats, log.
+ESC opens the settings menu (it pauses too): every shader toggle — shadows, ssao, ssgi,
+god rays, bloom (with strength), clouds, fog, taa, motion blur — plus a day/night cycle
+(time of day + day length), exposure, fov, render scale, volume, vsync, cave culling and
+render distance. F3 is the read-only diagnostics overlay — frame graph, timings,
+chunk/arena stats, log.
 
 ## what's in it
 
