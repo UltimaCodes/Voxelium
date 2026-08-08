@@ -7,16 +7,18 @@
 #include <glad/gl.h>
 
 #include <algorithm>
+#include <cmath>
 
 namespace vx {
 
 namespace {
 
-unsigned int makeTex2D(GLenum format, int w, int h, GLenum filter = GL_LINEAR) {
+unsigned int makeTex2D(GLenum format, int w, int h, GLenum filter = GL_LINEAR, int mips = 1) {
     GLuint tex = 0;
     glCreateTextures(GL_TEXTURE_2D, 1, &tex);
-    glTextureStorage2D(tex, 1, format, w, h);
-    glTextureParameteri(tex, GL_TEXTURE_MIN_FILTER, GLint(filter));
+    glTextureStorage2D(tex, mips, format, w, h);
+    glTextureParameteri(tex, GL_TEXTURE_MIN_FILTER,
+                        mips > 1 ? GL_LINEAR_MIPMAP_LINEAR : GLint(filter));
     glTextureParameteri(tex, GL_TEXTURE_MAG_FILTER, GLint(filter));
     glTextureParameteri(tex, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTextureParameteri(tex, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -50,6 +52,8 @@ bool PostFx::init(const std::filesystem::path& shaderDir) {
         submitProgram(fs, shaderDir / "taa.frag"),
         submitProgram(fs, shaderDir / "ssgi.frag"),
         submitProgram(fs, shaderDir / "motionblur.frag"),
+        submitProgram(fs, shaderDir / "lumdown.frag"),
+        submitProgram(fs, shaderDir / "expose.frag"),
     };
     m_progSsao = resolveProgram(jobs[0]);
     m_progBlur = resolveProgram(jobs[1]);
@@ -60,8 +64,11 @@ bool PostFx::init(const std::filesystem::path& shaderDir) {
     m_progTaa = resolveProgram(jobs[6]);
     m_progSsgi = resolveProgram(jobs[7]);
     m_progMotion = resolveProgram(jobs[8]);
+    m_progLumDown = resolveProgram(jobs[9]);
+    m_progExpose = resolveProgram(jobs[10]);
     if (!m_progSsao || !m_progBlur || !m_progComposite || !m_progBloomDown ||
-        !m_progBloomUp || !m_progFinal || !m_progTaa || !m_progSsgi || !m_progMotion)
+        !m_progBloomUp || !m_progFinal || !m_progTaa || !m_progSsgi || !m_progMotion ||
+        !m_progLumDown || !m_progExpose)
         return false;
     glCreateVertexArrays(1, &m_vao);
     return true;
@@ -69,8 +76,9 @@ bool PostFx::init(const std::filesystem::path& shaderDir) {
 
 void PostFx::shutdown() {
     destroyTargets();
-    const GLuint progs[] = {m_progSsao,  m_progBlur,   m_progComposite, m_progBloomDown, m_progBloomUp,
-                            m_progFinal, m_progTaa, m_progSsgi,      m_progMotion};
+    const GLuint progs[] = {m_progSsao,  m_progBlur,    m_progComposite, m_progBloomDown,
+                            m_progBloomUp, m_progFinal, m_progTaa,       m_progSsgi,
+                            m_progMotion, m_progLumDown, m_progExpose};
     for (const GLuint p : progs)
         glDeleteProgram(p);
     glDeleteVertexArrays(1, &m_vao);
@@ -88,6 +96,10 @@ void PostFx::destroyTargets() {
     glDeleteTextures(10, texes);
     glDeleteFramebuffers(1, &m_ssgiFbo);
     glDeleteFramebuffers(1, &m_motionFbo);
+    glDeleteFramebuffers(1, &m_lumFbo);
+    glDeleteFramebuffers(2, m_adaptFbo);
+    glDeleteTextures(1, &m_lumTex);
+    glDeleteTextures(2, m_adapt);
     glDeleteTextures(kBloomMips, m_bloomTex);
     m_width = 0;
 }
@@ -124,6 +136,18 @@ void PostFx::createTargets(int width, int height) {
     // half-res coloured bounce; LINEAR so the composite upsample is smooth
     m_ssgiTex = makeTex2D(GL_RGBA16F, hw, hh);
     m_ssgiFbo = makeFbo(m_ssgiTex);
+
+    // Auto-exposure: a mipped log-luminance square whose last mip is the scene average, and
+    // two 1x1 textures the adaptation ping-pongs between. Fixed size, so this costs the
+    // same at any resolution and does not need rebuilding on resize (it is here only
+    // because everything else target-shaped is).
+    m_lumTex = makeTex2D(GL_R16F, kLumSize, kLumSize, GL_LINEAR, kLumMips);
+    m_lumFbo = makeFbo(m_lumTex);
+    for (int i = 0; i < 2; ++i) {
+        m_adapt[i] = makeTex2D(GL_R16F, 1, 1);
+        m_adaptFbo[i] = makeFbo(m_adapt[i]);
+    }
+    m_adaptValid = false; // nothing to adapt from until the first luminance pass has run
 
     int bw = width;
     int bh = height;
@@ -204,6 +228,7 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform3fv(m_progComposite, 5, 1, &p.sunL.x);
     glProgramUniform3fv(m_progComposite, 25, 1, &p.sunColor.x);
     glProgramUniform2fv(m_progComposite, 26, 1, &p.fog.x);
+    glProgramUniform1f(m_progComposite, 27, p.toggles.lensFlare);
     glProgramUniformMatrix4fv(m_progComposite, 6, 3, GL_FALSE,
                               &p.shadows->cascadeVp()[0][0][0]);
     const glm::vec3 splits{ShadowMap::kSplits[0], ShadowMap::kSplits[1],
@@ -291,6 +316,38 @@ void PostFx::run(const RunParams& p) {
         glDisable(GL_BLEND);
     }
 
+    // Eye adaptation, from the resolved HDR image and before the tonemap that consumes it.
+    // Three tiny passes (64x64, a mip chain, and one texel), so the cost is noise next to
+    // any of the full-res passes above.
+    if (p.toggles.autoExposure) {
+        glBindFramebuffer(GL_FRAMEBUFFER, m_lumFbo);
+        glViewport(0, 0, kLumSize, kLumSize);
+        glUseProgram(m_progLumDown);
+        const glm::vec2 srcTexel(1.0f / float(m_width), 1.0f / float(m_height));
+        glProgramUniform2fv(m_progLumDown, 0, 1, &srcTexel.x);
+        glBindTextureUnit(0, resolved);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glGenerateTextureMipmap(m_lumTex); // last mip is the geometric mean of the frame
+
+        const int next = 1 - m_adaptIndex;
+        glBindFramebuffer(GL_FRAMEBUFFER, m_adaptFbo[next]);
+        glViewport(0, 0, 1, 1);
+        glUseProgram(m_progExpose);
+        glProgramUniform1f(m_progExpose, 0, float(kLumMips - 1));
+        // Time constants, not per-frame lerps: a fixed blend factor would adapt at a rate
+        // that depends on framerate, so the same walk into a cave would settle differently
+        // at 60 and 144 fps.
+        const float dt = std::clamp(p.dt, 0.0f, 0.25f);
+        glProgramUniform1f(m_progExpose, 1, 1.0f - std::exp(-dt / 0.6f)); // into light
+        glProgramUniform1f(m_progExpose, 2, 1.0f - std::exp(-dt / 1.8f)); // into darkness
+        glProgramUniform1f(m_progExpose, 3, m_adaptValid ? 1.0f : 0.0f);
+        glBindTextureUnit(0, m_lumTex);
+        glBindTextureUnit(1, m_adapt[m_adaptIndex]);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        m_adaptIndex = next;
+        m_adaptValid = true;
+    }
+
     // tonemap + sRGB into the caller's framebuffer
     glBindFramebuffer(GL_FRAMEBUFFER, p.targetFbo);
     glViewport(0, 0, p.targetWidth, p.targetHeight);
@@ -301,8 +358,18 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform1f(m_progFinal, 3, p.toggles.taa ? 0.22f : 0.0f);
     const glm::vec2 texel(1.0f / float(m_width), 1.0f / float(m_height));
     glProgramUniform2fv(m_progFinal, 4, 1, &texel.x);
+    glProgramUniform1f(m_progFinal, 5, p.toggles.vignette);
+    glProgramUniform1f(m_progFinal, 6, p.toggles.grain);
+    glProgramUniform1f(m_progFinal, 7, p.time);
+    glProgramUniform1f(m_progFinal, 8, p.toggles.saturation);
+    glProgramUniform1f(m_progFinal, 9, p.toggles.contrast);
+    glProgramUniform1f(m_progFinal, 10, p.toggles.temperature);
+    // 0.18 is middle grey. Only meaningful when the adaptation actually ran this frame.
+    glProgramUniform1f(m_progFinal, 11,
+                       (p.toggles.autoExposure && m_adaptValid) ? 0.18f : 0.0f);
     glBindTextureUnit(0, resolved);
     glBindTextureUnit(2, m_bloomTex[0]);
+    glBindTextureUnit(3, m_adapt[m_adaptIndex]);
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
     glEnable(GL_DEPTH_TEST);

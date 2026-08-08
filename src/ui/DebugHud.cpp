@@ -168,27 +168,75 @@ bool DebugHud::lampPicker(bool& open, int& swatch) {
     return picked;
 }
 
-void DebugHud::loadingScreen(float progress, const char* phase) {
+void DebugHud::loadingScreen(float progress, const char* title, const char* phase) {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->Pos);
     ImGui::SetNextWindowSize(vp->Size);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.06f, 0.08f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0)); // the gradient below is the bg
     ImGui::Begin("##loading", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
                      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
-    const float cx = vp->Size.x * 0.5f;
-    ImGui::SetCursorPos(ImVec2(cx - 120.0f, vp->Size.y * 0.5f - 40.0f));
-    ImGui::TextUnformatted("generating world");
-    ImGui::SetCursorPos(ImVec2(cx - 200.0f, vp->Size.y * 0.5f - 12.0f));
-    ImGui::ProgressBar(progress, ImVec2(400.0f, 18.0f), "");
-    ImGui::SetCursorPos(ImVec2(cx - 200.0f, vp->Size.y * 0.5f + 14.0f));
-    ImGui::TextDisabled("%s", phase);
+
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    const ImVec2 p0 = vp->Pos;
+    const ImVec2 p1 = ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y);
+    // Vertical gradient in the engine's own sky colours rather than a flat charcoal panel:
+    // it is the first thing anyone sees, and a dead grey rectangle reads as a hang.
+    const ImU32 top = IM_COL32(18, 24, 38, 255);
+    const ImU32 bot = IM_COL32(38, 46, 58, 255);
+    dl->AddRectFilledMultiColor(p0, p1, top, top, bot, bot);
+
+    const float cx = vp->Pos.x + vp->Size.x * 0.5f;
+    const float cy = vp->Pos.y + vp->Size.y * 0.5f;
+    const float barW = std::min(520.0f, vp->Size.x * 0.55f);
+    const float barH = 6.0f;
+    const float barX = cx - barW * 0.5f;
+    const float barY = cy + 18.0f;
+
+    // title, tracked out a little by drawing it once per character
+    {
+        const float scale = 2.4f;
+        ImFont* font = ImGui::GetFont();
+        const float fs = ImGui::GetFontSize() * scale;
+        float w = 0.0f;
+        for (const char* c = title; *c; ++c)
+            w += font->CalcTextSizeA(fs, FLT_MAX, 0.0f, c, c + 1).x + 3.0f;
+        float x = cx - w * 0.5f;
+        for (const char* c = title; *c; ++c) {
+            dl->AddText(nullptr, fs, ImVec2(x, cy - 46.0f), IM_COL32(226, 232, 240, 255), c,
+                        c + 1);
+            x += font->CalcTextSizeA(fs, FLT_MAX, 0.0f, c, c + 1).x + 3.0f;
+        }
+    }
+
+    // track, then fill, then a soft leading edge so it reads as moving even when a long
+    // phase (a big light settle) holds the number still for a second
+    const float t = std::clamp(progress, 0.0f, 1.0f);
+    dl->AddRectFilled(ImVec2(barX, barY), ImVec2(barX + barW, barY + barH),
+                      IM_COL32(255, 255, 255, 28), barH * 0.5f);
+    if (t > 0.0f) {
+        const float fillW = std::max(barH, barW * t);
+        dl->AddRectFilled(ImVec2(barX, barY), ImVec2(barX + fillW, barY + barH),
+                          IM_COL32(126, 196, 255, 255), barH * 0.5f);
+        const float pulse = 0.55f + 0.45f * std::sin(float(ImGui::GetTime()) * 3.2f);
+        dl->AddCircleFilled(ImVec2(barX + fillW, barY + barH * 0.5f), barH * 1.5f,
+                            IM_COL32(190, 226, 255, int(90.0f * pulse)));
+    }
+
+    char pct[16];
+    std::snprintf(pct, sizeof(pct), "%d%%", int(t * 100.0f + 0.5f));
+    const ImVec2 ps = ImGui::CalcTextSize(pct);
+    dl->AddText(ImVec2(barX + barW - ps.x, barY - ps.y - 8.0f), IM_COL32(226, 232, 240, 220),
+                pct);
+    const ImVec2 fs2 = ImGui::CalcTextSize(phase);
+    dl->AddText(ImVec2(barX, barY - fs2.y - 8.0f), IM_COL32(160, 174, 192, 220), phase);
+
     ImGui::End();
     ImGui::PopStyleColor();
 }
 
 void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, float& fovDeg,
-                        FxToggles& fx, bool& quit, bool& resetWorld) {
+                        FxToggles& fx, bool& quit, WorldUi& worlds) {
     if (!open)
         return;
 
@@ -210,6 +258,7 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     ImGui::SliderFloat("fov", &fovDeg, 50.0f, 110.0f, "%.0f deg");
     ImGui::SetNextItemWidth(-110.0f);
     ImGui::SliderFloat("render scale", &fx.renderScale, 0.5f, 1.0f, "%.2fx");
+    ImGui::Checkbox("auto exposure", &fx.autoExposure);
     ImGui::SetNextItemWidth(-110.0f);
     ImGui::SliderFloat("exposure", &fx.exposure, 0.4f, 2.5f, "%.2f");
     ImGui::SetNextItemWidth(-110.0f);
@@ -240,17 +289,65 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     ImGui::Checkbox("god rays", &fx.volumetric);
 
     ImGui::SeparatorText("world");
-    // Two-step, because it throws away every edit in the save. Held behind a modal rather
-    // than a bare button for the same reason you would not put "delete save" next to
+    ImGui::Text("seed %d", worlds.seed);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(this world is not kept unless you save it)");
+
+    ImGui::SetNextItemWidth(-84.0f);
+    ImGui::InputTextWithHint("##wname", "name this world", worlds.saveName,
+                             sizeof(worlds.saveName));
+    ImGui::SameLine();
+    ImGui::BeginDisabled(worlds.saveName[0] == '\0');
+    if (ImGui::Button("save", ImVec2(76.0f, 0.0f)))
+        worlds.saveRequested = true;
+    ImGui::EndDisabled();
+
+    if (!worlds.saved.empty()) {
+        ImGui::Spacing();
+        ImGui::TextDisabled("saved worlds");
+        if (ImGui::BeginListBox("##worlds", ImVec2(-1.0f, 84.0f))) {
+            for (const WorldStore::Entry& w : worlds.saved) {
+                char label[128];
+                std::snprintf(label, sizeof(label), "%s   seed %d   %zu KB", w.name.c_str(),
+                              w.seed, w.bytes / 1024);
+                if (ImGui::Selectable(label, worlds.selected == w.name))
+                    worlds.selected = w.name;
+            }
+            ImGui::EndListBox();
+        }
+        ImGui::BeginDisabled(worlds.selected.empty());
+        if (ImGui::Button("load"))
+            worlds.loadRequested = true;
+        ImGui::SameLine();
+        if (ImGui::Button("delete"))
+            ImGui::OpenPopup("delete world?");
+        ImGui::EndDisabled();
+        if (ImGui::BeginPopupModal("delete world?", nullptr,
+                                   ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("Delete \"%s\" from disk?", worlds.selected.c_str());
+            if (ImGui::Button("delete")) {
+                worlds.deleteRequested = true;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("cancel"))
+                ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        ImGui::SameLine();
+    }
+
+    // Two-step, because it throws away every edit in the live world. Held behind a modal
+    // rather than a bare button for the same reason you would not put "delete save" next to
     // "vsync" and trust a steady hand.
-    if (ImGui::Button("reset world..."))
-        ImGui::OpenPopup("reset world?");
-    if (ImGui::BeginPopupModal("reset world?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextUnformatted("Discards every block you have placed or broken.");
-        ImGui::TextDisabled("Terrain regenerates from the seed, so the land comes back "
-                            "exactly as it was. Only your edits are discarded.");
-        if (ImGui::Button("reset")) {
-            resetWorld = true;
+    if (ImGui::Button("new world..."))
+        ImGui::OpenPopup("new world?");
+    if (ImGui::BeginPopupModal("new world?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("Starts a fresh world on a new seed.");
+        ImGui::TextDisabled("Everything you have placed or broken here goes with it, unless\n"
+                            "you have saved this world under a name.");
+        if (ImGui::Button("new world")) {
+            worlds.resetRequested = true;
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
@@ -269,6 +366,29 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     ImGui::SetNextItemWidth(-110.0f);
     ImGui::SliderFloat("strength", &fx.bloomStrength, 0.0f, 1.5f, "%.2f");
     ImGui::EndDisabled();
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("emissive", &fx.emissive, 0.0f, 5.0f, "%.2f");
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("lens flare", &fx.lensFlare, 0.0f, 2.0f, "%.2f");
+
+    ImGui::SeparatorText("grade");
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("saturation", &fx.saturation, 0.0f, 2.0f, "%.2f");
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("contrast", &fx.contrast, 0.5f, 1.8f, "%.2f");
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("temperature", &fx.temperature, -1.0f, 1.0f, "%.2f");
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("vignette", &fx.vignette, 0.0f, 1.0f, "%.2f");
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("grain", &fx.grain, 0.0f, 1.0f, "%.2f");
+    if (ImGui::SmallButton("neutral")) {
+        fx.saturation = 1.0f;
+        fx.contrast = 1.0f;
+        fx.temperature = 0.0f;
+        fx.vignette = 0.0f;
+        fx.grain = 0.0f;
+    }
 
     ImGui::Separator();
     if (ImGui::Button("resume", ImVec2(160.0f, 32.0f)))

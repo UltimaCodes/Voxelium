@@ -1,8 +1,11 @@
 #pragma once
 
+#include "io/WorldStore.hpp"
 #include "render/PostFx.hpp"
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 struct GLFWwindow;
 
@@ -55,13 +58,27 @@ public:
     // colours that exist, so offering more would mean quietly snapping the answer.
     bool lampPicker(bool& open, int& swatch);
 
-    // Full-screen "generating world" panel with a progress bar. Shown while the world
-    // settles at startup so the first frame the player sees has its LOD, shadows and
-    // chunks already in place instead of assembling itself around them.
-    void loadingScreen(float progress, const char* phase);
+    // Full-screen loading panel. Shown while a world settles — at startup and on every
+    // world change — so the first frame the player sees has its LOD, shadows and chunks
+    // already in place instead of assembling itself around them.
+    void loadingScreen(float progress, const char* title, const char* phase);
+
+    // What the ESC menu wants to say about worlds. The menu only ever sets a request; the
+    // caller does the work, because loading a world means draining jobs and putting a
+    // loading screen up, none of which belongs in an ImGui callback.
+    struct WorldUi {
+        int seed = 0;
+        bool resetRequested = false;
+        bool saveRequested = false;
+        bool loadRequested = false;
+        bool deleteRequested = false;
+        char saveName[64] = "";
+        std::string selected;                    // which saved world load/delete refers to
+        std::vector<WorldStore::Entry> saved;    // filled by the caller each frame
+    };
 
     void settings(bool& open, bool& vsync, bool& caveCull, int& radius, float& fovDeg,
-                  FxToggles& fx, bool& quit, bool& resetWorld);
+                  FxToggles& fx, bool& quit, WorldUi& worlds);
     void render();
 
     void toggle() { m_visible = !m_visible; }

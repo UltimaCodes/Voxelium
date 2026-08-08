@@ -73,11 +73,19 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
         else if (key == "taa") readBool(val, fx.taa);
         else if (key == "motionBlur") readBool(val, fx.motionBlur);
         else if (key == "fog") readBool(val, fx.fog);
+        else if (key == "autoExposure") readBool(val, fx.autoExposure);
         else if (key == "dayCycle") readBool(val, fx.dayCycle);
         else if (key == "timeOfDay") readFloat(val, fx.timeOfDay);
         else if (key == "dayLengthSec") readFloat(val, fx.dayLengthSec);
         else if (key == "exposure") readFloat(val, fx.exposure);
         else if (key == "bloomStrength") readFloat(val, fx.bloomStrength);
+        else if (key == "emissive") readFloat(val, fx.emissive);
+        else if (key == "lensFlare") readFloat(val, fx.lensFlare);
+        else if (key == "saturation") readFloat(val, fx.saturation);
+        else if (key == "contrast") readFloat(val, fx.contrast);
+        else if (key == "temperature") readFloat(val, fx.temperature);
+        else if (key == "vignette") readFloat(val, fx.vignette);
+        else if (key == "grain") readFloat(val, fx.grain);
         else if (key == "crosshairR") readFloat(val, fx.crosshair[0]);
         else if (key == "crosshairG") readFloat(val, fx.crosshair[1]);
         else if (key == "crosshairB") readFloat(val, fx.crosshair[2]);
@@ -100,6 +108,13 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
     fx.dayLengthSec = std::clamp(fx.dayLengthSec, 20.0f, 1200.0f);
     fx.exposure = std::clamp(fx.exposure, 0.4f, 2.5f);
     fx.bloomStrength = std::clamp(fx.bloomStrength, 0.0f, 1.5f);
+    fx.emissive = std::clamp(fx.emissive, 0.0f, 5.0f);
+    fx.lensFlare = std::clamp(fx.lensFlare, 0.0f, 2.0f);
+    fx.saturation = std::clamp(fx.saturation, 0.0f, 2.0f);
+    fx.contrast = std::clamp(fx.contrast, 0.5f, 1.8f);
+    fx.temperature = std::clamp(fx.temperature, -1.0f, 1.0f);
+    fx.vignette = std::clamp(fx.vignette, 0.0f, 1.0f);
+    fx.grain = std::clamp(fx.grain, 0.0f, 1.0f);
     fx.lampSwatch = fx.lampSwatch < 0 ? 0
                                       : (fx.lampSwatch >= blocks::kLampCount
                                              ? blocks::kLampCount - 1
@@ -139,6 +154,11 @@ bool save(const std::filesystem::path& file, const FxToggles& fx, bool vsync, bo
         << "dayLengthSec=" << fx.dayLengthSec << "\n"
         << "exposure=" << fx.exposure << "\n"
         << "bloomStrength=" << fx.bloomStrength << "\n"
+        << "saturation=" << fx.saturation << "\n"
+        << "contrast=" << fx.contrast << "\n"
+        << "temperature=" << fx.temperature << "\n"
+        << "vignette=" << fx.vignette << "\n"
+        << "grain=" << fx.grain << "\n"
         << "crosshairR=" << fx.crosshair[0] << "\n"
         << "crosshairG=" << fx.crosshair[1] << "\n"
         << "crosshairB=" << fx.crosshair[2] << "\n"

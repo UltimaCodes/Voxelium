@@ -23,6 +23,27 @@ struct FxToggles {
     float dayLengthSec = 240.0f; // real seconds for a full day
     float exposure = 1.0f;
     float bloomStrength = 0.55f;
+    // Self-illumination for emitter faces (lamps, glow). Tuned against the lamp palette:
+    // the saturated swatches sit around 0.9 albedo on their brightest channel, so 2.0 puts
+    // them clearly over the bloom threshold (1.15) while the pale ones still bloom softly
+    // rather than blowing out. 0 turns emitters back into ordinary lit blocks.
+    float emissive = 2.0f;
+    // Grade. Neutral defaults on purpose: these are a look control, and the reference
+    // images the harnesses compare against should not move because someone shipped a
+    // fashionable teal-and-orange default.
+    float saturation = 1.0f;   // 0 = greyscale, 1 = untouched
+    float contrast = 1.0f;     // 1 = untouched
+    float temperature = 0.0f;  // -1 cool .. +1 warm
+    float vignette = 0.22f;    // 0 = off; subtle by default, it frames the shot
+    // Animated, so it is the one effect that makes consecutive frames differ. Off by
+    // default and left off by --smoke/--bench/--tour, for the same reason TAA is.
+    float grain = 0.0f;
+    // Eye adaptation. Its state is one texel carried across frames, so the image depends on
+    // how many frames were rendered before it — the offscreen harnesses turn it off so
+    // their reference images stay comparable, exactly as they do for TAA.
+    bool autoExposure = true;
+    // Lens flare strength. Screen-space, gated on the sun actually being visible.
+    float lensFlare = 0.5f;
     // crosshair tint (RGBA, straight alpha). not a post effect, but it rides along in the
     // same struct so the settings menu and the settings file only have one thing to carry.
     float crosshair[4] = {1.0f, 1.0f, 1.0f, 0.85f};
@@ -67,7 +88,8 @@ public:
         glm::vec2 fog{1e9f, 1e9f}; // distance fog (start, end); huge = off
         const ShadowMap* shadows;
         FxToggles toggles;
-        float time = 0.0f;       // drives cloud drift
+        float time = 0.0f;       // drives cloud drift and grain
+        float dt = 0.0f;         // seconds since the last frame; drives eye adaptation
         bool underwater = false; // camera eye submerged -> composite adds depth fog + tint
         // TAA reprojection: last frame's unjittered view-proj and how far the camera moved
         glm::mat4 prevViewProj{1.0f};
@@ -88,6 +110,7 @@ private:
     unsigned int m_progSsao = 0, m_progBlur = 0, m_progComposite = 0;
     unsigned int m_progBloomDown = 0, m_progBloomUp = 0, m_progFinal = 0;
     unsigned int m_progTaa = 0, m_progSsgi = 0, m_progMotion = 0;
+    unsigned int m_progLumDown = 0, m_progExpose = 0;
     unsigned int m_vao = 0;
 
     unsigned int m_hdrFbo = 0, m_hdrColor = 0, m_depth = 0;
@@ -102,6 +125,15 @@ private:
     unsigned int m_ssaoFbo = 0, m_ssaoTex = 0;
     unsigned int m_ssaoBlurFbo = 0, m_ssaoBlurTex = 0;
     unsigned int m_ssgiFbo = 0, m_ssgiTex = 0; // half-res RGBA16F bounce
+
+    // Auto-exposure. kLumSize must be a power of two: the average is the last mip, so the
+    // chain has to bottom out at exactly 1x1.
+    static constexpr int kLumSize = 64;
+    static constexpr int kLumMips = 7; // log2(64) + 1
+    unsigned int m_lumTex = 0, m_lumFbo = 0;
+    unsigned int m_adapt[2] = {0, 0}, m_adaptFbo[2] = {0, 0};
+    int m_adaptIndex = 0;
+    bool m_adaptValid = false;
 
     static constexpr int kBloomMips = 5;
     unsigned int m_bloomFbo[kBloomMips] = {};

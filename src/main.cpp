@@ -10,6 +10,7 @@
 #include "core/Settings.hpp"
 #include "io/ChunkSerializer.hpp"
 #include "io/RegionStore.hpp"
+#include "io/WorldStore.hpp"
 #include "jobs/JobSystem.hpp"
 #include "light/LightEngine.hpp"
 #include "mesh/GreedyMesher.hpp"
@@ -209,6 +210,7 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     glProgramUniform3fv(rc.drawProgram, 4, 1, &sunL.x);
     glProgramUniform3fv(rc.drawProgram, 21, 1, &sky.color.x);
     glProgramUniform3fv(rc.drawProgram, 22, 1, &sky.ambient.x);
+    glProgramUniform1f(rc.drawProgram, 23, fx.emissive);
     glProgramUniform1f(rc.drawProgram, 5, fx.shadows ? 1.0f : 0.0f);
     glProgramUniformMatrix4fv(rc.drawProgram, 6, 3, GL_FALSE,
                               &rc.shadows.cascadeVp()[0][0][0]);
@@ -276,6 +278,15 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     rp.shadows = &rc.shadows;
     rp.toggles = fx;
     rp.time = time;
+    // Eye adaptation runs off wall-clock delta so its speed does not depend on framerate.
+    // Derived here rather than threaded through every caller, because the offscreen
+    // harnesses render as fast as they can and would otherwise adapt at a different rate
+    // than the game does.
+    {
+        static float sPrevTime = time;
+        rp.dt = std::clamp(time - sPrevTime, 0.0f, 0.25f);
+        sPrevTime = time;
+    }
     // only let PostFx run these when we actually have the reprojection history for them
     rp.toggles.taa = useTaa;
     rp.toggles.motionBlur = useMotion;
@@ -414,6 +425,37 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                 before, worst, late, vertOk ? "PASS" : "FAIL");
         if (!vertOk)
             return 1;
+        camera.position = {16.0, 110.0, 16.0};
+        drain();
+    }
+
+    // Switching worlds is what "new world" and "load world" both do, and it swaps the seed,
+    // the save directory and every resident chunk at once. Assert it actually lands on
+    // different terrain and comes back fully lit, because a half-swapped world would look
+    // like a streaming bug somewhere else entirely.
+    {
+        const int beforeSeed = world.seed();
+        const int beforeSurf = world.generator().surfaceHeight(16, 16);
+        const auto altDir = outPath.parent_path() / "vxsave_altworld";
+        std::error_code ec;
+        std::filesystem::remove_all(altDir, ec);
+        world.loadWorld(rc.renderer, beforeSeed + 12345, altDir);
+        camera.position = {16.0, double(world.generator().surfaceHeight(16, 16) + 8), 16.0};
+        drain();
+        world.refreshStats();
+        const vx::ChunkManager::Stats ws = world.stats();
+        const int afterSurf = world.generator().surfaceHeight(16, 16);
+        // Same column, different seed: the ground height moving is the cheapest proof the
+        // generator really was re-seeded rather than just re-run.
+        const bool swapped = world.seed() != beforeSeed && afterSurf != beforeSurf;
+        const bool healthy = ws.meshed > 0 && ws.unlit == 0;
+        VX_INFO("world switch: seed %d -> %d, surface %d -> %d, %d meshed, %d unlit -> %s",
+                beforeSeed, world.seed(), beforeSurf, afterSurf, ws.meshed, ws.unlit,
+                (swapped && healthy) ? "PASS" : "FAIL");
+        if (!swapped || !healthy)
+            return 1;
+        // back to the original world; everything after this point expects that terrain
+        world.loadWorld(rc.renderer, beforeSeed, outPath.parent_path() / "vxsave_smoke");
         camera.position = {16.0, 110.0, 16.0};
         drain();
     }
@@ -614,6 +656,9 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
     world.updateVisibilityIfNeeded(rc.renderer, camera.position, true);
 
     vx::FxToggles fx;
+    // Eye adaptation carries state between frames, so the image would depend on how many
+    // frames ran before the readback. Off here for the same reason TAA is.
+    fx.autoExposure = false;
     const vx::ChunkManager::Stats ws = world.stats();
     const vx::Renderer::ArenaStats as = rc.renderer.arenaStats();
     for (int i = 0; i < 5; ++i) {
@@ -1035,6 +1080,14 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
     camera.position = {16.5, 48.0, 16.5};
     camera.yawDeg = 40.0f;
     camera.pitchDeg = -20.0f;
+    // Rebuild the draw metadata first. Everything between the main screenshot and here has
+    // moved the chunk set — the fluid and falling tests edit it, and the persistence test
+    // teleports 4096 blocks away and back — so the meta buffer this used to draw from
+    // described chunks that no longer existed. The result was a featureless grey frame that
+    // has been passing for a picture of the glow room.
+    world.collectDrawInfo(drawInfo, waterInfo);
+    rc.renderer.updateChunkMeta(drawInfo);
+    rc.renderer.updateWaterMeta(waterInfo);
     world.updateVisibilityIfNeeded(rc.renderer, camera.position, true);
     rc.renderer.beginFrame();
     renderFrame(rc, camera, fx, true, w, h, fbo, 0.6f, nullptr);
@@ -1123,6 +1176,7 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
     vx::FxToggles fx;
     fx.taa = false;
     fx.dayCycle = false;
+    fx.autoExposure = false; // stateful across frames; keeps the five stops comparable
     fx.timeOfDay = 0.32f;
 
     std::vector<std::uint8_t> pixels(std::size_t(w) * h * 3);
@@ -1555,16 +1609,30 @@ int main(int argc, char** argv) {
 
     // isolate the smoke test's save data so repeated runs start clean and can't touch a
     // real world save
-    std::filesystem::path saveDir = "saves/world";
-    if (smoke) {
-        saveDir = smokeOut.parent_path() / "vxsave_smoke";
-        std::error_code ec;
-        std::filesystem::remove_all(saveDir, ec);
+    vx::WorldStore worldStore("saves");
+    std::filesystem::path saveDir = worldStore.liveDir();
+    // Every launch is a new world. The live one is scratch — keeping it means saving it
+    // under a name from the ESC menu, which is what makes "new seed each time" safe.
+    int worldSeed = 20260721;
+    if (smoke || bench || tour) {
+        // The harnesses assert against specific terrain (cave counts, ore counts, the glow
+        // room, bench camera heights), so they pin the seed. Only the live game rolls one.
+        saveDir = smoke ? smokeOut.parent_path() / "vxsave_smoke" : saveDir;
+        if (smoke) {
+            std::error_code ec;
+            std::filesystem::remove_all(saveDir, ec);
+        }
+    } else {
+        worldSeed = int(std::chrono::steady_clock::now().time_since_epoch().count() ^
+                        std::chrono::system_clock::now().time_since_epoch().count()) &
+                    0x7FFFFFFF;
+        worldStore.clearLive();
+        VX_INFO("world seed %d (save it from the ESC menu to keep it)", worldSeed);
     }
 
     // declaration order matters: jobs is destroyed first, joining all workers, so no
     // job can touch world's chunks or queues during teardown
-    auto world = std::make_unique<vx::ChunkManager>(saveDir);
+    auto world = std::make_unique<vx::ChunkManager>(saveDir, worldSeed);
     auto light = std::make_unique<vx::LightEngine>(*world);
     auto jobs = std::make_unique<vx::JobSystem>();
     VX_INFO("job system: %d workers", jobs->workerCount());
@@ -1633,9 +1701,23 @@ int main(int argc, char** argv) {
     // panel means the first real frame already has all three in place. Bounded, because a
     // world that never settles must not be an infinite loading screen — if the budget runs
     // out we start anyway and it streams as it always did.
-    {
+    // Settle the world behind the panel. Used at startup AND for every world change: before,
+    // only startup did this, so "reset world" dropped you into an empty world that then
+    // generated itself around you — every chunk, mesh and light settle competing with the
+    // frames you were trying to play, which is exactly the stall the loading screen exists
+    // to hide.
+    const auto settleBehindLoadingScreen = [&](const char* title) {
         constexpr int kMaxFrames = 4000;
-        const int target = std::max(1, world->radius * world->radius * vx::kWorldChunksY);
+        // The real figure, summed from columnRange. It used to be radius*radius*
+        // kWorldChunksY, which at radius 16 is 3072 against ~15200 actually meshed — so the
+        // bar hit 100% about a fifth of the way in and sat there.
+        const int target = world->expectedMeshedChunks();
+        // Monotonic, and capped below 1 until the world really is settled. The estimate is
+        // a few percent high (it counts chunks in radius that end up meshing to nothing),
+        // so left alone the bar would stall near the end; the completed frame after the
+        // loop is what fills it. A bar that goes backwards or sits at 100% while you wait
+        // is worse than a slightly conservative one.
+        float shown = 0.0f;
         for (int f = 0; f < kMaxFrames; ++f) {
             window->pollEvents();
             if (window->shouldClose())
@@ -1649,17 +1731,26 @@ int main(int argc, char** argv) {
             int fbw = 0, fbh = 0;
             window->framebufferSize(fbw, fbh);
             if (fbw > 0 && fbh > 0) {
+                // refreshStats, not stats: the cached scan only refreshes every 20th call,
+                // so the bar would step in visible jumps and lag what is really happening.
+                world->refreshStats();
                 const vx::ChunkManager::Stats ls = world->stats();
-                // meshed-vs-expected is a rough but honest progress signal; it is what the
-                // player is actually waiting for, and it is monotonic
-                const float p = std::clamp(float(ls.meshed) / float(target), 0.0f, 1.0f);
+                shown = std::max(shown, std::min(float(ls.meshed) / float(target), 0.97f));
+                const float p = shown;
                 char phase[96];
-                std::snprintf(phase, sizeof(phase), "%d chunks meshed, %d queued", ls.meshed,
-                              ls.genQueue);
+                if (ls.genQueue > 0)
+                    std::snprintf(phase, sizeof(phase), "generating terrain - %d chunks left",
+                                  ls.genQueue);
+                else if (ls.unlit > 0)
+                    std::snprintf(phase, sizeof(phase), "settling light - %d columns left",
+                                  ls.unlit);
+                else
+                    std::snprintf(phase, sizeof(phase), "building meshes - %d of %d",
+                                  ls.meshed, target);
                 hud.beginFrame();
-                hud.loadingScreen(p, phase);
+                hud.loadingScreen(p, title, phase);
                 glViewport(0, 0, fbw, fbh);
-                glClearColor(0.05f, 0.06f, 0.08f, 1.0f);
+                glClearColor(0.07f, 0.09f, 0.14f, 1.0f);
                 glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
                 hud.render();
                 window->swapBuffers();
@@ -1669,8 +1760,27 @@ int main(int argc, char** argv) {
         renderer.updateChunkMeta(drawInfo);
         renderer.updateWaterMeta(waterInfo);
         shadowMap.invalidate();
-        VX_INFO("world ready: %d chunks meshed", world->stats().meshed);
-    }
+        // One completed frame, so the bar lands on 100% instead of cutting away at 97 —
+        // and the first real frame still has to build its shadow cascades, so this is not
+        // dead time either.
+        {
+            int fbw = 0, fbh = 0;
+            window->framebufferSize(fbw, fbh);
+            if (fbw > 0 && fbh > 0) {
+                hud.beginFrame();
+                hud.loadingScreen(1.0f, title, "ready");
+                glViewport(0, 0, fbw, fbh);
+                glClearColor(0.07f, 0.09f, 0.14f, 1.0f);
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                hud.render();
+                window->swapBuffers();
+            }
+        }
+        world->refreshStats();
+        VX_INFO("world ready: %d chunks meshed of %d expected (seed %d)",
+                world->stats().meshed, target, world->seed());
+    };
+    settleBehindLoadingScreen("voxelium");
 
     double prevTime = glfwGetTime();
     double physAccum = 0.0;
@@ -1697,6 +1807,7 @@ int main(int argc, char** argv) {
     bool hotbarOpen = false;
     bool escHeld = false;
     bool settingsOpen = false;
+    vx::DebugHud::WorldUi worldUi;
     // Lamp picker: opened by middle-clicking a lamp, and it remembers which one so the
     // choice can be applied to that block as well as to everything placed afterwards.
     bool lampPickerOpen = false;
@@ -2004,25 +2115,76 @@ int main(int argc, char** argv) {
             vx::Settings::save(settingsFile, fx, vsync, caveCull, world->radius,
                                camera.fovYDeg);
         }
-        bool resetWorldNow = false;
+        worldUi.seed = world->seed();
+        if (settingsOpen && worldUi.saved.empty())
+            worldUi.saved = worldStore.list(); // only touch the disk while the menu is up
         hud.settings(settingsOpen, vsync, caveCull, world->radius, camera.fovYDeg, fx,
-                     quitRequested, resetWorldNow);
-        if (resetWorldNow) {
-            // resetWorld hands chunks back to the pool, so no worker may still be reading
-            // one. Settle first: update() drains results, and once the world is streamed it
-            // schedules nothing new, so this converges rather than spinning.
-            VX_INFO("world reset: draining workers...");
+                     quitRequested, worldUi);
+        if (!settingsOpen)
+            worldUi.saved.clear();
+
+        if (worldUi.saveRequested) {
+            worldUi.saveRequested = false;
+            world->saveDirty(); // the live folder has to hold the edits before we copy it
+            if (worldStore.save(worldUi.saveName, world->seed()))
+                worldUi.saved = worldStore.list();
+            else
+                VX_ERROR("world save failed: name must have at least one letter or digit");
+        }
+        if (worldUi.deleteRequested) {
+            worldUi.deleteRequested = false;
+            worldStore.remove(worldUi.selected);
+            worldUi.selected.clear();
+            worldUi.saved = worldStore.list();
+        }
+
+        // Both of these swap the world out from under the renderer, so they share one path:
+        // drain the workers, swap, then settle behind the loading screen. That last part is
+        // what was missing — a reset used to hand you an empty world and generate it around
+        // you while you tried to play.
+        const bool wantNew = worldUi.resetRequested;
+        const bool wantLoad = worldUi.loadRequested && !worldUi.selected.empty();
+        if (wantNew || wantLoad) {
+            worldUi.resetRequested = false;
+            worldUi.loadRequested = false;
+            settingsOpen = false;
+            // resetWorld/loadWorld hand chunks back to the pool, so no worker may still be
+            // reading one. update() drains results and schedules nothing new once streamed,
+            // so this converges rather than spinning.
             for (int guard = 0; guard < 20000 && world->busy(); ++guard) {
                 renderer.beginFrame();
                 world->update(*jobs, renderer, *light, camera.position);
                 renderer.endFrame();
             }
-            world->resetWorld(renderer);
-            world->collectDrawInfo(drawInfo, waterInfo);
-            renderer.updateChunkMeta(drawInfo);
-            renderer.updateWaterMeta(waterInfo);
-            shadowMap.invalidate();
-            VX_INFO("world reset: save discarded, terrain regenerating from the seed");
+            int newSeed = 0;
+            const char* title = "voxelium";
+            if (wantLoad && worldStore.load(worldUi.selected, newSeed)) {
+                world->loadWorld(renderer, newSeed, worldStore.liveDir());
+                title = "loading world";
+            } else {
+                newSeed = int(std::chrono::steady_clock::now().time_since_epoch().count() ^
+                              std::chrono::system_clock::now().time_since_epoch().count()) &
+                          0x7FFFFFFF;
+                worldStore.clearLive();
+                world->loadWorld(renderer, newSeed, worldStore.liveDir());
+                title = "new world";
+                VX_INFO("new world, seed %d", newSeed);
+            }
+            // Spawn on the new terrain, not wherever the old world left the camera — the
+            // seed changed, so the ground under that point did too.
+            {
+                constexpr int kSpawnX = 16, kSpawnZ = 16;
+                const int ground = world->generator().surfaceHeight(kSpawnX, kSpawnZ);
+                camera.position = {double(kSpawnX) + 0.5,
+                                   double(std::max(ground, vx::kSeaLevelForSpawn) + 3),
+                                   double(kSpawnZ) + 0.5};
+                player.position = camera.position -
+                                  glm::dvec3(0.0, vx::Player::kEyeHeight, 0.0);
+                player.velocity = {0.0, 0.0, 0.0};
+            }
+            settleBehindLoadingScreen(title);
+            worldUi.saved = worldStore.list();
+            prevTime = glfwGetTime(); // the settle ate wall-clock time; don't hand it to dt
         }
         if (vsync != vsyncBefore)
             window->setVsync(vsync);

@@ -16,6 +16,7 @@ layout(location = 18) uniform vec3 uCascadeSplit; // radial split distances
 layout(location = 19) uniform vec3 uCascadeTexel; // world units per shadow texel
 layout(location = 21) uniform vec3 uSunColor;     // day/night direct radiance
 layout(location = 22) uniform vec3 uSkyAmbient;   // day/night sky fill
+layout(location = 23) uniform float uEmissive;    // emitter self-illumination, 0 = off
 
 layout(binding = 0) uniform sampler2DArray uBlockTex;
 layout(binding = 1) uniform sampler2DArrayShadow uShadowMap;
@@ -136,5 +137,20 @@ void main() {
     // actually sees — that second half is what ramps a merged quad into its neighbour
     // instead of stepping. A quad with uniform corners is all 7s and shades flat, so open
     // terrain looks and costs the same as before.
-    outColor = vec4(albedo * kShade[vDir] * (direct + ambient + torch) * vShade, 1.0);
+    // An emitter's own face was only ever LIT by its own light, which made a lamp read as a
+    // brightly lit block rather than a light — and left it hovering around the bloom
+    // threshold, so the glow came and went with the face angle. Emission is added flat:
+    // not scaled by kShade, AO or vShade, because none of those mean anything for a surface
+    // that is producing the light rather than receiving it.
+    //
+    // The hue comes from the albedo, which for a lamp IS its swatch colour (the tiles are
+    // generated from blocks::kLampRGB), so this needs no second copy of that table to drift
+    // out of sync. Layer 4 is glow, 15..39 are the 25 lamp swatches — see texLayer() in
+    // chunk.vert, which owns that mapping.
+    vec3 emission = vec3(0.0);
+    if (uEmissive > 0.0 && (vLayer == 4u || (vLayer >= 15u && vLayer <= 39u)))
+        emission = albedo * uEmissive;
+
+    outColor = vec4(albedo * kShade[vDir] * (direct + ambient + torch) * vShade + emission,
+                    1.0);
 }

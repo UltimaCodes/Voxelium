@@ -44,10 +44,22 @@ controls:
 - F4 opens the hotbar (keys 1-8 or scroll to pick a block)
 
 ESC opens the settings menu (it pauses too): every shader toggle — shadows, ssao, ssgi,
-god rays, bloom (with strength), clouds, fog, taa, motion blur — plus a day/night cycle
-(time of day + day length), exposure, fov, render scale, volume, vsync, cave culling and
-render distance. F3 is the read-only diagnostics overlay — frame graph, timings,
-chunk/arena stats, log.
+god rays, bloom (with strength and emissive), clouds, fog, taa, motion blur — a grade
+section (saturation, contrast, temperature, vignette, grain), auto exposure, plus a
+day/night cycle (time of day + day length), exposure, fov, render scale, volume, vsync,
+cave culling and render distance. F3 is the read-only diagnostics overlay — frame graph,
+timings, chunk/arena stats, log.
+
+## worlds
+
+every launch rolls a **new seed**, so the world you are in is scratch. if you want to keep
+one, open ESC, give it a name and hit save — it lands in `saves/worlds/<name>/` with the
+seed that made it. the same panel lists what you have saved (seed and size) and will load
+or delete any of them. loading and starting a new world both go behind the loading screen,
+so the world is built before you are standing in it.
+
+only your edits are stored, never the terrain — that regenerates from the seed — so a saved
+world is usually a few tens of KB.
 
 ## what's in it
 

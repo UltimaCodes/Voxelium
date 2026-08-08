@@ -28,6 +28,7 @@ layout(location = 23) uniform float uAoOn;         // moved off 3 (was aliased b
 layout(location = 24) uniform float uVolumetricOn; // moved off 4
 layout(location = 25) uniform vec3 uSunColor;      // day/night sun radiance
 layout(location = 26) uniform vec2 uFog;           // (start, end) distance; huge = off
+layout(location = 27) uniform float uFlare;        // lens flare strength, 0 = off
 
 const vec3 kWaterDeep = vec3(0.03, 0.13, 0.20);
 
@@ -222,14 +223,77 @@ float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.545
 // start offset breaks up banding evenly instead of in blotches
 float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
 
+// Screen-space lens flare for the one light that matters. The ghosts are procedural rather
+// than resampled scene colour: the resample trick wants a downsampled thresholded buffer to
+// be affordable, and for a single dominant source a handful of tinted discs along the
+// sun-through-centre axis is cheaper and far easier to keep tasteful.
+//
+// Added in HDR, before bloom, so the flare blooms like the sun does instead of sitting on
+// top of the image as a decal.
+vec3 lensFlare() {
+    if (uFlare <= 0.0)
+        return vec3(0.0);
+    // uInvViewRot maps view -> camera-relative world, so its transpose is world -> view.
+    vec3 v = transpose(uInvViewRot) * uSunL;
+    if (v.z >= -1e-4)
+        return vec3(0.0); // sun behind the camera
+    vec2 sunUv = vec2((v.x / -v.z) / uProjScale.x, (v.y / -v.z) / uProjScale.y) * 0.5 + 0.5;
+    if (any(lessThan(sunUv, vec2(-0.4))) || any(greaterThan(sunUv, vec2(1.4))))
+        return vec3(0.0);
+
+    // Occlusion, five taps. One tap makes the whole flare switch on and off between frames
+    // as a leaf or a chimney crosses the sun; five lets it fade. Reversed-z: far = 0 = sky.
+    const vec2 kTaps[5] = vec2[5](vec2(0.0), vec2(0.014, 0.0), vec2(-0.014, 0.0),
+                                  vec2(0.0, 0.014), vec2(0.0, -0.014));
+    float vis = 0.0;
+    for (int i = 0; i < 5; ++i)
+        vis += texture(uDepth, clamp(sunUv + kTaps[i], vec2(0.0), vec2(1.0))).r <= 0.0 ? 0.2
+                                                                                      : 0.0;
+    if (vis <= 0.0)
+        return vec3(0.0);
+
+    // Fade out as the sun leaves the frame — a flare that pops the instant the sun crosses
+    // the edge is worse than no flare.
+    float edge = 1.0 - smoothstep(0.40, 0.85, length(sunUv - 0.5));
+    if (edge <= 0.0)
+        return vec3(0.0);
+
+    const float kPos[6] = float[6](0.32, 0.60, 0.95, 1.30, 1.70, 2.15);
+    const float kSize[6] = float[6](0.060, 0.028, 0.085, 0.020, 0.048, 0.100);
+    const vec3 kTint[6] =
+        vec3[6](vec3(0.30, 0.50, 1.00), vec3(1.00, 0.55, 0.28), vec3(0.35, 1.00, 0.60),
+                vec3(1.00, 0.32, 0.80), vec3(0.45, 0.70, 1.00), vec3(1.00, 0.85, 0.42));
+
+    const float aspect = uProjScale.x / max(uProjScale.y, 1e-6);
+    const vec2 axis = 0.5 - sunUv; // toward the centre, and out the far side
+    vec3 sum = vec3(0.0);
+    for (int i = 0; i < 6; ++i) {
+        vec2 q = (vUv - (sunUv + axis * kPos[i])) * vec2(aspect, 1.0);
+        // 1 - smoothstep, NOT smoothstep(size, 0, r): a descending smoothstep has
+        // edge0 > edge1, which is undefined in GLSL and returns 0 on this driver —
+        // every ghost silently evaluated to nothing.
+        sum += kTint[i] * (1.0 - smoothstep(0.0, kSize[i], length(q))) * 0.30;
+    }
+    // Halo: a soft ring about the mirrored sun, which is what sells it as glass rather than
+    // as a row of coloured dots.
+    {
+        vec2 q = (vUv - (sunUv + axis * 2.0)) * vec2(aspect, 1.0);
+        float r = length(q);
+        sum += vec3(1.0, 0.72, 0.45) * (1.0 - smoothstep(0.0, 0.020, abs(r - 0.16))) * 0.22;
+    }
+    return sum * uSunColor * vis * edge * uFlare;
+}
+
 void main() {
     float rawD = texture(uDepth, vUv).r;
     vec3 dir = viewRay();
+    // Applies to sky and geometry alike: it is in the lens, not in the world.
+    vec3 flare = uUnderwater > 0.5 ? vec3(0.0) : lensFlare();
 
     // sky pixel (reversed-z far = 0): paint the sky instead of the flat clear colour.
     // underwater there is no sky — the far distance is just deep water.
     if (rawD <= 0.0) {
-        outColor = vec4(uUnderwater > 0.5 ? kWaterDeep : skyWithClouds(dir), 1.0);
+        outColor = vec4((uUnderwater > 0.5 ? kWaterDeep : skyWithClouds(dir)) + flare, 1.0);
         return;
     }
 
@@ -278,5 +342,5 @@ void main() {
             color = mix(color, skyWithClouds(dir), fog);
     }
 
-    outColor = vec4(color, 1.0);
+    outColor = vec4(color + flare, 1.0);
 }
