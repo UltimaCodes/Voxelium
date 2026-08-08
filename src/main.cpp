@@ -1246,9 +1246,10 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
                     /*underwater=*/true);
         rc.renderer.endFrame();
         glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, pixels.data());
-        vx::writeBmp24("underwater.bmp", w, h, pixels);
-        VX_INFO("underwater shot written");
-        return 0;
+        vx::writeBmp24(settle ? "tour_underwater.bmp" : "tour_underwater_moving.bmp", w, h,
+                       pixels);
+        VX_INFO("tour underwater: (448,50,0), %d blocks below sea level -> tour_underwater.bmp",
+                int(62.0 - 50.0));
     }
     for (int i = 0; i < int(std::size(stops)); ++i) {
         camera.position = stops[i];
@@ -1343,6 +1344,39 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
                 i, stops[i].x, stops[i].y, stops[i].z, st.loaded, st.meshed, st.unlit,
                 rc.renderer.debugReadDrawCount(), world.busy() ? 1 : 0, name);
     }
+    // One frame from under the water. This is the only view that exercises the underwater
+    // branch — caustics, the absorption tint, and the surface-as-occluder god rays — and it
+    // immediately caught a NaN there (pow() with a negative base) that painted solid black
+    // blocks across the seabed. Nothing above the waterline would ever have shown it.
+    {
+        // (448, 0) has a surface height of 34 against sea level 62, so this is 20 blocks down.
+        camera.position = {448.0, 50.0, 0.0};
+        camera.yawDeg = 20.0f;
+        camera.pitchDeg = 12.0f;
+        for (int f = 0; f < 40000; ++f) {
+            window.pollEvents();
+            rc.renderer.beginFrame();
+            world.update(jobs, rc.renderer, light, camera.position);
+            rc.renderer.endFrame();
+            if (f > 200 && !world.busy() && light.idle())
+                break;
+        }
+        std::vector<vx::ChunkDrawInfo> di2, wi2;
+        world.collectDrawInfo(di2, wi2);
+        rc.renderer.updateChunkMeta(di2);
+        rc.renderer.updateWaterMeta(wi2);
+        world.updateVisibilityIfNeeded(rc.renderer, camera.position, true);
+        rc.renderer.beginFrame();
+        renderFrame(rc, camera, fx, true, w, h, fbo, 0.6f, nullptr, false, glm::vec3(0.0f),
+                    true /*underwater*/);
+        rc.renderer.endFrame();
+        glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, pixels.data());
+        vx::writeBmp24(settle ? "tour_underwater.bmp" : "tour_underwater_moving.bmp", w, h,
+                       pixels);
+        VX_INFO("tour underwater: (448,50,0), %d blocks below sea level -> tour_underwater.bmp",
+                int(62.0 - 50.0));
+    }
+
     // One night frame from stop 0. Night has hidden two separate bugs now — water that
     // stayed at full daylight brightness after dark, and contact shadows darkening the
     // ambient that is the only light left once the sun is down — and neither was visible in

@@ -62,7 +62,11 @@ float caustics(vec2 worldXz, float depth, float t) {
     float a = causticLayer(p, t);
     float b = causticLayer(p * 1.83 + 11.3, t * 1.17);
     // Sharpen: caustics are thin bright filaments between dark cells, not soft blobs.
-    float c = pow(1.0 - min(a, b), 6.0);
+    // CLAMP FIRST. causticLayer returns a cell distance, and a feature point in a diagonal
+    // neighbour can sit ~2.1 away, so 1 - min(a,b) goes negative — and pow() with a negative
+    // base is undefined in GLSL. This driver hands back NaN, which propagates through the
+    // tonemap and comes out as solid black blocks across the seabed.
+    float c = pow(clamp(1.0 - min(a, b), 0.0, 1.0), 6.0);
     // They are strongest just under the surface and wash out with depth as the light
     // spreads, and they cannot exist above the waterline at all.
     return c * exp(-depth * 0.16);
