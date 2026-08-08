@@ -77,6 +77,12 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
     // VX_TOUR_TIME=0.85 is a good night, 0.25 sunrise, 0.5 noon.
     if (const char* t = std::getenv("VX_TOUR_TIME"))
         fx.timeOfDay = std::clamp(float(std::atof(t)), 0.0f, 1.0f);
+    // Same argument as the two above: render scale below 1.0 changes the IMAGE, not just the
+    // frame time, and --bench only reports the time. Judging whether a lower scale is
+    // acceptable — which is the entire question behind the quality presets — needs a picture
+    // of it, and this is the only way to get one offscreen.
+    if (const char* s = std::getenv("VX_TOUR_SCALE"))
+        fx.renderScale = std::clamp(float(std::atof(s)), 0.5f, 1.0f);
 
     std::vector<std::uint8_t> pixels(std::size_t(w) * h * 3);
     // walk outward from spawn: the report is that things degrade with distance travelled.

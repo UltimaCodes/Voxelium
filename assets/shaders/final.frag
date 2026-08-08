@@ -98,7 +98,21 @@ void main() {
         vec3 r = tonemap(texture(uHdr, vUv + vec2(uTexel.x, 0.0)).rgb);
         vec3 u = tonemap(texture(uHdr, vUv - vec2(0.0, uTexel.y)).rgb);
         vec3 d = tonemap(texture(uHdr, vUv + vec2(0.0, uTexel.y)).rgb);
-        c += (c * 4.0 - l - r - u - d) * uSharpen; // unsharp mask
+
+        // Contrast-adaptive, not a plain unsharp mask. The old version added the laplacian
+        // straight on, which overshoots at every edge — and an overshoot reads as a bright
+        // halo along terrain silhouettes, which at render scale below 1 is a worse artefact
+        // than the softness it was meant to fix.
+        //
+        // Clamping the result into the 4-neighbour range makes overshoot impossible: a pixel
+        // can be pushed toward the extremes of its own neighbourhood but never past them. So
+        // edges gain local contrast, flat areas gain nothing, and nothing rings. The centre
+        // is folded into the bounds so a pixel that is ALREADY an extreme (a lamp, a star,
+        // a specular hit) is not dragged back toward its darker surroundings.
+        vec3 mn = min(min(l, r), min(u, d));
+        vec3 mx = max(max(l, r), max(u, d));
+        vec3 sharp = c + (c * 4.0 - l - r - u - d) * uSharpen;
+        c = clamp(sharp, min(mn, c), max(mx, c));
     }
 
     // Before the grade, so the saturation slider still has the last word on the result.

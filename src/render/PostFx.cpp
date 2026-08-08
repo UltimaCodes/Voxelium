@@ -38,39 +38,61 @@ unsigned int makeFbo(unsigned int color, unsigned int depth = 0) {
 
 } // namespace
 
-bool PostFx::init(const std::filesystem::path& shaderDir) {
+bool PostFx::init(const std::filesystem::path& shaderDir, std::string_view defines) {
+    m_shaderDir = shaderDir;
+    return reloadPrograms(defines);
+}
+
+bool PostFx::reloadPrograms(std::string_view defines) {
+    const std::filesystem::path& shaderDir = m_shaderDir;
     // all nine submitted before any of them is waited on, so the driver's compiler threads
     // have the whole set to chew through at once instead of one program at a time
     const auto fs = shaderDir / "fullscreen.vert";
     ProgramJob jobs[] = {
-        submitProgram(fs, shaderDir / "ssao.frag"),
-        submitProgram(fs, shaderDir / "blur4.frag"),
-        submitProgram(fs, shaderDir / "composite.frag"),
-        submitProgram(fs, shaderDir / "bloom_down.frag"),
-        submitProgram(fs, shaderDir / "bloom_up.frag"),
-        submitProgram(fs, shaderDir / "final.frag"),
-        submitProgram(fs, shaderDir / "taa.frag"),
-        submitProgram(fs, shaderDir / "ssgi.frag"),
-        submitProgram(fs, shaderDir / "motionblur.frag"),
-        submitProgram(fs, shaderDir / "lumdown.frag"),
-        submitProgram(fs, shaderDir / "expose.frag"),
+        submitProgram(fs, shaderDir / "ssao.frag", defines),
+        submitProgram(fs, shaderDir / "blur4.frag", defines),
+        submitProgram(fs, shaderDir / "composite.frag", defines),
+        submitProgram(fs, shaderDir / "bloom_down.frag", defines),
+        submitProgram(fs, shaderDir / "bloom_up.frag", defines),
+        submitProgram(fs, shaderDir / "final.frag", defines),
+        submitProgram(fs, shaderDir / "taa.frag", defines),
+        submitProgram(fs, shaderDir / "ssgi.frag", defines),
+        submitProgram(fs, shaderDir / "motionblur.frag", defines),
+        submitProgram(fs, shaderDir / "lumdown.frag", defines),
+        submitProgram(fs, shaderDir / "expose.frag", defines),
     };
-    m_progSsao = resolveProgram(jobs[0]);
-    m_progBlur = resolveProgram(jobs[1]);
-    m_progComposite = resolveProgram(jobs[2]);
-    m_progBloomDown = resolveProgram(jobs[3]);
-    m_progBloomUp = resolveProgram(jobs[4]);
-    m_progFinal = resolveProgram(jobs[5]);
-    m_progTaa = resolveProgram(jobs[6]);
-    m_progSsgi = resolveProgram(jobs[7]);
-    m_progMotion = resolveProgram(jobs[8]);
-    m_progLumDown = resolveProgram(jobs[9]);
-    m_progExpose = resolveProgram(jobs[10]);
-    if (!m_progSsao || !m_progBlur || !m_progComposite || !m_progBloomDown ||
-        !m_progBloomUp || !m_progFinal || !m_progTaa || !m_progSsgi || !m_progMotion ||
-        !m_progLumDown || !m_progExpose)
-        return false;
-    glCreateVertexArrays(1, &m_vao);
+    unsigned int built[11];
+    for (int i = 0; i < 11; ++i)
+        built[i] = resolveProgram(jobs[i]);
+    for (const unsigned int p : built) {
+        if (p == 0) { // leave the working set alone rather than half-swapping it
+            for (const unsigned int q : built)
+                if (q)
+                    glDeleteProgram(q);
+            return false;
+        }
+    }
+    // Only now is it safe to drop the old set.
+    const unsigned int old[] = {m_progSsao,    m_progBlur,  m_progComposite, m_progBloomDown,
+                                m_progBloomUp, m_progFinal, m_progTaa,       m_progSsgi,
+                                m_progMotion,  m_progLumDown, m_progExpose};
+    for (const unsigned int p : old)
+        if (p)
+            glDeleteProgram(p);
+
+    m_progSsao = built[0];
+    m_progBlur = built[1];
+    m_progComposite = built[2];
+    m_progBloomDown = built[3];
+    m_progBloomUp = built[4];
+    m_progFinal = built[5];
+    m_progTaa = built[6];
+    m_progSsgi = built[7];
+    m_progMotion = built[8];
+    m_progLumDown = built[9];
+    m_progExpose = built[10];
+    if (m_vao == 0)
+        glCreateVertexArrays(1, &m_vao);
     return true;
 }
 
@@ -360,8 +382,16 @@ void PostFx::run(const RunParams& p) {
     glUseProgram(m_progFinal);
     glProgramUniform1f(m_progFinal, 0, p.toggles.bloom ? p.toggles.bloomStrength : 0.0f);
     glProgramUniform1f(m_progFinal, 1, p.toggles.exposure);
-    // sharpen only when TAA is on, to undo its softening (off = already crisp/aliased)
-    glProgramUniform1f(m_progFinal, 3, p.toggles.taa ? 0.22f : 0.0f);
+    // Two things soften the image and both want the same pass. TAA's history blend is one.
+    // The other is render scale: below 1.0 the whole HDR chain runs smaller and only this
+    // tonemap runs at native, so the upscale is a plain bilinear stretch — which is exactly
+    // why 0.70x was never a sensible default despite being ~21% cheaper (Tier 1 #7).
+    // Scaling the sharpen with the amount of upscaling is what makes the lower render scales
+    // usable, and the quality presets below High depend on that.
+    const float taaSharp = p.toggles.taa ? 0.22f : 0.0f;
+    const float upscaleSharp =
+        std::clamp((1.0f - p.toggles.renderScale) * 0.9f, 0.0f, 0.35f);
+    glProgramUniform1f(m_progFinal, 3, std::min(taaSharp + upscaleSharp, 0.45f));
     const glm::vec2 texel(1.0f / float(m_width), 1.0f / float(m_height));
     glProgramUniform2fv(m_progFinal, 4, 1, &texel.x);
     glProgramUniform1f(m_progFinal, 5, p.toggles.vignette);
