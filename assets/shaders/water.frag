@@ -1,19 +1,20 @@
 #version 460 core
 
-// Quality tier, injected by Shader.cpp from the active preset (see submitProgram). These
-// bounds MUST stay compile-time constants: a uniform loop bound does not unroll, and a
-// quality system whose top setting is slower than having no quality system at all is the
-// wrong trade. Default 2 = High, which is the build these numbers were tuned in, so an
-// un-injected compile is identical to the one before presets existed.
-// Shadow map size, injected alongside VX_QUALITY so it can never disagree with the texture
-// the cascades were actually allocated at. A define rather than a uniform because every use
+// Injected by Shader.cpp from the active quality preset (see submitProgram).
+//
+// VX_QUALITY picks the sample and step counts below. They MUST stay compile-time constants:
+// a uniform loop bound does not unroll, and a quality system whose top setting is slower
+// than having no quality system at all is the wrong trade. Default 2 = High, the build these
+// numbers were tuned in, so an un-injected compile matches the one before presets existed.
+//
+// VX_SHADOW_RES must agree with the texture the cascades were actually allocated at, which
+// is why it comes through the same channel. A define rather than a uniform because every use
 // is a divisor sizing a tap offset, and a compile-time divisor folds away.
-#ifndef VX_SHADOW_RES
-#define VX_SHADOW_RES 1536.0
-#endif
-
 #ifndef VX_QUALITY
 #define VX_QUALITY 2
+#endif
+#ifndef VX_SHADOW_RES
+#define VX_SHADOW_RES 1536.0
 #endif
 
 // screen-space-reflection water. reflects the opaque scene (trees, terrain) by ray
