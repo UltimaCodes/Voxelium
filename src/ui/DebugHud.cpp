@@ -378,6 +378,10 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     ImGui::SliderFloat("emissive", &fx.emissive, 0.0f, 5.0f, "%.2f");
     ImGui::SetNextItemWidth(-110.0f);
     ImGui::SliderFloat("lens flare", &fx.lensFlare, 0.0f, 2.0f, "%.2f");
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("leaf glow", &fx.leafSss, 0.0f, 2.0f, "%.2f");
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("surface relief", &fx.relief, 0.0f, 2.0f, "%.2f");
 
     ImGui::SeparatorText("grade");
     ImGui::SetNextItemWidth(-110.0f);

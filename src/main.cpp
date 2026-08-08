@@ -222,6 +222,8 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     glProgramUniform3fv(rc.drawProgram, 24, 1, &camPosF.x);
     glProgramUniform1f(rc.drawProgram, 25, fx.clouds ? fx.cloudShadow : 0.0f);
     glProgramUniform1f(rc.drawProgram, 26, time);
+    glProgramUniform1f(rc.drawProgram, 27, fx.leafSss);
+    glProgramUniform1f(rc.drawProgram, 28, fx.relief);
     glProgramUniform1f(rc.drawProgram, 5, fx.shadows ? 1.0f : 0.0f);
     glProgramUniformMatrix4fv(rc.drawProgram, 6, 3, GL_FALSE,
                               &rc.shadows.cascadeVp()[0][0][0]);
@@ -1218,6 +1220,36 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
                     double(world.generator().surfaceHeight(int(where[i].x), int(where[i].y))) +
                         14.0,
                     where[i].y};
+    // Promoted for the same reason as VX_TOUR_TIME: the underwater path (depth fog,
+    // caustics, the shafts through the surface) has no other offscreen view, and "looks
+    // right" is not something to take on trust.
+    if (std::getenv("VX_TOUR_UNDERWATER")) {
+        // sit under the sea surface out in open water and look up-ish toward the sun
+        camera.position = {320.0, double(vx::kSeaLevelForSpawn) - 6.0, 96.0};
+        camera.yawDeg = 108.0f;
+        camera.pitchDeg = 22.0f;
+        for (int f = 0; f < 40000; ++f) {
+            window.pollEvents();
+            rc.renderer.beginFrame();
+            world.update(jobs, rc.renderer, light, camera.position);
+            rc.renderer.endFrame();
+            if (f > 200 && !world.busy() && light.idle())
+                break;
+        }
+        std::vector<vx::ChunkDrawInfo> di, wi;
+        world.collectDrawInfo(di, wi);
+        rc.renderer.updateChunkMeta(di);
+        rc.renderer.updateWaterMeta(wi);
+        world.updateVisibilityIfNeeded(rc.renderer, camera.position, true);
+        rc.renderer.beginFrame();
+        renderFrame(rc, camera, fx, true, w, h, fbo, 0.6f, nullptr, false, glm::vec3(0.0f),
+                    /*underwater=*/true);
+        rc.renderer.endFrame();
+        glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, pixels.data());
+        vx::writeBmp24("underwater.bmp", w, h, pixels);
+        VX_INFO("underwater shot written");
+        return 0;
+    }
     for (int i = 0; i < int(std::size(stops)); ++i) {
         camera.position = stops[i];
         camera.yawDeg = -35.0f;
@@ -1311,6 +1343,24 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
                 i, stops[i].x, stops[i].y, stops[i].z, st.loaded, st.meshed, st.unlit,
                 rc.renderer.debugReadDrawCount(), world.busy() ? 1 : 0, name);
     }
+    // One night frame from stop 0. Night has hidden two separate bugs now — water that
+    // stayed at full daylight brightness after dark, and contact shadows darkening the
+    // ambient that is the only light left once the sun is down — and neither was visible in
+    // any of the five daylight stops. A shot that costs one frame is worth having.
+    {
+        vx::FxToggles night = fx;
+        night.timeOfDay = 0.87f; // sun well below the horizon
+        camera.position = stops[0];
+        camera.yawDeg = -35.0f;
+        camera.pitchDeg = -12.0f;
+        rc.renderer.beginFrame();
+        renderFrame(rc, camera, night, true, w, h, fbo, 0.6f, nullptr);
+        rc.renderer.endFrame();
+        glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, pixels.data());
+        vx::writeBmp24(settle ? "tour_night.bmp" : "tour_night_moving.bmp", w, h, pixels);
+        VX_INFO("tour night: stop 0 at timeOfDay %.2f -> tour_night.bmp", double(night.timeOfDay));
+    }
+
     glDeleteFramebuffers(1, &fbo);
     glDeleteRenderbuffers(1, &color);
     glDeleteRenderbuffers(1, &depth);

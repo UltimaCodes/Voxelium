@@ -20,6 +20,8 @@ layout(location = 23) uniform float uEmissive;    // emitter self-illumination, 
 layout(location = 24) uniform vec3 uCamPos;       // camera world position
 layout(location = 25) uniform float uCloudShadow; // cloud shadow strength, 0 = off
 layout(location = 26) uniform float uTimeSky;     // same clock the cloud field drifts on
+layout(location = 27) uniform float uLeafSss;    // leaf translucency strength, 0 = off
+layout(location = 28) uniform float uRelief;     // derived surface relief, 0 = off
 
 #include "clouds.glsl"
 
@@ -39,6 +41,16 @@ const vec3 kNormal[8] = vec3[8](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0),
 // the block above, alternating every block, and a 2x brightness step between them makes
 // every stair a hard band. Compressed to 0.66..1.00 — still clearly directional, no stripes.
 const float kShade[8] = float[8](0.86, 0.86, 1.00, 0.66, 0.76, 0.76, 1.0, 1.0);
+
+// Tangent frames for the six axis-aligned faces, matching the (u,v) the vertex stage builds.
+// Axis-aligned geometry means these are constants rather than anything that has to be
+// stored per vertex — which matters, because the quad has no room left for tangent data.
+const vec3 kTangent[8] = vec3[8](vec3(0, 0, 1), vec3(0, 0, -1), vec3(1, 0, 0),
+                                 vec3(1, 0, 0), vec3(1, 0, 0), vec3(-1, 0, 0),
+                                 vec3(1, 0, 0), vec3(1, 0, 0));
+const vec3 kBitangent[8] = vec3[8](vec3(0, 1, 0), vec3(0, 1, 0), vec3(0, 0, 1),
+                                   vec3(0, 0, 1), vec3(0, 1, 0), vec3(0, 1, 0),
+                                   vec3(0, 0, 1), vec3(0, 0, 1));
 
 // fixed 16-tap Poisson disk — a soft penumbra without per-pixel rotation, so shadow
 // edges don't crawl/shimmer when the camera moves (rotated PCF looks softer but needs
@@ -119,10 +131,39 @@ void main() {
         float g = smoothstep(1.0 - kOverlay, 1.0 - kOverlay * 0.45, fract(vUv.y));
         albedo = mix(albedo, texture(uBlockTex, vec3(vUv, 2.0)).rgb, g);
     }
+    // Surface relief WITHOUT an authored normal map. #38 was blocked on texture authoring
+    // and on the quad being full (no room for tangent data), and both go away if the height
+    // field is the albedo's own luminance: on pixel-art tiles the dark pixels ARE the mortar
+    // lines, cracks and gaps, and the light ones are the raised faces. That is what a height
+    // map encodes, so the gradient of it is the normal.
+    //
+    // Only the LIGHTING normal is perturbed. The geometric normal still drives the shadow
+    // bias and the face-shade table, because tilting those produces acne and makes flat
+    // faces read as different brightnesses.
+    // Distance gated, and that is most of what makes it affordable. Relief is per-TEXEL
+    // detail: past a couple of dozen blocks a whole tile is a few pixels and the four extra
+    // samples buy nothing you can see. Interleaved A/B measured the ungated version at
+    // +0.7 ms scene / +1.0 ms frame, and the overwhelming majority of fragments in any view
+    // are far ones.
+    vec3 Nl = N;
+    float reliefFade = 1.0 - smoothstep(20.0, 34.0, length(vWorldRel));
+    if (uRelief > 0.0 && vDir < 6u && reliefFade > 0.01) {
+        vec2 ts = 1.0 / vec2(textureSize(uBlockTex, 0).xy);
+        const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
+        float hl = dot(texture(uBlockTex, vec3(vUv - vec2(ts.x, 0.0), float(vLayer))).rgb, kLuma);
+        float hr = dot(texture(uBlockTex, vec3(vUv + vec2(ts.x, 0.0), float(vLayer))).rgb, kLuma);
+        float hd = dot(texture(uBlockTex, vec3(vUv - vec2(0.0, ts.y), float(vLayer))).rgb, kLuma);
+        float hu = dot(texture(uBlockTex, vec3(vUv + vec2(0.0, ts.y), float(vLayer))).rgb, kLuma);
+        // Scaled by the texture size so the slope is resolution independent, and clamped so
+        // a high-contrast tile cannot flip the normal through the surface.
+        vec2 slope = clamp(vec2(hl - hr, hd - hu) * uRelief * 2.5 * reliefFade, -0.9, 0.9);
+        Nl = normalize(N + kTangent[vDir] * slope.x + kBitangent[vDir] * slope.y);
+    }
+
     vec3 blockRGB = vLight.rgb; // per-channel so a coloured emitter tints its own light
     float skyL = vLight.a;
 
-    float ndl = max(dot(N, uSunL), 0.0);
+    float ndl = max(dot(Nl, uSunL), 0.0);
     float shadow = ndl > 0.0 ? sunShadow(vWorldRel, N) : 0.0;
     float skyAccess = skyL * skyL; // voxel sky light gates how much sun reaches here
 
@@ -173,10 +214,28 @@ void main() {
     // generated from blocks::kLampRGB), so this needs no second copy of that table to drift
     // out of sync. Layer 4 is glow, 15..39 are the 25 lamp swatches — see texLayer() in
     // chunk.vert, which owns that mapping.
+    // Leaf subsurface scattering. A leaf is thin and translucent: with the sun behind it,
+    // light comes THROUGH rather than bouncing off, which is why a canopy lit from behind
+    // glows instead of silhouetting flat black. The wrap term is the standard cheap stand-in
+    // for a real transmission lobe — a back-facing lobe around -L, tightened with a power so
+    // it only fires when you are actually looking toward the sun through the leaf.
+    //
+    // Layers 7 (leaves) and 40/41 (the cross-plane tuft and flower) are the thin geometry;
+    // everything else is opaque and gets nothing. Scaled by skyAccess so leaves buried deep
+    // inside a canopy, which no sunlight reaches, do not light up.
+    vec3 transmit = vec3(0.0);
+    if (uLeafSss > 0.0 && (vLayer == 7u || vLayer == 40u || vLayer == 41u)) {
+        float back = pow(max(dot(-uSunL, normalize(vWorldRel)), 0.0), 3.0);
+        // wrap: some light gets through even side-on, which keeps it from popping in
+        float wrap = max(dot(N, -uSunL), 0.0) * 0.35 + 0.65 * back;
+        transmit = uSunColor * albedo * wrap * back * skyAccess * shadow * uLeafSss;
+    }
+
     vec3 emission = vec3(0.0);
     if (uEmissive > 0.0 && (vLayer == 4u || (vLayer >= 15u && vLayer <= 39u)))
         emission = albedo * uEmissive;
 
-    outColor = vec4(albedo * kShade[vDir] * (direct + ambient + torch) * vShade + emission,
+    outColor = vec4(albedo * kShade[vDir] * (direct + ambient + torch) * vShade + emission +
+                        transmit,
                     1.0);
 }

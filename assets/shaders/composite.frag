@@ -35,6 +35,38 @@ layout(location = 29) uniform float uContact;      // screen-space contact shado
 #include "clouds.glsl"
 
 const vec3 kWaterDeep = vec3(0.03, 0.13, 0.20);
+const float kSeaLevel = 62.0; // matches gen/TerrainGenerator kSeaLevel
+
+// Caustics. Voronoi-ish: two layers of cellular distance, scrolled against each other and
+// sharpened, which is the standard trick for the bright wandering web on a seabed. Two
+// layers at different scales and speeds because ONE layer reads as an obvious repeating
+// pattern the moment it covers any area — hiding the repeat is most of the work here.
+float causticLayer(vec2 p, float t) {
+    vec2 i = floor(p);
+    vec2 f = p - i;
+    float best = 1e9;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x) {
+            vec2 g = vec2(float(x), float(y));
+            // per-cell feature point, orbiting so the web moves rather than pulses
+            vec2 o = vec2(cl_hash(i + g), cl_hash(i + g + 37.1));
+            o = 0.5 + 0.5 * sin(t * 0.9 + 6.2831 * o);
+            best = min(best, length(g + o - f));
+        }
+    return best;
+}
+
+// 0..1 caustic brightness at a world XZ, for a surface `depth` below the waterline.
+float caustics(vec2 worldXz, float depth, float t) {
+    vec2 p = worldXz * 0.55;
+    float a = causticLayer(p, t);
+    float b = causticLayer(p * 1.83 + 11.3, t * 1.17);
+    // Sharpen: caustics are thin bright filaments between dark cells, not soft blobs.
+    float c = pow(1.0 - min(a, b), 6.0);
+    // They are strongest just under the surface and wash out with depth as the light
+    // spreads, and they cannot exist above the waterline at all.
+    return c * exp(-depth * 0.16);
+}
 
 float ign(vec2 p); // defined below; the cloud march dithers with it
 
@@ -383,8 +415,14 @@ void main() {
 
     // Only where the cascade says the sun reaches: darkening a pixel the sun never lit is
     // just AO, and SSAO has already had its turn.
-    if (uContact > 0.0 && shadowSingle(worldRel) > 0.5)
-        color *= contactShadow(worldRel, rawD);
+    //
+    // Scaled by how much sun there actually is. A contact shadow is a SUN shadow, but this
+    // multiplies the composited colour rather than the direct term alone — so after dark,
+    // when ambient is the only light left, it was darkening light the sun never cast. That
+    // is what made night shadows read as far too heavy.
+    float sunAmt = clamp(max(uSunColor.r, max(uSunColor.g, uSunColor.b)), 0.0, 1.0);
+    if (uContact > 0.0 && sunAmt > 0.01 && shadowSingle(worldRel) > 0.5)
+        color *= mix(1.0, contactShadow(worldRel, rawD), sunAmt);
 
     if (uVolumetricOn > 0.5) {
         float len = min(dist, 150.0);
@@ -407,9 +445,34 @@ void main() {
     }
 
     if (uUnderwater > 0.5) {
+        // Caustics on whatever the light lands on down here. Driven by world position, so
+        // they stay put on the seabed as you swim rather than sliding with the view.
+        vec3 wpos = uCamPos + worldRel;
+        float depth = max(kSeaLevel - wpos.y, 0.0);
+        float caus = caustics(wpos.xz, depth, uTime);
+        // Only where the sun actually reaches: caustics are focused sunlight, so they have
+        // no business on a face in shadow or in a cave.
+        float lit = shadowSingle(worldRel) * clamp(uSunL.y * 3.0, 0.0, 1.0);
+        color += uSunColor * caus * lit * 0.55;
+
         // underwater: absorb reds and fog toward deep water with distance (Beer-Lambert-ish)
         color *= vec3(0.55, 0.82, 1.0);
         color = mix(color, kWaterDeep, 1.0 - exp(-dist * 0.10));
+
+        // Underwater god rays. The volumetric pass above marches the shadow cascades, which
+        // gives shafts through gaps in the terrain; this adds the surface itself as the
+        // occluder, so light comes down in bands broken by the swell. Cheap because it only
+        // needs the ray's crossing of the waterline, not a march.
+        if (uVolumetricOn > 0.5 && uSunL.y > 0.05) {
+            vec3 rd = normalize(worldRel);
+            float tSurf = (kSeaLevel - uCamPos.y) / max(rd.y, 1e-3);
+            if (tSurf > 0.0 && tSurf < dist) {
+                vec2 hit = (uCamPos + rd * tSurf).xz;
+                float shaft = caustics(hit * 0.6, 0.0, uTime * 0.8);
+                float fade = smoothstep(0.0, 40.0, tSurf) * (1.0 - smoothstep(40.0, 140.0, tSurf));
+                color += uSunColor * shaft * fade * pow(max(dot(rd, uSunL), 0.0), 3.0) * 0.5;
+            }
+        }
     } else {
         // distance fog: melt the far edge of the loaded world into the sky, so the render
         // boundary reads as haze/horizon instead of a hard cut

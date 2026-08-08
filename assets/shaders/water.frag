@@ -33,20 +33,55 @@ layout(binding = 3) uniform sampler2D uSceneDepth;
 const vec3 kNormal[6] = vec3[6](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0),
                                 vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1));
 
-// sum of four directional waves -> organic surface. returns the xz slope gradient so the
-// normal varies smoothly and irregularly (a single sine product makes a lattice of
-// specular dots — that was the "squares on the water").
-vec2 waveGrad(vec2 p) {
-    const vec4 W[4] = vec4[4](vec4(0.80, 0.20, 0.28, 0.055), vec4(-0.30, 0.95, 0.41, 0.040),
-                              vec4(0.55, -0.72, 0.67, 0.024), vec4(-0.92, -0.35, 0.93, 0.015));
-    const float sp[4] = float[4](1.1, 1.5, 2.1, 2.7);
+float hash21(vec2 p);
+float vnoise(vec2 p);
+
+// Wave slope. Two scales that do not share a period, which is the whole trick: four pure
+// sines summed produce a fixed interference pattern, and on an open lake that reads as
+// diagonal corduroy rolling across the surface rather than as water. A big directional
+// swell carries the shape, a scrolling noise field carries the chop, and because the noise
+// is not periodic against the sines nothing tiles.
+//
+// Returns d(height)/d(xz). The normal is built from it in main().
+vec2 waveGrad(vec2 p, float detail) {
     vec2 g = vec2(0.0);
-    for (int i = 0; i < 4; ++i) {
+
+    // Swell: three long directional waves. Kept few and low frequency — this is the part
+    // the eye reads as "which way the water is moving".
+    const vec4 W[3] = vec4[3](vec4(0.80, 0.20, 0.10, 0.055), vec4(-0.30, 0.95, 0.16, 0.038),
+                              vec4(0.55, -0.72, 0.23, 0.024));
+    const float sp[3] = float[3](0.55, 0.78, 1.05);
+    for (int i = 0; i < 3; ++i) {
         vec2 d = normalize(W[i].xy);
         float ph = dot(d, p) * W[i].z + uTime * sp[i];
         g += d * W[i].z * W[i].w * cos(ph);
     }
-    return g;
+
+    // Chop: central differences over a scrolling noise field, two octaves drifting in
+    // different directions so the pattern never settles into a repeat.
+    //
+    // `detail` fades the chop out with distance, and it is not optional. A ripple smaller
+    // than a pixel makes the 340-exponent specular fire on essentially random normals, so
+    // far water turns into a field of crawling white sparkles. Fading it is also the honest
+    // answer physically — you cannot resolve centimetre chop 200 blocks away.
+    if (detail <= 0.004)
+        return g;
+    const float e = 0.35;
+    vec2 q1 = p * 0.55 + vec2(uTime * 0.16, uTime * 0.11);
+    vec2 q2 = p * 1.60 + vec2(-uTime * 0.27, uTime * 0.19);
+    float h = 0.0;
+    vec2 dh = vec2(0.0);
+    for (int a = 0; a < 2; ++a) {
+        vec2 q = a == 0 ? q1 : q2;
+        float amp = a == 0 ? 0.055 : 0.022;
+        float sc = a == 0 ? 0.55 : 1.60;
+        float c = vnoise(q);
+        float gx = vnoise(q + vec2(e, 0.0)) - c;
+        float gy = vnoise(q + vec2(0.0, e)) - c;
+        dh += vec2(gx, gy) * (amp * sc / e) * detail;
+        h += c;
+    }
+    return g + dh;
 }
 
 float hash21(vec2 p) {
@@ -151,7 +186,10 @@ void main() {
     vec3 N = kNormal[vDir];
     vec2 g = vec2(0.0);
     if (vDir == 2u) { // organic ripple on the top surface
-        g = waveGrad(vWorldRel.xz);
+        // Detail falls off with distance; see waveGrad. Squared so it holds up close and
+        // then drops away quickly rather than lingering as a shimmer band.
+        float fade = exp(-length(vWorldRel) * 0.016);
+        g = waveGrad(vWorldRel.xz, fade * fade);
         N = normalize(vec3(-g.x * 6.0, 1.0, -g.y * 6.0));
     }
     vec3 V = normalize(-vWorldRel); // camera at the origin

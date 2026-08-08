@@ -71,9 +71,8 @@ void main() {
     // of water sticking up around a lower top, with a gap you could see straight through
     // where the neighbour was shallower still. That is the jagged, glitchy shoreline.
     //
-    // The upper edge of a side face is the same surface, so it has to move with it — and
-    // the wave is sampled from that corner's own world position, so the wall meets the top
-    // exactly instead of shearing away from it as the swell moves.
+    // The upper edge of a side face is the same surface, so it has to move with it, and
+    // both read the same per-corner level — so the wall meets the top exactly.
     bool topEdge = (dir != 2u && dir != 3u) && uv.y >= h - 0.001;
     if (dir == 2u || topEdge)
         world.y -= drop;
