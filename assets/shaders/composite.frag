@@ -1,5 +1,21 @@
 #version 460 core
 
+// Quality tier, injected by Shader.cpp from the active preset (see submitProgram). These
+// bounds MUST stay compile-time constants: a uniform loop bound does not unroll, and a
+// quality system whose top setting is slower than having no quality system at all is the
+// wrong trade. Default 2 = High, which is the build these numbers were tuned in, so an
+// un-injected compile is identical to the one before presets existed.
+// Shadow map size, injected alongside VX_QUALITY so it can never disagree with the texture
+// the cascades were actually allocated at. A define rather than a uniform because every use
+// is a divisor sizing a tap offset, and a compile-time divisor folds away.
+#ifndef VX_SHADOW_RES
+#define VX_SHADOW_RES 1536.0
+#endif
+
+#ifndef VX_QUALITY
+#define VX_QUALITY 2
+#endif
+
 // applies SSAO to the scene, paints a real sky for pixels with no geometry (gradient +
 // sun disc + horizon glow — no extra pass), and adds volumetric sun scattering
 // raymarched through the shadow cascades for geometry pixels. output stays HDR; bloom
@@ -179,7 +195,7 @@ vec3 skyColor(vec3 dir) {
     // measurement that forced this: at the --tour night stop the SKY is most of the frame's
     // brightness, and distance fog melts the far terrain into it too, so the sky gradient
     // was setting the exposure of the whole image. A horizon green of 0.06 lands at ~70/255
-    // after ACES and the gamma encode, which is dusk, not night � and no amount of retuning
+    // after ACES and the gamma encode, which is dusk, not night — and no amount of retuning
     // the surface shading can pull an image down past what its own sky is sitting at.
     // Stars and the moon are ADDED after this, so darkening here makes them read stronger.
     vec3 zenith = mix(vec3(0.004, 0.006, 0.020), vec3(0.14, 0.34, 0.80), day);
@@ -228,7 +244,15 @@ vec4 clouds(vec3 dir) {
     // far end contributes nothing but cost.
     t1 = min(t1, t0 + 2600.0);
 
+#if   VX_QUALITY == 0
+    const int kSteps = 6;
+#elif VX_QUALITY == 1
+    const int kSteps = 8;
+#elif VX_QUALITY == 3
+    const int kSteps = 20;
+#else
     const int kSteps = 12;
+#endif
     float stepLen = (t1 - t0) / float(kSteps);
     // Dither the start so the step boundaries do not band across the sky.
     float jitter = ign(gl_FragCoord.xy) * stepLen;
@@ -292,7 +316,7 @@ float shadowSingle(vec3 pos) {
     vec4 sc = uCascadeVp[c] * vec4(pos, 1.0);
     vec2 uv = sc.xy * 0.5 + 0.5;
     float z = sc.z - 0.0015;
-    float t = 1.5 / 1536.0;
+    float t = 1.5 / VX_SHADOW_RES;
     return 0.25 * (texture(uShadowMap, vec4(uv + vec2(t, t), float(c), z)) +
                    texture(uShadowMap, vec4(uv + vec2(-t, t), float(c), z)) +
                    texture(uShadowMap, vec4(uv + vec2(t, -t), float(c), z)) +
@@ -377,7 +401,13 @@ vec3 lensFlare() {
 float contactShadow(vec3 worldRel, float rawD) {
     if (uContact <= 0.0)
         return 1.0;
+#if   VX_QUALITY <= 1
+    const int kSteps = 4;
+#elif VX_QUALITY == 3
+    const int kSteps = 12;
+#else
     const int kSteps = 8;
+#endif
     const float kReach = 1.6; // world units; beyond this the cascades already have it
     float occl = 0.0;
     // Dither the start so the fixed step count does not band along surfaces.
@@ -449,7 +479,15 @@ void main() {
         float len = min(dist, 150.0);
         vec3 rd = normalize(worldRel);
 
+#if   VX_QUALITY == 0
+        const int kSteps = 6;
+#elif VX_QUALITY == 1
+        const int kSteps = 8;
+#elif VX_QUALITY == 3
+        const int kSteps = 24;
+#else
         const int kSteps = 16;
+#endif
         float stepLen = len / float(kSteps);
         float t = stepLen * ign(gl_FragCoord.xy); // dithered start, breaks up banding
         float scatter = 0.0;

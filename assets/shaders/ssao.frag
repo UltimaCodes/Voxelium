@@ -1,5 +1,14 @@
 #version 460 core
 
+// Quality tier, injected by Shader.cpp from the active preset (see submitProgram). The
+// bounds below MUST stay compile-time constants: a uniform loop bound does not unroll, and a
+// quality system whose top setting is slower than having no quality system is the wrong
+// trade. Default is 2 = High, which is the build these numbers were originally tuned in, so
+// an un-injected compile is byte-identical to before presets existed.
+#ifndef VX_QUALITY
+#define VX_QUALITY 2
+#endif
+
 // half-res SSAO from the depth buffer alone: view position reconstructed from the
 // infinite reversed-z depth, flat normals from derivatives (voxel faces are flat, so
 // dFdx/dFdy are exact away from edges). output is AO in .r and linear view depth in .g
@@ -45,7 +54,16 @@ void main() {
 
     const float kRadius = 0.55; // tighter than before: contact AO, not a soft halo
     float occlusion = 0.0;
-    for (int i = 0; i < 16; ++i) {
+#if   VX_QUALITY == 0
+    const int kSamples = 4;
+#elif VX_QUALITY == 1
+    const int kSamples = 8;
+#elif VX_QUALITY == 3
+    const int kSamples = 16; // kKernel only has 16 entries; Ultra spends its budget elsewhere
+#else
+    const int kSamples = 16;
+#endif
+    for (int i = 0; i < kSamples; ++i) {
         vec3 s = P + (T * kKernel[i].x + B * kKernel[i].y + N * kKernel[i].z) * kRadius;
         vec2 suv = vec2(s.x / (uProjScale.x * -s.z), s.y / (uProjScale.y * -s.z)) * 0.5 + 0.5;
         if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0)

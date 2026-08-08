@@ -1,5 +1,21 @@
 #version 460 core
 
+// Quality tier, injected by Shader.cpp from the active preset (see submitProgram). These
+// bounds MUST stay compile-time constants: a uniform loop bound does not unroll, and a
+// quality system whose top setting is slower than having no quality system at all is the
+// wrong trade. Default 2 = High, which is the build these numbers were tuned in, so an
+// un-injected compile is identical to the one before presets existed.
+// Shadow map size, injected alongside VX_QUALITY so it can never disagree with the texture
+// the cascades were actually allocated at. A define rather than a uniform because every use
+// is a divisor sizing a tap offset, and a compile-time divisor folds away.
+#ifndef VX_SHADOW_RES
+#define VX_SHADOW_RES 1536.0
+#endif
+
+#ifndef VX_QUALITY
+#define VX_QUALITY 2
+#endif
+
 in vec3 vWorldRel;
 in vec2 vUv;
 flat in uint vLayer;
@@ -74,10 +90,15 @@ float sampleCascade(vec3 pos, vec3 N, int c) {
     vec2 uv = sc.xy * 0.5 + 0.5;
     float receiver = sc.z;
 
-    float searchR = 3.0 / 1536.0;
+    float searchR = 3.0 / VX_SHADOW_RES;
     float blockerSum = 0.0;
     int blockerN = 0;
-    for (int i = 0; i < 16; ++i) {
+#if   VX_QUALITY <= 1
+    const int kBlockerTaps = 8;
+#else
+    const int kBlockerTaps = 16;
+#endif
+    for (int i = 0; i < kBlockerTaps; ++i) {
         float d = texture(uShadowDepth, vec3(uv + kPoisson[i] * searchR, float(c))).r;
         if (d < receiver - 0.0016) {
             blockerSum += d;
@@ -89,7 +110,7 @@ float sampleCascade(vec3 pos, vec3 N, int c) {
 
     float avgBlocker = blockerSum / float(blockerN);
     float penumbra = (receiver - avgBlocker) / max(avgBlocker, 1e-4);
-    float radius = clamp(penumbra * 45.0, 1.0, 7.0) / 1536.0;
+    float radius = clamp(penumbra * 45.0, 1.0, 7.0) / VX_SHADOW_RES;
 
     float depth = receiver - 0.0016;
     float sum = 0.0;

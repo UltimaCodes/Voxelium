@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace vx {
 
@@ -38,9 +39,22 @@ struct ProgramJob {
     std::string label;
 };
 
+// `defines` is injected verbatim after the `#version` line — e.g. "#define VX_QUALITY 3\n".
+//
+// This is how the quality presets reach the shaders. The alternative was uniform loop
+// bounds, but a dynamic bound does not unroll, so it would have made the TOP preset slower
+// than the build had no presets at all — shipping a quality system that regresses Ultra is
+// the wrong trade.
+//
+// It needs no new bookkeeping because the cache key already hashes the FULLY EXPANDED source
+// (see readShaderSource: `#include` is resolved before hashing, deliberately). Injecting a
+// define changes that text, so every preset gets its own cache entry and its own binary for
+// free, and switching preset can never hand the driver a blob built for another one.
 ProgramJob submitProgram(const std::filesystem::path& vertPath,
-                         const std::filesystem::path& fragPath);
-ProgramJob submitComputeProgram(const std::filesystem::path& compPath);
+                         const std::filesystem::path& fragPath,
+                         std::string_view defines = {});
+ProgramJob submitComputeProgram(const std::filesystem::path& compPath,
+                                std::string_view defines = {});
 unsigned int resolveProgram(ProgramJob& job);
 
 } // namespace vx

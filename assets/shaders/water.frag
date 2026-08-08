@@ -1,5 +1,21 @@
 #version 460 core
 
+// Quality tier, injected by Shader.cpp from the active preset (see submitProgram). These
+// bounds MUST stay compile-time constants: a uniform loop bound does not unroll, and a
+// quality system whose top setting is slower than having no quality system at all is the
+// wrong trade. Default 2 = High, which is the build these numbers were tuned in, so an
+// un-injected compile is identical to the one before presets existed.
+// Shadow map size, injected alongside VX_QUALITY so it can never disagree with the texture
+// the cascades were actually allocated at. A define rather than a uniform because every use
+// is a divisor sizing a tap offset, and a compile-time divisor folds away.
+#ifndef VX_SHADOW_RES
+#define VX_SHADOW_RES 1536.0
+#endif
+
+#ifndef VX_QUALITY
+#define VX_QUALITY 2
+#endif
+
 // screen-space-reflection water. reflects the opaque scene (trees, terrain) by ray
 // marching the reflection ray against the depth buffer and sampling a snapshot of the
 // opaque colour; falls back to a computed sky where the ray leaves the screen. fresnel
@@ -131,7 +147,7 @@ float waterShadow(vec3 pos, vec3 N) {
     vec2 uv = sc.xy * 0.5 + 0.5;
     float z = sc.z - 0.0016;
     // 4 taps: water is a broad flat surface, so a single tap aliases along the cascade grid
-    float t = 1.5 / 1536.0;
+    float t = 1.5 / VX_SHADOW_RES;
     float sh = 0.25 * (texture(uShadowMap, vec4(uv + vec2(t, t), float(c), z)) +
                        texture(uShadowMap, vec4(uv + vec2(-t, t), float(c), z)) +
                        texture(uShadowMap, vec4(uv + vec2(t, -t), float(c), z)) +
@@ -149,7 +165,16 @@ vec3 reflection(vec3 P, vec3 R, float jitter) {
     // surface detail instead of a grid.
     float stepLen = 0.6;
     vec3 sp = P + R * (stepLen * jitter);
-    for (int i = 0; i < 28; ++i) {
+#if   VX_QUALITY == 0
+    const int kMarch = 8;
+#elif VX_QUALITY == 1
+    const int kMarch = 14;
+#elif VX_QUALITY == 3
+    const int kMarch = 40;
+#else
+    const int kMarch = 28;
+#endif
+    for (int i = 0; i < kMarch; ++i) {
         sp += R * stepLen;
         vec4 clip = uViewProj * vec4(sp, 1.0);
         if (clip.w <= 0.0)

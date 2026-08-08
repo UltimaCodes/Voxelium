@@ -6,6 +6,7 @@
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <fstream>
@@ -82,6 +83,35 @@ std::string readShaderSource(const std::filesystem::path& path, int depth = 0) {
         out += readShaderSource(path.parent_path() / name, depth + 1);
         out += '\n';
     }
+    return out;
+}
+
+// Splices `defines` in after the `#version` line. GLSL requires #version to be the first
+// non-comment token, so a define cannot simply be prepended.
+//
+// The injected block carries a #line directive so compiler errors keep reporting the line
+// numbers of the ORIGINAL file — without it every message in an injected shader is off by
+// the number of lines added, which is the sort of small lie that costs an hour.
+std::string injectDefines(const std::string& src, std::string_view defines) {
+    if (defines.empty())
+        return src;
+    const auto versionPos = src.find("#version");
+    if (versionPos == std::string::npos)
+        return std::string(defines) + src; // no #version: not our problem, but do not lose it
+    const auto eol = src.find('\n', versionPos);
+    if (eol == std::string::npos)
+        return src;
+
+    // count the lines consumed up to and including #version so #line restores the count
+    const int versionLine = 1 + int(std::count(src.begin(), src.begin() + eol, '\n'));
+    std::string out;
+    out.reserve(src.size() + defines.size() + 32);
+    out.append(src, 0, eol + 1);
+    out.append(defines);
+    if (!defines.empty() && defines.back() != '\n')
+        out.push_back('\n');
+    out.append("#line ").append(std::to_string(versionLine + 1)).push_back('\n');
+    out.append(src, eol + 1, std::string::npos);
     return out;
 }
 
@@ -247,9 +277,9 @@ void shutdownShaderCache() {
 }
 
 ProgramJob submitProgram(const std::filesystem::path& vertPath,
-                         const std::filesystem::path& fragPath) {
-    const std::string vertSrc = readShaderSource(vertPath);
-    const std::string fragSrc = readShaderSource(fragPath);
+                         const std::filesystem::path& fragPath, std::string_view defines) {
+    const std::string vertSrc = injectDefines(readShaderSource(vertPath), defines);
+    const std::string fragSrc = injectDefines(readShaderSource(fragPath), defines);
     if (vertSrc.empty() || fragSrc.empty())
         return {};
 
@@ -260,8 +290,9 @@ ProgramJob submitProgram(const std::filesystem::path& vertPath,
                         {{GL_VERTEX_SHADER, &vertSrc}, {GL_FRAGMENT_SHADER, &fragSrc}});
 }
 
-ProgramJob submitComputeProgram(const std::filesystem::path& compPath) {
-    const std::string src = readShaderSource(compPath);
+ProgramJob submitComputeProgram(const std::filesystem::path& compPath,
+                                std::string_view defines) {
+    const std::string src = injectDefines(readShaderSource(compPath), defines);
     if (src.empty())
         return {};
 
