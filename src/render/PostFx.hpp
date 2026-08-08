@@ -47,6 +47,9 @@ struct FxToggles {
     // Cloud shadows on terrain. Shares the sky's density field, so it only means anything
     // with clouds on; gated separately because it costs a per-fragment fbm.
     float cloudShadow = 0.6f;
+    // Screen-space contact shadows: the small-scale sun occlusion the cascades cannot
+    // resolve, marched over ~1.6 world units.
+    float contactShadow = 0.7f;
     // crosshair tint (RGBA, straight alpha). not a post effect, but it rides along in the
     // same struct so the settings menu and the settings file only have one thing to carry.
     float crosshair[4] = {1.0f, 1.0f, 1.0f, 0.85f};

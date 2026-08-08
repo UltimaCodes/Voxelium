@@ -285,6 +285,10 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
 
     ImGui::SeparatorText("lighting");
     ImGui::Checkbox("shadows", &fx.shadows);
+    ImGui::BeginDisabled(!fx.shadows);
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("contact", &fx.contactShadow, 0.0f, 1.0f, "%.2f");
+    ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::Checkbox("ssao", &fx.ssao);
     ImGui::SameLine();

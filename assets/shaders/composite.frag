@@ -30,6 +30,7 @@ layout(location = 25) uniform vec3 uSunColor;      // day/night sun radiance
 layout(location = 26) uniform vec2 uFog;           // (start, end) distance; huge = off
 layout(location = 27) uniform float uFlare;        // lens flare strength, 0 = off
 layout(location = 28) uniform vec3 uCamPos;        // camera world position (clouds are world-anchored)
+layout(location = 29) uniform float uContact;      // screen-space contact shadow, 0 = off
 
 #include "clouds.glsl"
 
@@ -312,6 +313,48 @@ vec3 lensFlare() {
     return sum * uSunColor * vis * edge * uFlare;
 }
 
+// Screen-space contact shadows. The cascades cannot resolve the small stuff — a tuft
+// against the ground, a block's own lip, the join where a trunk meets the dirt — because
+// one shadow texel spans several blocks out at the far split. This marches the depth buffer
+// a short way toward the sun and darkens what it finds occluded.
+//
+// It has to live HERE rather than in chunk.frag: during the opaque pass the depth buffer is
+// the thing being written, and sampling it there is a feedback loop. Composite is the first
+// point where a complete depth buffer exists.
+float contactShadow(vec3 worldRel, float rawD) {
+    if (uContact <= 0.0)
+        return 1.0;
+    const int kSteps = 8;
+    const float kReach = 1.6; // world units; beyond this the cascades already have it
+    float occl = 0.0;
+    // Dither the start so the fixed step count does not band along surfaces.
+    float t0 = (0.15 + 0.85 * ign(gl_FragCoord.xy)) * (kReach / float(kSteps));
+    for (int i = 0; i < kSteps; ++i) {
+        vec3 p = worldRel + uSunL * (t0 + kReach * float(i) / float(kSteps));
+        // project back to the screen: world -> view -> ndc, the inverse of the
+        // reconstruction above
+        vec3 v = transpose(uInvViewRot) * p;
+        if (v.z >= -1e-4)
+            continue;
+        vec2 uv = vec2((v.x / -v.z) / uProjScale.x, (v.y / -v.z) / uProjScale.y) * 0.5 + 0.5;
+        if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0))))
+            continue;
+        float sceneRaw = texture(uDepth, uv).r;
+        if (sceneRaw <= 0.0)
+            continue; // sky: nothing to be occluded by
+        // reversed-z: bigger raw depth = nearer. The sample is behind geometry when the
+        // scene there is nearer than the marched point.
+        float sampleViewZ = v.z;
+        float sceneViewZ = -uNear / max(sceneRaw, 1e-7);
+        float diff = sceneViewZ - sampleViewZ; // >0 means the scene is in front
+        // The thickness window stops a distant surface far behind the ray from counting as
+        // a blocker, which is what makes naive versions shadow the whole background.
+        if (diff > 0.02 && diff < 0.9)
+            occl = max(occl, 1.0 - float(i) / float(kSteps)); // nearer hits count for more
+    }
+    return 1.0 - uContact * occl;
+}
+
 void main() {
     float rawD = texture(uDepth, vUv).r;
     vec3 dir = viewRay();
@@ -337,6 +380,11 @@ void main() {
     vec3 worldRel = uInvViewRot *
                     vec3(ndc.x * uProjScale.x * -viewZ, ndc.y * uProjScale.y * -viewZ, viewZ);
     float dist = length(worldRel);
+
+    // Only where the cascade says the sun reaches: darkening a pixel the sun never lit is
+    // just AO, and SSAO has already had its turn.
+    if (uContact > 0.0 && shadowSingle(worldRel) > 0.5)
+        color *= contactShadow(worldRel, rawD);
 
     if (uVolumetricOn > 0.5) {
         float len = min(dist, 150.0);
