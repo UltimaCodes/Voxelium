@@ -81,6 +81,7 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
         else if (key == "bloomStrength") readFloat(val, fx.bloomStrength);
         else if (key == "emissive") readFloat(val, fx.emissive);
         else if (key == "lensFlare") readFloat(val, fx.lensFlare);
+        else if (key == "cloudShadow") readFloat(val, fx.cloudShadow);
         else if (key == "saturation") readFloat(val, fx.saturation);
         else if (key == "contrast") readFloat(val, fx.contrast);
         else if (key == "temperature") readFloat(val, fx.temperature);
@@ -110,6 +111,7 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
     fx.bloomStrength = std::clamp(fx.bloomStrength, 0.0f, 1.5f);
     fx.emissive = std::clamp(fx.emissive, 0.0f, 5.0f);
     fx.lensFlare = std::clamp(fx.lensFlare, 0.0f, 2.0f);
+    fx.cloudShadow = std::clamp(fx.cloudShadow, 0.0f, 1.0f);
     fx.saturation = std::clamp(fx.saturation, 0.0f, 2.0f);
     fx.contrast = std::clamp(fx.contrast, 0.5f, 1.8f);
     fx.temperature = std::clamp(fx.temperature, -1.0f, 1.0f);

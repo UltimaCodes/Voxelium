@@ -44,6 +44,9 @@ struct FxToggles {
     bool autoExposure = true;
     // Lens flare strength. Screen-space, gated on the sun actually being visible.
     float lensFlare = 0.5f;
+    // Cloud shadows on terrain. Shares the sky's density field, so it only means anything
+    // with clouds on; gated separately because it costs a per-fragment fbm.
+    float cloudShadow = 0.6f;
     // crosshair tint (RGBA, straight alpha). not a post effect, but it rides along in the
     // same struct so the settings menu and the settings file only have one thing to carry.
     float crosshair[4] = {1.0f, 1.0f, 1.0f, 0.85f};
@@ -88,6 +91,7 @@ public:
         glm::vec2 fog{1e9f, 1e9f}; // distance fog (start, end); huge = off
         const ShadowMap* shadows;
         FxToggles toggles;
+        glm::vec3 camPos{0.0f}; // camera world position; clouds are world-anchored
         float time = 0.0f;       // drives cloud drift and grain
         float dt = 0.0f;         // seconds since the last frame; drives eye adaptation
         bool underwater = false; // camera eye submerged -> composite adds depth fog + tint

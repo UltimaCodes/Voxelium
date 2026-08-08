@@ -49,6 +49,42 @@ std::string readTextFile(const std::filesystem::path& path) {
     return ss.str();
 }
 
+// Minimal `#include "name.glsl"` for shaders, resolved relative to the including file.
+// GLSL has none, and the alternative is keeping the same function in two shaders and
+// watching them drift — which for a density field sampled by both the sky and the terrain
+// would show up as cloud shadows that do not match the clouds.
+//
+// Expanded BEFORE the source is hashed for the program cache, so editing an included file
+// invalidates every program that pulls it in, with no extra bookkeeping.
+std::string readShaderSource(const std::filesystem::path& path, int depth = 0) {
+    const std::string src = readTextFile(path);
+    if (src.find("#include") == std::string::npos)
+        return src;
+    if (depth > 4) {
+        VX_ERROR("shader includes nested too deep at %s", path.string().c_str());
+        return src;
+    }
+    std::string out;
+    out.reserve(src.size() * 2);
+    std::istringstream in(src);
+    std::string line;
+    while (std::getline(in, line)) {
+        const auto hash = line.find("#include");
+        const auto q1 = line.find('"');
+        const auto q2 = q1 == std::string::npos ? std::string::npos : line.find('"', q1 + 1);
+        if (hash == std::string::npos || q1 == std::string::npos || q2 == std::string::npos ||
+            hash > q1) {
+            out += line;
+            out += '\n';
+            continue;
+        }
+        const std::string name = line.substr(q1 + 1, q2 - q1 - 1);
+        out += readShaderSource(path.parent_path() / name, depth + 1);
+        out += '\n';
+    }
+    return out;
+}
+
 std::filesystem::path cachePath(std::uint64_t key) {
     char name[32];
     std::snprintf(name, sizeof(name), "%016llx.bin", static_cast<unsigned long long>(key));
@@ -212,8 +248,8 @@ void shutdownShaderCache() {
 
 ProgramJob submitProgram(const std::filesystem::path& vertPath,
                          const std::filesystem::path& fragPath) {
-    const std::string vertSrc = readTextFile(vertPath);
-    const std::string fragSrc = readTextFile(fragPath);
+    const std::string vertSrc = readShaderSource(vertPath);
+    const std::string fragSrc = readShaderSource(fragPath);
     if (vertSrc.empty() || fragSrc.empty())
         return {};
 
@@ -225,7 +261,7 @@ ProgramJob submitProgram(const std::filesystem::path& vertPath,
 }
 
 ProgramJob submitComputeProgram(const std::filesystem::path& compPath) {
-    const std::string src = readTextFile(compPath);
+    const std::string src = readShaderSource(compPath);
     if (src.empty())
         return {};
 

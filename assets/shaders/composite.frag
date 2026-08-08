@@ -29,8 +29,13 @@ layout(location = 24) uniform float uVolumetricOn; // moved off 4
 layout(location = 25) uniform vec3 uSunColor;      // day/night sun radiance
 layout(location = 26) uniform vec2 uFog;           // (start, end) distance; huge = off
 layout(location = 27) uniform float uFlare;        // lens flare strength, 0 = off
+layout(location = 28) uniform vec3 uCamPos;        // camera world position (clouds are world-anchored)
+
+#include "clouds.glsl"
 
 const vec3 kWaterDeep = vec3(0.03, 0.13, 0.20);
+
+float ign(vec2 p); // defined below; the cloud march dithers with it
 
 vec3 viewRay() {
     vec2 ndc = vUv * 2.0 - 1.0;
@@ -152,45 +157,68 @@ vec3 skyColor(vec3 dir) {
     return col;
 }
 
-// drifting fbm cloud dome: flatten the view direction onto a plane (perspective toward the
-// horizon), fbm coverage, and a cheap sun-side density difference for shading + silver
-// lining. smooth noise -> soft organic clouds, never blocky.
-float vhash(vec2 p) {
-    p = fract(p * vec2(123.34, 456.21));
-    p += dot(p, p + 45.32);
-    return fract(p.x * p.y);
-}
-float vnoise(vec2 p) {
-    vec2 i = floor(p), f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    return mix(mix(vhash(i), vhash(i + vec2(1, 0)), f.x),
-               mix(vhash(i + vec2(0, 1)), vhash(i + vec2(1, 1)), f.x), f.y);
-}
-float cloudFbm(vec2 p) {
-    float s = 0.0, a = 0.5;
-    for (int i = 0; i < 5; ++i) {
-        s += a * vnoise(p);
-        p = p * 2.02 + 3.1;
-        a *= 0.5;
-    }
-    return s;
-}
+// Raymarched clouds. The field itself lives in clouds.glsl because the terrain shader
+// samples the same one for shadows.
+//
+// Marched, not painted: the ray is intersected with the slab and stepped through it,
+// accumulating extinction with Beer's law and lighting each step with a short march toward
+// the sun. That is what gives silver lining, depth at the edges, and clouds that pass
+// overhead instead of sliding with the camera.
 vec4 clouds(vec3 dir) {
-    if (dir.y < 0.03)
+    if (dir.y < 0.02)
+        return vec4(0.0); // looking at or below the horizon: the slab is never hit
+
+    float t0 = (kCloudBase - uCamPos.y) / dir.y;
+    float t1 = (kCloudTop - uCamPos.y) / dir.y;
+    if (t1 < t0) { float tmp = t0; t0 = t1; t1 = tmp; } // inside or above the layer
+    t0 = max(t0, 0.0);
+    if (t1 <= t0)
         return vec4(0.0);
-    vec2 p = dir.xz / dir.y * 0.6 + vec2(uTime * 0.008, uTime * 0.005); // flatten + wind
-    float cov = cloudFbm(p);
-    float d = smoothstep(0.42, 0.66, cov) * smoothstep(0.03, 0.22, dir.y);
-    if (d <= 0.001)
-        return vec4(0.0);
-    vec2 sp = (uSunL.xz / max(abs(uSunL.y), 0.25)) * 0.12; // one step toward the sun
-    float shade = clamp((cov - cloudFbm(p + sp)) * 2.2 + 0.55, 0.25, 1.0);
-    vec3 col = mix(vec3(0.52, 0.56, 0.64), vec3(1.05, 1.02, 0.98), shade);
+    // Cap the marched span: looking near the horizon the slab is kilometres long, and the
+    // far end contributes nothing but cost.
+    t1 = min(t1, t0 + 2600.0);
+
+    const int kSteps = 12;
+    float stepLen = (t1 - t0) / float(kSteps);
+    // Dither the start so the step boundaries do not band across the sky.
+    float jitter = ign(gl_FragCoord.xy) * stepLen;
+
+    float transmittance = 1.0;
+    vec3 scattered = vec3(0.0);
     float day = clamp(uSunL.y * 3.0 + 0.12, 0.0, 1.0);
-    col += vec3(1.0, 0.55, 0.2) * pow(max(dot(dir, uSunL), 0.0), 6.0) * day; // warm sun side
-    col *= 0.16 + 0.84 * day; // clouds go dim + cool at night (moonlit, not sunlit)
-    return vec4(col, d);
+    vec3 sunTint = mix(vec3(0.55, 0.60, 0.70), vec3(1.05, 1.02, 0.98), day);
+
+    for (int i = 0; i < kSteps; ++i) {
+        float t = t0 + jitter + stepLen * float(i);
+        vec3 p = uCamPos + dir * t;
+        float d = cloudDensity(p, uTime);
+        if (d <= 0.001)
+            continue;
+        // Self-shadowing: three coarse steps toward the sun. Cheap, and it is what separates
+        // a lit top from a heavy base.
+        float shadowD = 0.0;
+        for (int j = 1; j <= 3; ++j)
+            shadowD += cloudDensity(p + uSunL * (float(j) * 26.0), uTime);
+        float lit = exp(-shadowD * 0.55);
+        // Forward scattering: bright rim when looking toward the sun through thin cloud.
+        float phase = 0.55 + 0.45 * pow(max(dot(dir, uSunL), 0.0), 4.0);
+        vec3 lightCol = uSunColor * lit * phase + vec3(0.30, 0.36, 0.46) * 0.55;
+        float extinction = d * 0.055 * stepLen;
+        float absorbed = 1.0 - exp(-extinction);
+        scattered += transmittance * absorbed * lightCol * sunTint;
+        transmittance *= 1.0 - absorbed;
+        if (transmittance < 0.02)
+            break;
+    }
+    float alpha = clamp(1.0 - transmittance, 0.0, 1.0);
+    if (alpha <= 0.001)
+        return vec4(0.0);
+    // Fade the layer out toward the horizon, where the march is least accurate and clouds
+    // would otherwise pile into a hard band.
+    alpha *= smoothstep(0.02, 0.16, dir.y);
+    return vec4(scattered / max(alpha, 1e-4), alpha);
 }
+
 vec3 skyWithClouds(vec3 dir) {
     vec3 s = skyColor(dir);
     if (uCloudsOn > 0.5) {

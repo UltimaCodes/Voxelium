@@ -211,6 +211,13 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     glProgramUniform3fv(rc.drawProgram, 21, 1, &sky.color.x);
     glProgramUniform3fv(rc.drawProgram, 22, 1, &sky.ambient.x);
     glProgramUniform1f(rc.drawProgram, 23, fx.emissive);
+    // Camera world position as float. World coords are kept off the GPU for GEOMETRY, where
+    // sub-block precision matters; the cloud field is low frequency and a float is exact
+    // enough for it well past any distance the terrain generator covers.
+    const glm::vec3 camPosF(camera.position);
+    glProgramUniform3fv(rc.drawProgram, 24, 1, &camPosF.x);
+    glProgramUniform1f(rc.drawProgram, 25, fx.clouds ? fx.cloudShadow : 0.0f);
+    glProgramUniform1f(rc.drawProgram, 26, time);
     glProgramUniform1f(rc.drawProgram, 5, fx.shadows ? 1.0f : 0.0f);
     glProgramUniformMatrix4fv(rc.drawProgram, 6, 3, GL_FALSE,
                               &rc.shadows.cascadeVp()[0][0][0]);
@@ -278,6 +285,7 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     rp.shadows = &rc.shadows;
     rp.toggles = fx;
     rp.time = time;
+    rp.camPos = glm::vec3(camera.position);
     // Eye adaptation runs off wall-clock delta so its speed does not depend on framerate.
     // Derived here rather than threaded through every caller, because the offscreen
     // harnesses render as fast as they can and would otherwise adapt at a different rate
@@ -1357,7 +1365,8 @@ int runBenchmark(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         return v[mid];
     };
 
-    VX_INFO("bench: %dx%d, radius %d, shadows+ssao+vol+bloom+ssgi on, taa off", w, h, radius);
+    VX_INFO("bench: %dx%d, radius %d, shadows+ssao+vol+bloom+ssgi+clouds on, taa off", w, h,
+            radius);
     double totShadow = 0, totScene = 0, totPost = 0, totFrame = 0;
     double totScaledFrame = 0;
     double totMoveShadow = 0, totMoveFrame = 0, totMovePeak = 0;

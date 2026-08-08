@@ -17,6 +17,11 @@ layout(location = 19) uniform vec3 uCascadeTexel; // world units per shadow texe
 layout(location = 21) uniform vec3 uSunColor;     // day/night direct radiance
 layout(location = 22) uniform vec3 uSkyAmbient;   // day/night sky fill
 layout(location = 23) uniform float uEmissive;    // emitter self-illumination, 0 = off
+layout(location = 24) uniform vec3 uCamPos;       // camera world position
+layout(location = 25) uniform float uCloudShadow; // cloud shadow strength, 0 = off
+layout(location = 26) uniform float uTimeSky;     // same clock the cloud field drifts on
+
+#include "clouds.glsl"
 
 layout(binding = 0) uniform sampler2DArray uBlockTex;
 layout(binding = 1) uniform sampler2DArrayShadow uShadowMap;
@@ -124,7 +129,14 @@ void main() {
     // warm strong sun vs cool dim sky ambient — the contrast is what keeps the scene
     // from going milky once tonemapped. the small floor stops fully-enclosed faces
     // (interior leaf pockets, deep cave walls) from crushing to pure black.
-    vec3 direct = uSunColor * (ndl * shadow * skyAccess);
+    // Cloud shadows sample the same field the sky raymarches, so a shadow always belongs
+    // to a cloud you can actually see overhead. Only the direct sun term is affected —
+    // ambient is sky light, which a cloud scatters rather than blocks.
+    float clouded = uCloudShadow > 0.0
+                        ? mix(1.0, cloudSunlight(uCamPos + vWorldRel, uSunL, uTimeSky),
+                              uCloudShadow)
+                        : 1.0;
+    vec3 direct = uSunColor * (ndl * shadow * skyAccess * clouded);
     vec3 ambient = uSkyAmbient * (0.10 + 0.90 * skyL) + vec3(0.035, 0.04, 0.05);
     // The emitter's own colour drives the tint now (M18), so the fixed warm multiplier
     // that used to supply it would double-tint. Keep a slight warm bias for the ember
