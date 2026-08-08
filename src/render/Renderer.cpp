@@ -190,9 +190,15 @@ void Renderer::recycle(Range range) {
 
 void Renderer::hardReset() {
     VX_ERROR("renderer: arena alloc failed — hard reset (glFinish + full rebuild)");
+    resetArena();
+}
+
+void Renderer::resetArena() {
     glFinish();
     m_freeList.clear();
     m_freeList.push_back({0, kArenaQuads});
+    // The deferred frees are ranges in an allocator that no longer exists. Recycling them
+    // later would hand the same space out twice.
     for (auto& pending : m_pendingFree)
         pending.clear();
     m_usedQuads = 0;

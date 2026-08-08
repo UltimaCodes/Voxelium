@@ -14,7 +14,8 @@
 
 namespace vx {
 
-ChunkManager::ChunkManager(std::filesystem::path saveDir) : m_regions(std::move(saveDir)) {}
+ChunkManager::ChunkManager(std::filesystem::path saveDir, int seed)
+    : m_seed(seed), m_gen(seed), m_regions(std::move(saveDir)) {}
 
 
 namespace {
@@ -838,11 +839,15 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     m_phaseSum.uploadMs += m_uploadMsLast;
 }
 
-void ChunkManager::resetWorld(Renderer& renderer) {
-    m_regions.discardAll();
-
-    // Hand every arena range back before dropping the entries that own them, or the
-    // allocator keeps blocks nothing will ever free.
+void ChunkManager::loadWorld(Renderer& renderer, int seed, std::filesystem::path saveDir) {
+    // Point at the new world BEFORE tearing down, so nothing that runs during teardown can
+    // write the old world's chunks into the new world's directory.
+    m_regions.flush();
+    m_regions.setDir(std::move(saveDir));
+    m_seed = seed;
+    m_gen = TerrainGenerator(seed);
+    // Teardown, minus any discard: switching worlds must never delete the one being left,
+    // and the directory we were just pointed at is the one we are about to fill.
     for (auto& item : m_chunks) {
         Entry& e = item.second;
         if (e.range.count != 0)
@@ -864,16 +869,29 @@ void ChunkManager::resetWorld(Renderer& renderer) {
     m_uploads.clear();
     m_fallQueue.clear();
     m_pendingMesh = 0;
-
-    // The arena still holds the freed ranges in its fence ring; reset it outright rather
-    // than waiting three frames for ranges nothing references any more.
-    renderer.hardReset();
-
-    m_center = {INT32_MIN, 0, INT32_MIN}; // forces the next update() to rescan from scratch
+    m_lateSeeds = 0;
+    renderer.resetArena(); // deliberate, not a failure: every range was just dropped
+    m_center = {INT32_MIN, 0, INT32_MIN};
     m_lastRadius = -1;
     m_meshScanDirty = true;
     m_dirty = true;
     m_visDirty = true;
+}
+
+int ChunkManager::expectedMeshedChunks() const {
+    // Meshing covers |dx|,|dz| <= radius (the +1 data ring is loaded but never meshed), and
+    // each column's height is whatever columnRange says — which varies with the terrain, so
+    // this is summed rather than assumed. m_center is the streaming centre the caller has
+    // already settled around.
+    int total = 0;
+    for (int dz = -radius; dz <= radius; ++dz)
+        for (int dx = -radius; dx <= radius; ++dx) {
+            int y0 = 0, y1 = 0;
+            bool sky = false;
+            columnRange(m_center.x + dx, m_center.z + dz, y0, y1, sky);
+            total += y1 - y0 + 1;
+        }
+    return std::max(total, 1);
 }
 
 void ChunkManager::collectDrawInfo(std::vector<ChunkDrawInfo>& out,

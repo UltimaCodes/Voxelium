@@ -50,9 +50,16 @@ public:
     Range alloc(std::span<const std::uint64_t> quads);
     void free(Range range);
 
-    // Emergency defrag: waits for the GPU, then resets the allocator to one free block.
-    // Rare by construction (arena is ~6x the working set); logged when it happens.
+    // Emergency defrag: an allocation could not be satisfied. Same work as resetArena, but
+    // it shouts, because it means the arena is too small or too fragmented and the caller
+    // is about to re-upload the world. Rare by construction.
     void hardReset();
+
+    // The same reset, deliberately and silently: every range that referenced the arena has
+    // just been dropped (a world switch). Separate from hardReset because logging "alloc
+    // failed" on a clean teardown is a lie, and one that reads as a real defect in the logs
+    // of a perfectly healthy "new world".
+    void resetArena();
 
     void beginFrame(); // recycle fence-cleared frees, poll the visible-count readback
     void updateChunkMeta(std::span<const ChunkDrawInfo> chunks);

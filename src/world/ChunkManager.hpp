@@ -41,7 +41,9 @@ enum class ChunkState : std::uint8_t {
 // hard reset without remeshing.
 class ChunkManager {
 public:
-    explicit ChunkManager(std::filesystem::path saveDir);
+    // The seed is a runtime value, not a constant: every launch generates a fresh world, so
+    // a world you want to keep has to be saved deliberately (see Worlds in main).
+    ChunkManager(std::filesystem::path saveDir, int seed);
 
     struct Stats {
         int loaded = 0;
@@ -126,11 +128,20 @@ public:
     // stored. Main thread.
     void saveDirty();
 
-    // Throw the save away and rebuild the world from the seed. Only edited chunks are ever
-    // stored, so this is "give me the procedural world back", not a wipe. Everything
-    // resident is released and re-streamed; safe to call only when no jobs are in flight,
-    // which the caller guarantees by draining first.
-    void resetWorld(Renderer& renderer);
+    // Release everything resident and come up on a different world: new seed, new save
+    // directory. Used by "new world" and by loading a saved one. Safe only when no jobs are
+    // in flight, which the caller guarantees by draining first, and the caller must put a
+    // loading screen in front of the re-stream — otherwise the whole world generates around
+    // the player, which is both ugly and a long stall.
+    void loadWorld(Renderer& renderer, int seed, std::filesystem::path saveDir);
+    int seed() const { return m_seed; }
+
+    // How many chunks a settled world at the current radius will have meshed. The loading
+    // screen divides by this, so it has to be the real figure: radius*radius*kWorldChunksY
+    // was out by 5x at radius 16 (3072 against ~15200), which pinned the bar at 100% for
+    // almost the entire load. Summed from columnRange, which is what streaming actually
+    // uses, so the two cannot drift apart.
+    int expectedMeshedChunks() const;
 
 
     // For the cull compute pass; call when consumeDirty() says the chunk set changed.
@@ -259,7 +270,8 @@ private:
     std::vector<ChunkPos> m_seedQueue; // columns with full data, waiting for light seed
     std::vector<ChunkPos> m_seedDeferred; // this frame's not-yet-settled columns
     Pool<Chunk> m_pool;
-    TerrainGenerator m_gen{20260721};
+    int m_seed;
+    TerrainGenerator m_gen;
     RegionStore m_regions;
     GreedyMesher m_mesher; // main-thread instance for the synchronous edit remesh path
     std::vector<std::uint64_t> m_quadScratch;

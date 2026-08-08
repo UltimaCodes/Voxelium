@@ -186,6 +186,12 @@ RegionStore::Stats RegionStore::stats() const {
     return s;
 }
 
+void RegionStore::setDir(std::filesystem::path dir) {
+    std::lock_guard lock(m_mutex);
+    m_regions.clear(); // cached regions belong to the world we are leaving
+    m_dir = std::move(dir);
+}
+
 void RegionStore::discardAll() {
     std::lock_guard lock(m_mutex);
     m_regions.clear();

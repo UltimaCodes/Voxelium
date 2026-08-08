@@ -40,6 +40,11 @@ public:
     // describes again" rather than a destructive wipe of anything generated.
     void discardAll();
 
+    // Point at a different world's directory, dropping every cached region first. Nothing
+    // on disk is touched — switching worlds must not delete the one being left.
+    void setDir(std::filesystem::path dir);
+    const std::filesystem::path& dir() const { return m_dir; }
+
     struct Stats {
         int regionsResident = 0;
         int chunksStored = 0;

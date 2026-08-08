@@ -25,6 +25,7 @@ add_executable(voxelium
     src/gfx/Shader.cpp
     src/io/ChunkSerializer.cpp
     src/io/RegionStore.cpp
+    src/io/WorldStore.cpp
     src/jobs/JobSystem.cpp
     src/light/LightEngine.cpp
     src/mesh/Connectivity.cpp
