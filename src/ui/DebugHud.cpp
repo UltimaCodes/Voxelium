@@ -1,5 +1,7 @@
 #include "ui/DebugHud.hpp"
 
+#include "render/QualityPreset.hpp"
+
 #include "core/Log.hpp"
 #include "render/Camera.hpp"
 #include "world/Chunk.hpp" // lamp hue count, for the colour picker's tooltip
@@ -243,189 +245,296 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(vp->GetCenter().x, vp->GetCenter().y), ImGuiCond_Always,
                             ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(430.0f, 480.0f), ImGuiCond_Always);
     ImGui::Begin("settings", nullptr,
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_NoCollapse);
 
-    ImGui::SeparatorText("display");
-    ImGui::Checkbox("vsync", &vsync);
-    ImGui::SameLine();
-    ImGui::Checkbox("cave cull", &caveCull);
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderInt("render dist", &radius, 4, 32, "%d chunks");
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("fov", &fovDeg, 50.0f, 110.0f, "%.0f deg");
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("render scale", &fx.renderScale, 0.5f, 1.0f, "%.2fx");
-    ImGui::Checkbox("auto exposure", &fx.autoExposure);
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("exposure", &fx.exposure, 0.4f, 2.5f, "%.2f");
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::ColorEdit4("crosshair", fx.crosshair,
-                      ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_AlphaPreviewHalf);
-    ImGui::SeparatorText("audio");
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("master", &fx.volume, 0.0f, 1.0f, "%.2f");
-    // Three buses rather than one slider: the old single volume also turned down the menu
-    // clicks and the ambience along with the world.
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("world", &fx.volWorld, 0.0f, 1.0f, "%.2f");
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("interface", &fx.volUi, 0.0f, 1.0f, "%.2f");
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("ambience", &fx.volAmbient, 0.0f, 1.0f, "%.2f");
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("occlusion", &fx.audioOcclusion, 0.0f, 1.0f, "%.2f");
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("muffle a sound whose path to your ear is blocked by solid blocks.\n"
-                          "one raycast per sound event, not per frame.");
-
-    ImGui::SeparatorText("sky & time");
-    ImGui::Checkbox("day/night cycle", &fx.dayCycle);
-    ImGui::BeginDisabled(fx.dayCycle);
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("time of day", &fx.timeOfDay, 0.0f, 1.0f, "%.2f");
-    ImGui::EndDisabled();
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("day length", &fx.dayLengthSec, 20.0f, 1200.0f, "%.0f s");
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("night vision", &fx.scotopic, 0.0f, 1.0f, "%.2f");
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("rod-vision shift: desaturates and cools the darkest parts of the\n"
-                          "frame after dusk. faded in with darkness, so daylight is untouched.");
-    ImGui::Checkbox("clouds", &fx.clouds);
-    ImGui::BeginDisabled(!fx.clouds);
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("cloud shadow", &fx.cloudShadow, 0.0f, 1.0f, "%.2f");
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::Checkbox("fog", &fx.fog);
-
-    ImGui::SeparatorText("lighting");
-    ImGui::Checkbox("shadows", &fx.shadows);
-    ImGui::BeginDisabled(!fx.shadows);
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("contact", &fx.contactShadow, 0.0f, 1.0f, "%.2f");
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::Checkbox("ssao", &fx.ssao);
-    ImGui::SameLine();
-    ImGui::Checkbox("ssgi", &fx.ssgi);
-    ImGui::SameLine();
-    ImGui::Checkbox("god rays", &fx.volumetric);
-
-    ImGui::SeparatorText("world");
-    ImGui::Text("seed %d", worlds.seed);
-    ImGui::SameLine();
-    ImGui::TextDisabled("(this world is not kept unless you save it)");
-
-    ImGui::SetNextItemWidth(-84.0f);
-    ImGui::InputTextWithHint("##wname", "name this world", worlds.saveName,
-                             sizeof(worlds.saveName));
-    ImGui::SameLine();
-    ImGui::BeginDisabled(worlds.saveName[0] == '\0');
-    if (ImGui::Button("save", ImVec2(76.0f, 0.0f)))
-        worlds.saveRequested = true;
-    ImGui::EndDisabled();
-
-    if (!worlds.saved.empty()) {
-        ImGui::Spacing();
-        ImGui::TextDisabled("saved worlds");
-        if (ImGui::BeginListBox("##worlds", ImVec2(-1.0f, 84.0f))) {
-            for (const WorldStore::Entry& w : worlds.saved) {
-                char label[128];
-                std::snprintf(label, sizeof(label), "%s   seed %d   %zu KB", w.name.c_str(),
-                              w.seed, w.bytes / 1024);
-                if (ImGui::Selectable(label, worlds.selected == w.name))
-                    worlds.selected = w.name;
+    // Tabs rather than one long column (#51). The old menu was a flat run of seven sections
+    // with world save/load buried between "lighting" and "post", which is not where anyone
+    // looks for it.
+    if (ImGui::BeginTabBar("##tabs")) {
+        if (ImGui::BeginTabItem("quality")) {
+            // The preset is RECOGNISED from the values rather than stored, so it can never
+            // claim to be High while sitting on hand-edited knobs. Touch anything a preset
+            // owns and this reads Custom on the next frame; that is the whole state machine.
+            const Preset current = detectPreset(fx, radius);
+            for (int i = 0; i < 4; ++i) {
+                const Preset p = Preset(i);
+                if (i > 0)
+                    ImGui::SameLine();
+                const bool active = current == p;
+                if (active)
+                    ImGui::PushStyleColor(ImGuiCol_Button,
+                                          ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+                if (ImGui::Button(presetName(p), ImVec2(95.0f, 0.0f)))
+                    applyPreset(p, fx, radius);
+                if (active)
+                    ImGui::PopStyleColor();
             }
-            ImGui::EndListBox();
-        }
-        ImGui::BeginDisabled(worlds.selected.empty());
-        if (ImGui::Button("load"))
-            worlds.loadRequested = true;
-        ImGui::SameLine();
-        if (ImGui::Button("delete"))
-            ImGui::OpenPopup("delete world?");
-        ImGui::EndDisabled();
-        if (ImGui::BeginPopupModal("delete world?", nullptr,
-                                   ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::Text("Delete \"%s\" from disk?", worlds.selected.c_str());
-            if (ImGui::Button("delete")) {
-                worlds.deleteRequested = true;
-                ImGui::CloseCurrentPopup();
-            }
+            if (current == Preset::Custom)
+                ImGui::TextDisabled("custom - a preset knob has been changed");
+            else
+                ImGui::TextDisabled("preset: %s", presetName(current));
+
+            ImGui::SeparatorText("cost");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderInt("render dist", &radius, 4, 32, "%d chunks");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("render scale", &fx.renderScale, 0.5f, 1.0f, "%.2fx");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("renders the whole HDR chain smaller and upscales at the\n"
+                                  "end. the upscale is sharpened, so 0.85 stays crisp.");
+
+            // Changing either of these recompiles the shaders, so the tab says so. The
+            // rebuild is cached per tier, but the first visit to a tier is a real pause and
+            // a control that stutters without explaining itself reads as a bug.
+            ImGui::SeparatorText("shader tier (recompiles)");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderInt("quality", &fx.quality, 0, 3, "%d");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("sample and step counts for ssao, ssgi, god rays, clouds,\n"
+                                  "contact shadows and water reflections. baked into the\n"
+                                  "programs, so changing it rebuilds them.");
+            int shadowIdx = fx.shadowRes <= 1024   ? 0
+                            : fx.shadowRes <= 1536 ? 1
+                            : fx.shadowRes <= 2048 ? 2
+                                                   : 3;
+            static const char* const kShadowNames[] = {"1024", "1536", "2048", "2560"};
+            static const int kShadowSizes[] = {1024, 1536, 2048, 2560};
+            ImGui::SetNextItemWidth(-125.0f);
+            if (ImGui::Combo("shadow map", &shadowIdx, kShadowNames, 4))
+                fx.shadowRes = kShadowSizes[shadowIdx];
+
+            ImGui::SeparatorText("effects");
+            ImGui::Checkbox("shadows", &fx.shadows);
             ImGui::SameLine();
-            if (ImGui::Button("cancel"))
-                ImGui::CloseCurrentPopup();
-            ImGui::EndPopup();
+            ImGui::Checkbox("ssao", &fx.ssao);
+            ImGui::SameLine();
+            ImGui::Checkbox("ssgi", &fx.ssgi);
+            ImGui::SameLine();
+            ImGui::Checkbox("god rays", &fx.volumetric);
+            ImGui::Checkbox("clouds", &fx.clouds);
+            ImGui::SameLine();
+            ImGui::Checkbox("fog", &fx.fog);
+            ImGui::SameLine();
+            ImGui::Checkbox("taa", &fx.taa);
+            ImGui::SameLine();
+            ImGui::Checkbox("motion blur", &fx.motionBlur);
+            ImGui::BeginDisabled(!fx.shadows);
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("contact shadow", &fx.contactShadow, 0.0f, 1.0f, "%.2f");
+            ImGui::EndDisabled();
+            ImGui::BeginDisabled(!fx.clouds);
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("cloud shadow", &fx.cloudShadow, 0.0f, 1.0f, "%.2f");
+            ImGui::EndDisabled();
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("leaf glow", &fx.leafSss, 0.0f, 2.0f, "%.2f");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("surface relief", &fx.relief, 0.0f, 2.0f, "%.2f");
+
+            ImGui::SeparatorText("system");
+            ImGui::Checkbox("vsync", &vsync);
+            ImGui::SameLine();
+            ImGui::Checkbox("cave cull", &caveCull);
+            ImGui::EndTabItem();
         }
-        ImGui::SameLine();
-    }
 
-    // Two-step, because it throws away every edit in the live world. Held behind a modal
-    // rather than a bare button for the same reason you would not put "delete save" next to
-    // "vsync" and trust a steady hand.
-    if (ImGui::Button("new world..."))
-        ImGui::OpenPopup("new world?");
-    if (ImGui::BeginPopupModal("new world?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextUnformatted("Starts a fresh world on a new seed.");
-        ImGui::TextDisabled("Everything you have placed or broken here goes with it, unless\n"
-                            "you have saved this world under a name.");
-        if (ImGui::Button("new world")) {
-            worlds.resetRequested = true;
-            ImGui::CloseCurrentPopup();
+        // Everything a preset does NOT own: taste, not performance. Kept apart so switching
+        // preset never silently rewrites someone's look.
+        if (ImGui::BeginTabItem("visuals")) {
+            ImGui::SeparatorText("camera");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("fov", &fovDeg, 50.0f, 110.0f, "%.0f deg");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::ColorEdit4("crosshair", fx.crosshair,
+                              ImGuiColorEditFlags_AlphaBar |
+                                  ImGuiColorEditFlags_AlphaPreviewHalf);
+
+            ImGui::SeparatorText("sky & time");
+            ImGui::Checkbox("day/night cycle", &fx.dayCycle);
+            ImGui::BeginDisabled(fx.dayCycle);
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("time of day", &fx.timeOfDay, 0.0f, 1.0f, "%.2f");
+            ImGui::EndDisabled();
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("day length", &fx.dayLengthSec, 20.0f, 1200.0f, "%.0f s");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("night vision", &fx.scotopic, 0.0f, 1.0f, "%.2f");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("rod-vision shift: desaturates and cools the darkest parts\n"
+                                  "of the frame after dusk. faded in with darkness, so\n"
+                                  "daylight is untouched.");
+
+            ImGui::SeparatorText("exposure & bloom");
+            ImGui::Checkbox("auto exposure", &fx.autoExposure);
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("exposure", &fx.exposure, 0.4f, 2.5f, "%.2f");
+            ImGui::Checkbox("bloom", &fx.bloom);
+            ImGui::BeginDisabled(!fx.bloom);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("strength", &fx.bloomStrength, 0.0f, 1.5f, "%.2f");
+            ImGui::EndDisabled();
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("emissive", &fx.emissive, 0.0f, 5.0f, "%.2f");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("lens flare", &fx.lensFlare, 0.0f, 2.0f, "%.2f");
+
+            ImGui::SeparatorText("grade");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("saturation", &fx.saturation, 0.0f, 2.0f, "%.2f");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("contrast", &fx.contrast, 0.5f, 1.8f, "%.2f");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("temperature", &fx.temperature, -1.0f, 1.0f, "%.2f");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("vignette", &fx.vignette, 0.0f, 1.0f, "%.2f");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("grain", &fx.grain, 0.0f, 1.0f, "%.2f");
+            if (ImGui::SmallButton("neutral")) {
+                fx.saturation = 1.0f;
+                fx.contrast = 1.0f;
+                fx.temperature = 0.0f;
+                fx.vignette = 0.0f;
+                fx.grain = 0.0f;
+            }
+            ImGui::EndTabItem();
         }
-        ImGui::SameLine();
-        if (ImGui::Button("cancel"))
-            ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-    }
 
-    ImGui::SeparatorText("post");
-    ImGui::Checkbox("taa (anti-alias)", &fx.taa);
-    ImGui::SameLine();
-    ImGui::Checkbox("motion blur", &fx.motionBlur);
-    ImGui::Checkbox("bloom", &fx.bloom);
-    ImGui::BeginDisabled(!fx.bloom);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("strength", &fx.bloomStrength, 0.0f, 1.5f, "%.2f");
-    ImGui::EndDisabled();
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("emissive", &fx.emissive, 0.0f, 5.0f, "%.2f");
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("lens flare", &fx.lensFlare, 0.0f, 2.0f, "%.2f");
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("leaf glow", &fx.leafSss, 0.0f, 2.0f, "%.2f");
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("surface relief", &fx.relief, 0.0f, 2.0f, "%.2f");
+        if (ImGui::BeginTabItem("audio")) {
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("master", &fx.volume, 0.0f, 1.0f, "%.2f");
+            ImGui::SeparatorText("buses");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("world", &fx.volWorld, 0.0f, 1.0f, "%.2f");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("interface", &fx.volUi, 0.0f, 1.0f, "%.2f");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("ambience", &fx.volAmbient, 0.0f, 1.0f, "%.2f");
+            ImGui::SeparatorText("world");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("occlusion", &fx.audioOcclusion, 0.0f, 1.0f, "%.2f");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("muffle a sound whose path to your ear is blocked by solid\n"
+                                  "blocks. one raycast per sound event, not per frame.");
+            ImGui::Spacing();
+            ImGui::TextDisabled("nothing ships in sounds/ but CC0 footsteps -\n"
+                                "drop your own clips there to hear more.");
+            ImGui::EndTabItem();
+        }
 
-    ImGui::SeparatorText("grade");
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("saturation", &fx.saturation, 0.0f, 2.0f, "%.2f");
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("contrast", &fx.contrast, 0.5f, 1.8f, "%.2f");
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("temperature", &fx.temperature, -1.0f, 1.0f, "%.2f");
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("vignette", &fx.vignette, 0.0f, 1.0f, "%.2f");
-    ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("grain", &fx.grain, 0.0f, 1.0f, "%.2f");
-    if (ImGui::SmallButton("neutral")) {
-        fx.saturation = 1.0f;
-        fx.contrast = 1.0f;
-        fx.temperature = 0.0f;
-        fx.vignette = 0.0f;
-        fx.grain = 0.0f;
+        if (ImGui::BeginTabItem("world")) {
+            ImGui::Text("seed %d", worlds.seed);
+            ImGui::TextDisabled("(this world is not kept unless you save it)");
+            ImGui::Spacing();
+
+            ImGui::SetNextItemWidth(-84.0f);
+            ImGui::InputTextWithHint("##wname", "name this world", worlds.saveName,
+                                     sizeof(worlds.saveName));
+            ImGui::SameLine();
+            ImGui::BeginDisabled(worlds.saveName[0] == 0);
+            if (ImGui::Button("save", ImVec2(76.0f, 0.0f)))
+                worlds.saveRequested = true;
+            ImGui::EndDisabled();
+
+            if (!worlds.saved.empty()) {
+                ImGui::Spacing();
+                ImGui::TextDisabled("saved worlds");
+                if (ImGui::BeginListBox("##worlds", ImVec2(-1.0f, 130.0f))) {
+                    for (const WorldStore::Entry& w : worlds.saved) {
+                        char label[128];
+                        std::snprintf(label, sizeof(label), "%s   seed %d   %zu KB",
+                                      w.name.c_str(), w.seed, w.bytes / 1024);
+                        if (ImGui::Selectable(label, worlds.selected == w.name))
+                            worlds.selected = w.name;
+                    }
+                    ImGui::EndListBox();
+                }
+                ImGui::BeginDisabled(worlds.selected.empty());
+                if (ImGui::Button("load"))
+                    worlds.loadRequested = true;
+                ImGui::SameLine();
+                if (ImGui::Button("delete"))
+                    ImGui::OpenPopup("delete world?");
+                ImGui::EndDisabled();
+                if (ImGui::BeginPopupModal("delete world?", nullptr,
+                                           ImGuiWindowFlags_AlwaysAutoResize)) {
+                    ImGui::Text("Delete \"%s\" from disk?", worlds.selected.c_str());
+                    if (ImGui::Button("delete")) {
+                        worlds.deleteRequested = true;
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("cancel"))
+                        ImGui::CloseCurrentPopup();
+                    ImGui::EndPopup();
+                }
+                ImGui::SameLine();
+            }
+
+            // Two-step, because it throws away every edit in the live world. Held behind a
+            // modal rather than a bare button for the same reason you would not put "delete
+            // save" next to "vsync" and trust a steady hand.
+            if (ImGui::Button("new world..."))
+                ImGui::OpenPopup("new world?");
+            if (ImGui::BeginPopupModal("new world?", nullptr,
+                                       ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::TextUnformatted("Starts a fresh world on a new seed.");
+                ImGui::TextDisabled(
+                    "Everything you have placed or broken here goes with it, unless\n"
+                    "you have saved this world under a name.");
+                if (ImGui::Button("new world")) {
+                    worlds.resetRequested = true;
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("cancel"))
+                    ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
+            }
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("controls")) {
+            // Read-only. There is no rebinding, and a list that looks editable but is not
+            // would be worse than none.
+            static constexpr const char* kKeys[][2] = {
+                {"W A S D", "move"},
+                {"space / ctrl", "up / down flying, jump when walking"},
+                {"shift", "sprint"},
+                {"LMB (hold)", "break - blocks have hardness"},
+                {"MMB", "place"},
+                {"MMB on a lamp", "recolour it"},
+                {"scroll", "fly speed, or hotbar when F4 is open"},
+                {"1-8", "pick a block (F4)"},
+                {"F2", "save edited chunks"},
+                {"F3", "diagnostics overlay"},
+                {"F4", "hotbar"},
+                {"F5", "walk / fly"},
+                {"ESC", "this menu (pauses)"},
+            };
+            if (ImGui::BeginTable("##keys", 2, ImGuiTableFlags_RowBg)) {
+                for (const auto& row : kKeys) {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted(row[0]);
+                    ImGui::TableNextColumn();
+                    ImGui::TextDisabled("%s", row[1]);
+                }
+                ImGui::EndTable();
+            }
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
     }
 
     ImGui::Separator();
-    if (ImGui::Button("resume", ImVec2(160.0f, 32.0f)))
+    if (ImGui::Button("resume", ImVec2(195.0f, 30.0f)))
         open = false;
     ImGui::SameLine();
-    if (ImGui::Button("quit", ImVec2(160.0f, 32.0f)))
+    if (ImGui::Button("quit", ImVec2(195.0f, 30.0f)))
         quit = true;
 
     ImGui::End();

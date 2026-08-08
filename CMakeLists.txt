@@ -41,6 +41,7 @@ add_executable(voxelium
     src/render/FrameRenderer.cpp
     src/render/Overlay.cpp
     src/render/PostFx.cpp
+    src/render/QualityPreset.cpp
     src/render/Renderer.cpp
     src/render/ShadowMap.cpp
     src/ui/DebugHud.cpp

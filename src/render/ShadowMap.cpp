@@ -11,11 +11,12 @@
 
 namespace vx {
 
-bool ShadowMap::init(unsigned int shadowProgram) {
+bool ShadowMap::init(unsigned int shadowProgram, int resolution) {
+    m_resolution = resolution;
     m_shadowProgram = shadowProgram;
 
     glCreateTextures(GL_TEXTURE_2D_ARRAY, 1, &m_depthArray);
-    glTextureStorage3D(m_depthArray, 1, GL_DEPTH_COMPONENT32F, kResolution, kResolution,
+    glTextureStorage3D(m_depthArray, 1, GL_DEPTH_COMPONENT32F, m_resolution, m_resolution,
                        kCascades);
     glTextureParameteri(m_depthArray, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTextureParameteri(m_depthArray, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -44,6 +45,13 @@ bool ShadowMap::init(unsigned int shadowProgram) {
     return true;
 }
 
+bool ShadowMap::resize(unsigned int shadowProgram, int resolution) {
+    if (resolution == m_resolution && shadowProgram == m_shadowProgram)
+        return true;
+    shutdown();
+    return init(shadowProgram, resolution);
+}
+
 void ShadowMap::shutdown() {
     glDeleteFramebuffers(1, &m_fbo);
     glDeleteTextures(1, &m_depthArray);
@@ -70,7 +78,7 @@ void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& forward,
         const float tc = (nearD + farD) * 0.5f;
         const float radius =
             glm::length(glm::vec3(tanW * farD, tanH * farD, farD - tc)) * (1.0f + kSlack);
-        const float texel = radius * 2.0f / float(kResolution);
+        const float texel = radius * 2.0f / float(m_resolution);
         m_texelWorld[c] = texel;
 
         const glm::dvec3 idealWorld = cameraPos + glm::dvec3(forward) * double(tc);
@@ -113,7 +121,7 @@ void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& forward,
 void ShadowMap::render(Renderer& renderer, const glm::ivec3& cameraChunk,
                        const glm::vec3& cameraFrac) {
     glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
-    glViewport(0, 0, kResolution, kResolution);
+    glViewport(0, 0, m_resolution, m_resolution);
     // shadow maps use conventional depth; the main pass runs reversed-z
     glDepthFunc(GL_LESS);
     glClearDepth(1.0);

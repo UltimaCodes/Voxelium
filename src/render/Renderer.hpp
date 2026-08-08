@@ -40,6 +40,13 @@ public:
     };
 
     bool init(unsigned int drawProgram, unsigned int cullProgram);
+    // Swap in rebuilt programs after a quality change. Only the handles move — the arena,
+    // the meta buffers and every uploaded chunk stay exactly where they are, which is the
+    // whole reason a preset switch does not re-stream the world.
+    void setPrograms(unsigned int drawProgram, unsigned int cullProgram) {
+        m_drawProgram = drawProgram;
+        m_cullProgram = cullProgram;
+    }
     void shutdown();
 
     // Uploads into the arena (memcpy into the persistent map). count == 0 on failure —

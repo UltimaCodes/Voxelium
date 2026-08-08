@@ -13,7 +13,10 @@ class Renderer;
 class ShadowMap {
 public:
     static constexpr int kCascades = 3;
-    static constexpr int kResolution = 1536;
+    // Default only. The live size is whatever init() was given, because the quality presets
+    // own it — and the same number is injected into the shaders as VX_SHADOW_RES so their
+    // tap offsets cannot disagree with the texture that was actually allocated.
+    static constexpr int kDefaultResolution = 1536;
     // splits reach ~9-10 chunks so shadows cover the whole radius-10 view instead of
     // vanishing a few chunks out (that was the "shadows disappear when I look far / fly
     // up"). the far cascade is the cost (vertex-bound — every quad drawn per cascade),
@@ -26,7 +29,11 @@ public:
     // the existing fade over the last 10% hides the cut instead of stepping into it.
     static constexpr float kSplits[kCascades] = {32.0f, 110.0f, 420.0f};
 
-    bool init(unsigned int shadowProgram);
+    bool init(unsigned int shadowProgram, int resolution = kDefaultResolution);
+    int resolution() const { return m_resolution; }
+    // Rebuild the depth array at a new size and/or with a rebuilt program. Every cascade is
+    // invalidated, since the old contents were rendered at the old texel scale.
+    bool resize(unsigned int shadowProgram, int resolution);
     void shutdown();
 
     // Rebuilds cascade matrices for this frame (camera-relative space).
@@ -50,6 +57,7 @@ public:
 
 private:
     unsigned int m_shadowProgram = 0;
+    int m_resolution = kDefaultResolution;
     unsigned int m_depthArray = 0;
     unsigned int m_rawSampler = 0;
     unsigned int m_fbo = 0;

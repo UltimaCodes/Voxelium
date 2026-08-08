@@ -3,6 +3,7 @@
 #include <glm/glm.hpp>
 
 #include <filesystem>
+#include <string_view>
 
 namespace vx {
 
@@ -77,6 +78,13 @@ struct FxToggles {
     // Muffle a sound whose path to the listener is blocked by solid voxels. Costs one
     // raycast per sound EVENT (not per frame), against the same DDA the crosshair runs.
     float audioOcclusion = 0.75f;
+    // Shader quality tier, 0 Low .. 3 Ultra. Injected as VX_QUALITY and baked into the
+    // programs, so changing it costs a shader rebuild — not a per-frame branch. 2 is the
+    // build that existed before presets, which is what every other tier is judged against.
+    int quality = 2;
+    // Shadow cascade texture size. A resource knob: changing it reallocates the depth array
+    // and is also injected, since the shaders divide by it to size their tap offsets.
+    int shadowRes = 1536;
     // Internal render resolution as a fraction of the window. The whole HDR chain (scene,
     // ssao, ssgi, volumetrics, bloom, taa) runs at this size and only the final tonemap
     // pass runs at native, so it scales nearly everything that costs fill rate. 1.0 = off.
@@ -88,8 +96,14 @@ struct FxToggles {
 // downsample/upsample chain -> ACES + sRGB into whatever framebuffer is bound.
 class PostFx {
 public:
-    bool init(const std::filesystem::path& shaderDir);
+    bool init(const std::filesystem::path& shaderDir, std::string_view defines = {});
     void shutdown();
+    // Rebuild every program at a new quality tier. Costs a compile the first time a tier is
+    // seen and a cache hit thereafter — the binary cache keys on the injected source, so the
+    // second visit to a preset is nearly free (#15 measured the whole set at 349 ms cold,
+    // 56 ms warm). Returns false and leaves the old programs in place if anything fails, so
+    // a bad tier cannot leave the renderer with no shaders.
+    bool reloadPrograms(std::string_view defines);
     void resize(int width, int height);
 
     void beginScene(); // binds the HDR framebuffer; caller clears and draws the world
@@ -170,6 +184,7 @@ private:
     unsigned int m_bloomTex[kBloomMips] = {};
     glm::ivec2 m_bloomSize[kBloomMips] = {};
 
+    std::filesystem::path m_shaderDir; // kept so a preset change can rebuild
     int m_width = 0, m_height = 0;
 };
 

@@ -18,6 +18,7 @@
 #include "render/Overlay.hpp"
 #include "render/Particles.hpp"
 #include "render/PostFx.hpp"
+#include "render/QualityPreset.hpp"
 #include "render/Renderer.hpp"
 #include "render/ShadowMap.hpp"
 #include "ui/DebugHud.hpp"
@@ -38,6 +39,7 @@
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <string>
 #include <vector>
 
 using vx::FrameTimers;
@@ -110,34 +112,85 @@ int main(int argc, char** argv) {
         VX_ERROR("could not locate assets/ directory");
         return 1;
     }
+    // Settings are read BEFORE any shader is built. The quality tier is injected into the
+    // shader source, so the compile depends on it — reading settings afterwards would mean
+    // building the whole set at the default tier and then throwing it away.
+    //
+    // Only fx is applied here; radius and fov land on `world` and `camera`, which do not
+    // exist yet, so they are held and applied at their declarations below.
+    vx::FxToggles fx;
+    fx.taa = true; // temporal AA on by default in the live app
+    bool vsync = false;
+    bool caveCull = true;
+    int savedRadius = 16;
+    float savedFov = 70.0f;
+    const std::filesystem::path settingsFile = "saves/settings.cfg";
+    // A smoke/bench/tour run renders from fixed defaults, never a machine's saved settings,
+    // or the reference images would move under whoever happened to run it.
+    const bool liveApp = !smoke && !bench && !tour;
+    if (liveApp && vx::Settings::load(settingsFile, fx, vsync, caveCull, savedRadius, savedFov))
+        VX_INFO("settings: loaded %s", settingsFile.string().c_str());
+
+    // VX_PRESET=0..3 forces a quality preset. The harnesses otherwise render from fixed
+    // defaults on purpose, but a preset table nobody has measured is a table of guesses —
+    // this is what lets --bench and --tour be run at each tier without editing the source.
+    // It applies to the live app too, which makes it the quickest way to reproduce a report
+    // that only happens on Low.
+    if (const char* pv = std::getenv("VX_PRESET")) {
+        const int idx = std::atoi(pv);
+        if (idx >= 0 && idx <= 3) {
+            vx::applyPreset(vx::Preset(idx), fx, savedRadius);
+            benchRadius = savedRadius;
+            tourRadius = savedRadius;
+            VX_INFO("preset: %s (radius %d, scale %.2f, tier %d, shadow %d)",
+                    vx::presetName(vx::Preset(idx)), savedRadius, double(fx.renderScale),
+                    fx.quality, fx.shadowRes);
+        }
+    }
+
     const std::filesystem::path shaders = assets / "shaders";
     // shared across runs including --smoke: this caches driver output keyed by source and
     // GL identity, not world state, so there is nothing here for a test run to poison
     vx::initShaderCache("saves/shadercache");
-    vx::ProgramJob worldJobs[] = {
-        vx::submitProgram(shaders / "chunk.vert", shaders / "chunk.frag"),
-        vx::submitComputeProgram(shaders / "cull.comp"),
-        vx::submitProgram(shaders / "shadow.vert", shaders / "shadow.frag"),
-        vx::submitProgram(shaders / "water.vert", shaders / "water.frag"),
+    // The four world programs, rebuilt whenever the quality tier changes. Submitted all at
+    // once so the driver's compiler threads have the whole set to overlap (#15).
+    struct WorldPrograms {
+        GLuint draw = 0, cull = 0, shadow = 0, water = 0;
+        bool ok() const { return draw && cull && shadow && water; }
     };
-    const GLuint drawProgram = vx::resolveProgram(worldJobs[0]);
-    const GLuint cullProgram = vx::resolveProgram(worldJobs[1]);
-    const GLuint shadowProgram = vx::resolveProgram(worldJobs[2]);
-    const GLuint waterProgram = vx::resolveProgram(worldJobs[3]);
-    if (!drawProgram || !cullProgram || !shadowProgram || !waterProgram)
+    const auto buildWorldPrograms = [&](std::string_view defines) {
+        vx::ProgramJob jobs[] = {
+            vx::submitProgram(shaders / "chunk.vert", shaders / "chunk.frag", defines),
+            vx::submitComputeProgram(shaders / "cull.comp", defines),
+            vx::submitProgram(shaders / "shadow.vert", shaders / "shadow.frag", defines),
+            vx::submitProgram(shaders / "water.vert", shaders / "water.frag", defines),
+        };
+        WorldPrograms wp;
+        wp.draw = vx::resolveProgram(jobs[0]);
+        wp.cull = vx::resolveProgram(jobs[1]);
+        wp.shadow = vx::resolveProgram(jobs[2]);
+        wp.water = vx::resolveProgram(jobs[3]);
+        return wp;
+    };
+    WorldPrograms world_p = buildWorldPrograms(vx::qualityDefines(fx.quality, fx.shadowRes));
+    if (!world_p.ok())
         return 1;
+    const GLuint cullProgram0 = world_p.cull;
+    const GLuint drawProgram = world_p.draw;
+    const GLuint shadowProgram = world_p.shadow;
+    const GLuint waterProgram = world_p.water;
 
     if (!runMesherOracle())
         return 1;
 
     vx::Renderer renderer;
-    if (!renderer.init(drawProgram, cullProgram))
+    if (!renderer.init(drawProgram, cullProgram0))
         return 1;
     vx::ShadowMap shadowMap;
-    if (!shadowMap.init(shadowProgram))
+    if (!shadowMap.init(shadowProgram, fx.shadowRes))
         return 1;
     vx::PostFx postfx;
-    if (!postfx.init(shaders))
+    if (!postfx.init(shaders, vx::qualityDefines(fx.quality, fx.shadowRes)))
         return 1;
     vx::Overlay overlay;
     if (!overlay.init(shaders))
@@ -237,8 +290,6 @@ int main(int argc, char** argv) {
     std::vector<vx::ChunkDrawInfo> drawInfo;
     std::vector<vx::ChunkDrawInfo> waterInfo;
     vx::Player player;
-    vx::FxToggles fx;
-    fx.taa = true; // temporal AA on by default in the live app
     TaaState taaState;
     // Settle the world before the player ever sees it. Streaming in front of someone is
     // what makes LOD swaps, shadow cascades and chunk pop-in obvious; doing it behind a
@@ -333,8 +384,6 @@ int main(int argc, char** argv) {
     bool f5Held = false;
     bool mmbHeld = false;
     bool walkMode = false;
-    bool vsync = false;
-    bool caveCull = true;
     // sounds/ next to the assets dir; nothing ships in it, the user fills it themselves
     vx::AudioEngine audio;
     // Decoded up front on the workers. Every clip is held as PCM for the process lifetime,
@@ -357,11 +406,11 @@ int main(int argc, char** argv) {
                                            });
         return hit.hit ? fx.audioOcclusion : 0.0f;
     };
-    // live app only — a smoke run renders from fixed defaults, never a machine's saved
-    // settings, or the reference image would move under it
-    const std::filesystem::path settingsFile = "saves/settings.cfg";
-    if (vx::Settings::load(settingsFile, fx, vsync, caveCull, world->radius, camera.fovYDeg))
-        VX_INFO("settings: loaded %s", settingsFile.string().c_str());
+    // The two values the early load could not place, because their owners did not exist yet.
+    if (liveApp) {
+        world->radius = savedRadius;
+        camera.fovYDeg = savedFov;
+    }
     window->setVsync(vsync);
     bool loadLogged = false;
     bool everBusy = false; // don't log the "loaded" summary before streaming even starts
@@ -694,10 +743,41 @@ int main(int argc, char** argv) {
         worldUi.seed = world->seed();
         if (settingsOpen && worldUi.saved.empty())
             worldUi.saved = worldStore.list(); // only touch the disk while the menu is up
+        const int qualityBefore = fx.quality;
+        const int shadowResBefore = fx.shadowRes;
         hud.settings(settingsOpen, vsync, caveCull, world->radius, camera.fovYDeg, fx,
                      quitRequested, worldUi);
         if (!settingsOpen)
             worldUi.saved.clear();
+
+        // A quality change is the one setting that is not free: the sample counts are baked
+        // into the programs, so the tier has to be recompiled rather than branched on. The
+        // binary cache makes the second visit to a preset cheap (#15: 349 ms cold for the
+        // whole set, 56 ms warm), and nothing about the world is touched — the arena, the
+        // meta buffers and every uploaded chunk stay exactly where they are, so switching
+        // preset does not re-stream anything.
+        if (fx.quality != qualityBefore || fx.shadowRes != shadowResBefore) {
+            vx::initShaderCache("saves/shadercache");
+            const std::string defines = vx::qualityDefines(fx.quality, fx.shadowRes);
+            WorldPrograms next = buildWorldPrograms(defines);
+            if (next.ok() && postfx.reloadPrograms(defines)) {
+                glDeleteProgram(rc.drawProgram);
+                glDeleteProgram(rc.waterProgram);
+                renderer.setPrograms(next.draw, next.cull);
+                rc.drawProgram = next.draw;
+                rc.waterProgram = next.water;
+                shadowMap.resize(next.shadow, fx.shadowRes);
+                shadowMap.invalidate();
+                postfx.invalidateTaaHistory();
+                VX_INFO("quality: tier %d, shadow map %d", fx.quality, fx.shadowRes);
+            } else {
+                // Keep running on what already works rather than half-swapping the set.
+                VX_ERROR("quality: rebuild failed, staying on tier %d", qualityBefore);
+                fx.quality = qualityBefore;
+                fx.shadowRes = shadowResBefore;
+            }
+            vx::shutdownShaderCache();
+        }
 
         if (worldUi.saveRequested) {
             worldUi.saveRequested = false;

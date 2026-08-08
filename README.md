@@ -43,13 +43,27 @@ controls:
 - MMB while looking at a lamp opens its colour picker; the colour sticks for lamps you place
 - F4 opens the hotbar (keys 1-8 or scroll to pick a block)
 
-ESC opens the settings menu (it pauses too): every shader toggle — shadows, ssao, ssgi,
-god rays, bloom (with strength and emissive), clouds, fog, taa, motion blur — a grade
-section (saturation, contrast, temperature, vignette, grain), auto exposure, plus a
-day/night cycle (time of day + day length), night vision, exposure, fov, render scale,
-audio (master + world/interface/ambience buses and occlusion), vsync, cave culling and
-render distance. F3 is the read-only diagnostics overlay — frame graph, timings,
-chunk/arena stats, log.
+ESC opens the settings menu (it pauses too), in five tabs:
+
+- **quality** — Low / Medium / High / Ultra presets, plus everything they set: render
+  distance, render scale, the shader tier, shadow map size, and each effect toggle. the
+  preset is worked out from the values rather than remembered, so touching any of them
+  flips it to "custom" straight away.
+- **visuals** — the things a preset deliberately does *not* touch, because they are taste
+  and not performance: fov, crosshair, day/night cycle, night vision, exposure, bloom,
+  and the grade (saturation, contrast, temperature, vignette, grain).
+- **audio** — master plus world/interface/ambience buses, and occlusion.
+- **world** — seed, save, load, delete, new world.
+- **controls** — key reference.
+
+presets are measured, not guessed: **Low 3.47 / Medium 4.61 / High 6.09 / Ultra 7.74 ms**
+at 1280x720 (mean of the three bench views). High is deliberately the build that existed
+before presets did, so the others are an A/B against a known reference. changing the tier
+recompiles the shaders — sample counts are compile-time constants, because a uniform loop
+bound doesn't unroll and would make Ultra slower than having no presets at all. the binary
+cache means the second visit to a preset is nearly free.
+
+F3 is the read-only diagnostics overlay — frame graph, timings, chunk/arena stats, log.
 
 night is lit by the moon, not by a raised ambient floor — it rides the same shadow cascades
 the sun does, so hills have a lit side after dark and the fill can stay low. drop your own
