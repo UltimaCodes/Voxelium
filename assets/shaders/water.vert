@@ -50,12 +50,21 @@ void main() {
     // depth change a hard step, and that was the jagged water.
     uint corners = q.y >> 16;
     float level = float(((corners >> (uint(corner) * 3u)) & 7u) + 1u);
-    // How far this cell's surface sits below the top of its voxel, plus the swell.
+    // How far this cell's surface sits below the top of its voxel.
     float drop = 0.10 + (8.0 - level) * 0.105;
-    vec2 p = world.xz;
-    float wave = 0.055 * sin(dot(vec2(0.80, 0.20), p) * 0.28 + uTime * 1.1) +
-                 0.040 * sin(dot(vec2(-0.30, 0.95), p) * 0.41 + uTime * 1.5) +
-                 0.024 * sin(dot(vec2(0.55, -0.72), p) * 0.67 + uTime * 2.1);
+
+    // THE SWELL IS NOT DISPLACED ANY MORE, and that is a fix rather than a simplification.
+    // A vertical wave sampled per VERTEX is interpolated linearly across the face, and water
+    // quads are greedy-merged up to 32x32 — so a large quad and a small neighbour disagree
+    // along their shared edge by however much the wave curves between the large quad's
+    // corners. That gap opens and closes as the swell moves: the visible separation between
+    // water blocks. Any fix that keeps displacement has to defeat the merge (cap quad size,
+    // or tessellate), and both cost geometry for motion the eye reads mostly off the
+    // highlights anyway.
+    //
+    // So the surface stays flat at its depth-derived level, which is per-corner and shared,
+    // and therefore watertight by construction. The wave lives entirely in the fragment
+    // normal (waveGrad in water.frag), which is also where the good Minecraft packs put it.
 
     // The drop used to be applied to the TOP FACE ONLY. Side faces then still spanned the
     // full block, so every shallow cell had walls standing proud of its own surface: a rim
@@ -67,7 +76,7 @@ void main() {
     // exactly instead of shearing away from it as the swell moves.
     bool topEdge = (dir != 2u && dir != 3u) && uv.y >= h - 0.001;
     if (dir == 2u || topEdge)
-        world.y -= drop - wave;
+        world.y -= drop;
 
     vWorldRel = world;
     vDir = dir;

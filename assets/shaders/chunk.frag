@@ -137,7 +137,21 @@ void main() {
                               uCloudShadow)
                         : 1.0;
     vec3 direct = uSunColor * (ndl * shadow * skyAccess * clouded);
-    vec3 ambient = uSkyAmbient * (0.10 + 0.90 * skyL) + vec3(0.035, 0.04, 0.05);
+
+    // How hard sky access gates the ambient fill. In daylight the sun dominates and a tight
+    // gate (0.10 floor, a 10x range) is what gives caves and overhangs their depth. At night
+    // there is NO directional light at all — computeSky multiplies the sun colour by `day`,
+    // which is 0 after dusk — so that same 10x range becomes the entire image, and every
+    // hollow reads as a hard black shadow with nothing to fill it. That is the "shadows are
+    // too harsh at night".
+    //
+    // Night light is scattered skylight and moonlight, which is far more omnidirectional
+    // than the sun, so a flatter gate is also the physically honest answer: the floor rises
+    // to 0.45 after dark, compressing the range from 10x to about 2.2x.
+    float daylight = clamp(uSunL.y * 3.0 + 0.12, 0.0, 1.0);
+    float gateFloor = mix(0.45, 0.10, daylight);
+    vec3 ambient = uSkyAmbient * (gateFloor + (1.0 - gateFloor) * skyL) +
+                   vec3(0.035, 0.04, 0.05);
     // The emitter's own colour drives the tint now (M18), so the fixed warm multiplier
     // that used to supply it would double-tint. Keep a slight warm bias for the ember
     // feel and let the light itself carry the hue out to its falloff.

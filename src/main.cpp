@@ -127,8 +127,12 @@ SkyLight computeSky(float timeOfDay) {
                                      glm::vec3(2.05f, 1.85f, 1.5f),  // overhead white
                                      high) *
                             day;
+    // Night ambient is the ONLY light after dusk (the sun colour above is multiplied by
+    // `day`), so it is what a moonlit scene is lit by. Lifted from 0.03/0.045/0.08 and
+    // kept cool: low enough to read as night, high enough that the shadow side of a hill is
+    // a shape rather than a hole.
     const glm::vec3 ambient =
-        glm::mix(glm::vec3(0.03f, 0.045f, 0.08f), glm::vec3(0.26f, 0.36f, 0.55f), day);
+        glm::mix(glm::vec3(0.055f, 0.075f, 0.125f), glm::vec3(0.26f, 0.36f, 0.55f), day);
     return {dir, color, ambient};
 }
 
@@ -246,6 +250,14 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
     glProgramUniform3fv(rc.waterProgram, 8, 1, &sky.color.x);
     glProgramUniform2fv(rc.waterProgram, 6, 1, &projScale.x);
     glProgramUniform1f(rc.waterProgram, 7, camera.nearPlane);
+    glProgramUniform3fv(rc.waterProgram, 9, 1, &sky.ambient.x);
+    glProgramUniform1f(rc.waterProgram, 10, fx.shadows ? 1.0f : 0.0f);
+    // Water samples the same three cascades the terrain does; it had no shadow at all
+    // before, which is why its sun lighting came from blocky voxel sky light.
+    glProgramUniformMatrix4fv(rc.waterProgram, 11, 3, GL_FALSE,
+                              &rc.shadows.cascadeVp()[0][0][0]);
+    glProgramUniform3fv(rc.waterProgram, 23, 1, &splits.x);
+    glProgramUniform3fv(rc.waterProgram, 24, 1, &texel.x);
     glBindTextureUnit(2, rc.postfx.sceneCopyTex());
     glBindTextureUnit(3, rc.postfx.depthTex());
     glEnable(GL_BLEND);
@@ -1186,6 +1198,12 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
     fx.dayCycle = false;
     fx.autoExposure = false; // stateful across frames; keeps the five stops comparable
     fx.timeOfDay = 0.32f;
+    // Promoted instrumentation, not a leftover: the tour is the only way to look at the
+    // renderer offscreen, and without this there is no way to inspect NIGHT at all — which
+    // is where the water-glows-after-dark and shadows-too-harsh bugs both lived.
+    // VX_TOUR_TIME=0.85 is a good night, 0.25 sunrise, 0.5 noon.
+    if (const char* t = std::getenv("VX_TOUR_TIME"))
+        fx.timeOfDay = std::clamp(float(std::atof(t)), 0.0f, 1.0f);
 
     std::vector<std::uint8_t> pixels(std::size_t(w) * h * 3);
     // walk outward from spawn: the report is that things degrade with distance travelled.

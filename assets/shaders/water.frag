@@ -18,7 +18,14 @@ layout(location = 4) uniform float uTime;
 layout(location = 5) uniform vec3 uSunL;
 layout(location = 6) uniform vec2 uProjScale; // (aspect/f, 1/f)
 layout(location = 7) uniform float uNear;
-layout(location = 8) uniform vec3 uSunColor; // day/night sun radiance
+layout(location = 8) uniform vec3 uSunColor;   // day/night sun radiance
+layout(location = 9) uniform vec3 uSkyAmbient; // day/night sky fill, same one the terrain uses
+layout(location = 10) uniform float uShadowsOn;
+layout(location = 11) uniform mat4 uCascadeVp[3];  // consumes 11..22
+layout(location = 23) uniform vec3 uCascadeSplit;  // radial split distances
+layout(location = 24) uniform vec3 uCascadeTexel;  // world units per shadow texel
+
+layout(binding = 1) uniform sampler2DArrayShadow uShadowMap;
 
 layout(binding = 2) uniform sampler2D uSceneColor; // opaque snapshot
 layout(binding = 3) uniform sampler2D uSceneDepth;
@@ -66,6 +73,30 @@ vec3 skyColor(vec3 d) {
     col += vec3(1.0, 0.55, 0.28) * pow(sd, 8.0) * 0.6 * above;
     col += uSunColor * smoothstep(0.9985, 0.9995, sd) * 3.0 * above;
     return col;
+}
+
+// Cascade shadow, the same three the terrain samples. Water had NO shadow lookup at all:
+// every sun term was gated on vSky, which is 4-bit per-voxel sky ACCESS. That is a
+// geometric value on a 16-level grid, so the specular and the surface brightness stepped
+// from block to block — the blocky sun lighting. A shadow lookup is smooth, moves with the
+// sun, and is what the terrain has always used.
+float waterShadow(vec3 pos, vec3 N) {
+    if (uShadowsOn < 0.5)
+        return 1.0;
+    float d = length(pos);
+    if (d >= uCascadeSplit.z)
+        return 1.0;
+    int c = d < uCascadeSplit.x ? 0 : (d < uCascadeSplit.y ? 1 : 2);
+    vec4 sc = uCascadeVp[c] * vec4(pos + N * uCascadeTexel[c] * 1.5, 1.0);
+    vec2 uv = sc.xy * 0.5 + 0.5;
+    float z = sc.z - 0.0016;
+    // 4 taps: water is a broad flat surface, so a single tap aliases along the cascade grid
+    float t = 1.5 / 1536.0;
+    float sh = 0.25 * (texture(uShadowMap, vec4(uv + vec2(t, t), float(c), z)) +
+                       texture(uShadowMap, vec4(uv + vec2(-t, t), float(c), z)) +
+                       texture(uShadowMap, vec4(uv + vec2(t, -t), float(c), z)) +
+                       texture(uShadowMap, vec4(uv + vec2(-t, -t), float(c), z)));
+    return mix(sh, 1.0, smoothstep(uCascadeSplit.z * 0.9, uCascadeSplit.z, d));
 }
 
 // march R from world-rel point P, return reflected colour (scene hit or sky)
@@ -149,19 +180,40 @@ void main() {
         ruv = suv;
     vec3 refr = texture(uSceneColor, ruv).rgb;
 
-    // Beer-Lambert absorption: shallow shows the bed, deep goes blue-green
+    // How lit this patch of water is. sun = the cascade (smooth, sun-following); ambient =
+    // the same sky fill the terrain gets. vSky survives only as a soft occlusion factor for
+    // water under an overhang — never as the thing that shades the sun, which is what made
+    // the lighting step from block to block.
+    float shadow = waterShadow(vWorldRel, N);
+    float ndl = max(dot(N, uSunL), 0.0);
+    float occl = 0.35 + 0.65 * vSky;            // gentle: 4-bit voxel light, so keep it soft
+    vec3 sunLit = uSunColor * (ndl * shadow);
+    vec3 ambLit = uSkyAmbient * occl;
+    // Daylight scalar for anything that must go dark at night.
+    float daylight = clamp(uSunL.y * 3.0 + 0.12, 0.0, 1.0);
+
+    // Beer-Lambert absorption: shallow shows the bed, deep goes blue-green.
     float absorb = 1.0 - exp(-thickness * 0.18);
     vec3 tint = mix(vec3(0.12, 0.30, 0.36), vec3(0.02, 0.09, 0.16), absorb);
-    refr = mix(refr, tint, absorb) * (0.4 + 0.6 * vSky);
+    // The tint was a CONSTANT colour scaled only by vSky, and vSky is geometric — it does
+    // not drop when the sun sets. So deep water kept full daylight brightness after dark and
+    // the lake read as luminous. It is a body colour: light it like one. (The foam had the
+    // same bug and was fixed years earlier; the water itself never was.)
+    vec3 waterLight = ambLit + sunLit * 0.35 + vec3(0.015, 0.02, 0.028);
+    refr = mix(refr * occl, tint * waterLight, absorb);
 
     float jitter = hash21(gl_FragCoord.xy + fract(uTime) * 17.0);
-    vec3 refl = reflection(vWorldRel, reflect(-V, N), jitter) * (0.4 + 0.6 * vSky);
+    // The reflection carries its own light (it is a picture of the lit world / the sky), so
+    // it only wants the occlusion term, not a second helping of daylight.
+    vec3 refl = reflection(vWorldRel, reflect(-V, N), jitter) * occl;
 
     // two-lobe glint: a tight hot core plus a broad sheen, which is what separates a wet
     // mirror from a plastic-looking one under a single narrow highlight
     vec3 H = normalize(uSunL + V);
     float ndh = max(dot(N, H), 0.0);
-    float spec = (pow(ndh, 340.0) * 2.6 + pow(ndh, 34.0) * 0.28) * vSky;
+    // Shadowed by the cascade rather than gated on voxel sky light: a glint that survives
+    // into a tree's shadow is the giveaway that the sun term was never really shadowed.
+    float spec = (pow(ndh, 340.0) * 2.6 + pow(ndh, 34.0) * 0.28) * shadow * occl;
 
     vec3 col = mix(refr, refl, fres) + uSunColor * spec; // glint fades at night
 
@@ -174,8 +226,7 @@ void main() {
     float shore = 1.0 - smoothstep(0.0, 1.6, thickness);
     float fn = fbm2(vWorldRel.xz * 1.3 + vec2(uTime * 0.3, -uTime * 0.2));
     float foam = smoothstep(0.55, 0.95, shore * (0.55 + 0.6 * fn));
-    float daylight = clamp(uSunL.y * 3.0 + 0.12, 0.0, 1.0);
-    vec3 foamCol = vec3(0.92, 0.96, 1.0) * vSky * (0.10 + 0.90 * daylight);
+    vec3 foamCol = vec3(0.92, 0.96, 1.0) * occl * (0.10 + 0.90 * daylight);
     col = mix(col, foamCol, foam);
 
     outColor = vec4(col, 1.0); // fully composited here (refraction sampled directly)
