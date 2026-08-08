@@ -17,6 +17,9 @@ layout(binding = 1) uniform sampler2DArrayShadow uShadowMap;
 layout(location = 0) uniform vec2 uProjScale; // (aspect/f, 1/f)
 layout(location = 1) uniform float uNear;
 layout(location = 2) uniform mat3 uInvViewRot; // view -> camera-relative world; eats 2,3,4
+// The TRUE sun, even at night when it is below the horizon. The sky pass needs it to place
+// the disc, aim the warm bands and put the moon opposite. For anything that SHADES, use
+// uLightL — after dusk that points at the moon and the cascades are rendered from it.
 layout(location = 5) uniform vec3 uSunL;
 layout(location = 6) uniform mat4 uCascadeVp[3];
 layout(location = 18) uniform vec3 uCascadeSplit;
@@ -28,6 +31,9 @@ layout(location = 23) uniform float uAoOn;         // moved off 3 (was aliased b
 layout(location = 24) uniform float uVolumetricOn; // moved off 4
 layout(location = 25) uniform vec3 uSunColor;      // day/night sun radiance
 layout(location = 26) uniform vec2 uFog;           // (start, end) distance; huge = off
+layout(location = 30) uniform vec3 uLightL;        // toward sun by day, moon by night
+layout(location = 31) uniform vec3 uLightColor;    // radiance of uLightL
+layout(location = 32) uniform float uDaylight;     // 1 full day, 0 after dusk
 layout(location = 27) uniform float uFlare;        // lens flare strength, 0 = off
 layout(location = 28) uniform vec3 uCamPos;        // camera world position (clouds are world-anchored)
 layout(location = 29) uniform float uContact;      // screen-space contact shadow, 0 = off
@@ -169,11 +175,18 @@ vec3 skyColor(vec3 dir) {
     float alt = uSunL.y;                             // sun altitude, -1..1
     float day = clamp(alt * 3.0 + 0.12, 0.0, 1.0);   // 1 day, 0 night
     // day/night gradient
-    vec3 zenith = mix(vec3(0.01, 0.015, 0.05), vec3(0.14, 0.34, 0.80), day);
-    vec3 horizon = mix(vec3(0.04, 0.06, 0.12), vec3(0.66, 0.78, 0.92), day);
+    // Night endpoints cut ~2.5x (was 0.01/0.015/0.05 zenith, 0.04/0.06/0.12 horizon). The
+    // measurement that forced this: at the --tour night stop the SKY is most of the frame's
+    // brightness, and distance fog melts the far terrain into it too, so the sky gradient
+    // was setting the exposure of the whole image. A horizon green of 0.06 lands at ~70/255
+    // after ACES and the gamma encode, which is dusk, not night � and no amount of retuning
+    // the surface shading can pull an image down past what its own sky is sitting at.
+    // Stars and the moon are ADDED after this, so darkening here makes them read stronger.
+    vec3 zenith = mix(vec3(0.004, 0.006, 0.020), vec3(0.14, 0.34, 0.80), day);
+    vec3 horizon = mix(vec3(0.016, 0.025, 0.050), vec3(0.66, 0.78, 0.92), day);
     vec3 col = mix(horizon, zenith, pow(up, 0.5));
     if (dir.y < 0.0)
-        col = mix(horizon, mix(vec3(0.06, 0.07, 0.09), vec3(0.34, 0.38, 0.44), day),
+        col = mix(horizon, mix(vec3(0.024, 0.028, 0.036), vec3(0.34, 0.38, 0.44), day),
                   clamp(-dir.y * 3.0, 0.0, 1.0));
 
     float sd = max(dot(dir, uSunL), 0.0);
@@ -222,7 +235,7 @@ vec4 clouds(vec3 dir) {
 
     float transmittance = 1.0;
     vec3 scattered = vec3(0.0);
-    float day = clamp(uSunL.y * 3.0 + 0.12, 0.0, 1.0);
+    float day = uDaylight;
     vec3 sunTint = mix(vec3(0.55, 0.60, 0.70), vec3(1.05, 1.02, 0.98), day);
 
     for (int i = 0; i < kSteps; ++i) {
@@ -235,11 +248,15 @@ vec4 clouds(vec3 dir) {
         // a lit top from a heavy base.
         float shadowD = 0.0;
         for (int j = 1; j <= 3; ++j)
-            shadowD += cloudDensity(p + uSunL * (float(j) * 26.0), uTime);
+            shadowD += cloudDensity(p + uLightL * (float(j) * 26.0), uTime);
         float lit = exp(-shadowD * 0.55);
         // Forward scattering: bright rim when looking toward the sun through thin cloud.
-        float phase = 0.55 + 0.45 * pow(max(dot(dir, uSunL), 0.0), 4.0);
-        vec3 lightCol = uSunColor * lit * phase + vec3(0.30, 0.36, 0.46) * 0.55;
+        float phase = 0.55 + 0.45 * pow(max(dot(dir, uLightL), 0.0), 4.0);
+        // The ambient half was an ungated constant, so a cloud deck stayed lit after dark
+        // and the cloud band measured brighter than the sky it sat in. Faded with daylight,
+        // keeping 12% so moonlit cloud still reads as shape rather than a hole in the stars.
+        vec3 lightCol = uLightColor * lit * phase +
+                        vec3(0.30, 0.36, 0.46) * 0.55 * mix(0.12, 1.0, uDaylight);
         float extinction = d * 0.055 * stepLen;
         float absorbed = 1.0 - exp(-extinction);
         scattered += transmittance * absorbed * lightCol * sunTint;
@@ -366,7 +383,7 @@ float contactShadow(vec3 worldRel, float rawD) {
     // Dither the start so the fixed step count does not band along surfaces.
     float t0 = (0.15 + 0.85 * ign(gl_FragCoord.xy)) * (kReach / float(kSteps));
     for (int i = 0; i < kSteps; ++i) {
-        vec3 p = worldRel + uSunL * (t0 + kReach * float(i) / float(kSteps));
+        vec3 p = worldRel + uLightL * (t0 + kReach * float(i) / float(kSteps));
         // project back to the screen: world -> view -> ndc, the inverse of the
         // reconstruction above
         vec3 v = transpose(uInvViewRot) * p;
@@ -424,7 +441,7 @@ void main() {
     // multiplies the composited colour rather than the direct term alone — so after dark,
     // when ambient is the only light left, it was darkening light the sun never cast. That
     // is what made night shadows read as far too heavy.
-    float sunAmt = clamp(max(uSunColor.r, max(uSunColor.g, uSunColor.b)), 0.0, 1.0);
+    float sunAmt = clamp(max(uLightColor.r, max(uLightColor.g, uLightColor.b)), 0.0, 1.0);
     if (uContact > 0.0 && sunAmt > 0.01 && shadowSingle(worldRel) > 0.5)
         color *= mix(1.0, contactShadow(worldRel, rawD), sunAmt);
 
@@ -443,9 +460,9 @@ void main() {
         scatter /= float(kSteps);
         // stronger forward lobe + a touch more intensity so the god-ray shafts read
         // clearly when looking toward the sun, without bringing the aliased grid back
-        float phase = 0.10 + 0.90 * pow(max(dot(rd, uSunL), 0.0), 5.0);
+        float phase = 0.10 + 0.90 * pow(max(dot(rd, uLightL), 0.0), 5.0);
         // uSunColor carries the day/night intensity, so the shafts fade out at night
-        color += uSunColor * (scatter * phase * len * 0.00018);
+        color += uLightColor * (scatter * phase * len * 0.00018);
     }
 
     if (uUnderwater > 0.5) {
@@ -456,7 +473,7 @@ void main() {
         float caus = caustics(wpos.xz, depth, uTime);
         // Only where the sun actually reaches: caustics are focused sunlight, so they have
         // no business on a face in shadow or in a cave.
-        float lit = shadowSingle(worldRel) * clamp(uSunL.y * 3.0, 0.0, 1.0);
+        float lit = shadowSingle(worldRel) * uDaylight;
         color += uSunColor * caus * lit * 0.55;
 
         // underwater: absorb reds and fog toward deep water with distance (Beer-Lambert-ish)
@@ -467,7 +484,7 @@ void main() {
         // gives shafts through gaps in the terrain; this adds the surface itself as the
         // occluder, so light comes down in bands broken by the swell. Cheap because it only
         // needs the ray's crossing of the waterline, not a march.
-        if (uVolumetricOn > 0.5 && uSunL.y > 0.05) {
+        if (uVolumetricOn > 0.5 && uSunL.y > 0.05 && uDaylight > 0.0) {
             vec3 rd = normalize(worldRel);
             float tSurf = (kSeaLevel - uCamPos.y) / max(rd.y, 1e-3);
             if (tSurf > 0.0 && tSurf < dist) {

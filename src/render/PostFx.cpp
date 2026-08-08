@@ -232,6 +232,9 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform3fv(m_progComposite, 28, 1, &p.camPos.x);
     glProgramUniform1f(m_progComposite, 29,
                        p.toggles.shadows ? p.toggles.contactShadow : 0.0f);
+    glProgramUniform3fv(m_progComposite, 30, 1, &p.lightL.x);
+    glProgramUniform3fv(m_progComposite, 31, 1, &p.lightColor.x);
+    glProgramUniform1f(m_progComposite, 32, p.daylight);
     glProgramUniformMatrix4fv(m_progComposite, 6, 3, GL_FALSE,
                               &p.shadows->cascadeVp()[0][0][0]);
     const glm::vec3 splits{ShadowMap::kSplits[0], ShadowMap::kSplits[1],
@@ -367,6 +370,8 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform1f(m_progFinal, 8, p.toggles.saturation);
     glProgramUniform1f(m_progFinal, 9, p.toggles.contrast);
     glProgramUniform1f(m_progFinal, 10, p.toggles.temperature);
+    // Faded in as daylight goes, so it costs nothing by day and never touches a day frame.
+    glProgramUniform1f(m_progFinal, 12, p.toggles.scotopic * (1.0f - p.daylight));
     // 0.18 is middle grey. Only meaningful when the adaptation actually ran this frame.
     glProgramUniform1f(m_progFinal, 11,
                        (p.toggles.autoExposure && m_adaptValid) ? 0.18f : 0.0f);

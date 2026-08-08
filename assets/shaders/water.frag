@@ -24,6 +24,7 @@ layout(location = 10) uniform float uShadowsOn;
 layout(location = 11) uniform mat4 uCascadeVp[3];  // consumes 11..22
 layout(location = 23) uniform vec3 uCascadeSplit;  // radial split distances
 layout(location = 24) uniform vec3 uCascadeTexel;  // world units per shadow texel
+layout(location = 25) uniform float uDaylight;     // 1 full day, 0 after dusk
 
 layout(binding = 1) uniform sampler2DArrayShadow uShadowMap;
 
@@ -99,14 +100,18 @@ float vnoise(vec2 p) {
 float fbm2(vec2 p) { return 0.6 * vnoise(p) + 0.4 * vnoise(p * 2.1 + 3.7); }
 
 vec3 skyColor(vec3 d) {
-    float day = clamp(uSunL.y * 3.0 + 0.12, 0.0, 1.0);
+    // uDaylight, not uSunL.y: uSunL points at the MOON after dusk, so deriving the day
+    // factor from it would make a midnight lake reflect a bright blue noon sky.
+    float day = uDaylight;
     float up = clamp(d.y, 0.0, 1.0);
     vec3 col = mix(vec3(0.66, 0.78, 0.92), vec3(0.14, 0.34, 0.80), pow(up, 0.5)) * day +
-               vec3(0.02, 0.03, 0.06) * (1.0 - day); // dim to a night sky
+               vec3(0.008, 0.012, 0.024) * (1.0 - day); // dim to a night sky, matched to composite
     float sd = max(dot(d, uSunL), 0.0);
+    // "is the thing lighting us above the horizon" — true for the moon too, which is what
+    // puts a moon glint on the water instead of nothing.
     float above = smoothstep(-0.03, 0.06, uSunL.y);
-    col += vec3(1.0, 0.55, 0.28) * pow(sd, 8.0) * 0.6 * above;
-    col += uSunColor * smoothstep(0.9985, 0.9995, sd) * 3.0 * above;
+    col += vec3(1.0, 0.55, 0.28) * pow(sd, 8.0) * 0.6 * above * day; // warm: sunrise only
+    col += uSunColor * smoothstep(0.9985, 0.9995, sd) * 3.0 * above; // disc, dim for the moon
     return col;
 }
 
@@ -227,8 +232,9 @@ void main() {
     float occl = 0.35 + 0.65 * vSky;            // gentle: 4-bit voxel light, so keep it soft
     vec3 sunLit = uSunColor * (ndl * shadow);
     vec3 ambLit = uSkyAmbient * occl;
-    // Daylight scalar for anything that must go dark at night.
-    float daylight = clamp(uSunL.y * 3.0 + 0.12, 0.0, 1.0);
+    // Daylight scalar for anything that must go dark at night. Supplied by the CPU now:
+    // uSunL points at the moon after dusk, so it can no longer answer "how light is it".
+    float daylight = uDaylight;
 
     // Beer-Lambert absorption: shallow shows the bed, deep goes blue-green.
     float absorb = 1.0 - exp(-thickness * 0.18);
@@ -237,7 +243,10 @@ void main() {
     // not drop when the sun sets. So deep water kept full daylight brightness after dark and
     // the lake read as luminous. It is a body colour: light it like one. (The foam had the
     // same bug and was fixed years earlier; the water itself never was.)
-    vec3 waterLight = ambLit + sunLit * 0.35 + vec3(0.015, 0.02, 0.028);
+    // The trailing constant is the same class of bug the tint itself had: ungated, it is
+    // negligible against a daylight ambient and roughly half the night one, so it quietly
+    // held the lake off the floor after dark. Faded with daylight for the same reason.
+    vec3 waterLight = ambLit + sunLit * 0.35 + vec3(0.015, 0.02, 0.028) * mix(0.25, 1.0, daylight);
     refr = mix(refr * occl, tint * waterLight, absorb);
 
     float jitter = hash21(gl_FragCoord.xy + fract(uTime) * 17.0);

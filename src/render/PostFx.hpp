@@ -44,6 +44,10 @@ struct FxToggles {
     bool autoExposure = true;
     // Lens flare strength. Screen-space, gated on the sun actually being visible.
     float lensFlare = 0.5f;
+    // Night rod-vision shift: desaturate and cool the darkest parts of the frame after dusk.
+    // Faded in with darkness, so a day frame is untouched and the offscreen day references
+    // do not move.
+    float scotopic = 0.7f;
     // Cloud shadows on terrain. Shares the sky's density field, so it only means anything
     // with clouds on; gated separately because it costs a per-fragment fbm.
     float cloudShadow = 0.6f;
@@ -94,8 +98,14 @@ public:
         glm::vec2 projScale; // (aspect/f, 1/f) for depth reconstruction
         float nearPlane;
         glm::mat3 invViewRot;
-        glm::vec3 sunL;
-        glm::vec3 sunColor{1.0f}; // day/night sun radiance (warm/dim near horizon, ~0 at night)
+        glm::vec3 sunL;           // toward the TRUE sun: sky gradient, sun disc, lens flare
+        // Toward whatever is lighting the world — sun by day, moon by night — and its
+        // radiance. Volumetrics, contact shadows and caustics march against the cascades,
+        // which are rendered from this direction, so they must use it and not sunL.
+        glm::vec3 lightL{0.0f, 1.0f, 0.0f};
+        glm::vec3 lightColor{1.0f};
+        glm::vec3 sunColor{1.0f}; // the SUN's own radiance; exactly 0 at night
+        float daylight = 1.0f;    // 1 full day, 0 after dusk
         glm::vec2 fog{1e9f, 1e9f}; // distance fog (start, end); huge = off
         const ShadowMap* shadows;
         FxToggles toggles;

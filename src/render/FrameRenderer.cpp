@@ -33,17 +33,40 @@ SkyLight computeSky(float timeOfDay) {
     const float alt = dir.y; // -1..1
     const float day = glm::clamp(alt * 3.0f + 0.12f, 0.0f, 1.0f); // 0 below the horizon
     const float high = glm::clamp(alt * 1.8f, 0.0f, 1.0f);
-    const glm::vec3 color = glm::mix(glm::vec3(2.7f, 1.25f, 0.5f),   // horizon warm
-                                     glm::vec3(2.05f, 1.85f, 1.5f),  // overhead white
-                                     high) *
-                            day;
-    // Night ambient is the ONLY light after dusk (the sun colour above is multiplied by
-    // `day`), so it is what a moonlit scene is lit by. Lifted from 0.03/0.045/0.08 and
-    // kept cool: low enough to read as night, high enough that the shadow side of a hill is
-    // a shape rather than a hole.
+    const glm::vec3 sunColor = glm::mix(glm::vec3(2.7f, 1.25f, 0.5f),   // horizon warm
+                                        glm::vec3(2.05f, 1.85f, 1.5f),  // overhead white
+                                        high) *
+                               day;
+
+    // Moonlight. Night used to have NO directional light at all — `day` is 0 below the
+    // horizon, so the direct term was exactly zero and the sky's beautifully cratered moon
+    // lit nothing. Ambient was therefore the entire night image, which is why it kept being
+    // raised: with nothing casting, a hollow has no shape to lose and every fix had to come
+    // out of the fill. That is the actual cause of "night is too bright", and no amount of
+    // turning the fill back down addresses it.
+    //
+    // Ramp starts where `day` has already hit 0 (alt = -0.04), so at the instant the light
+    // direction flips from sun to moon BOTH terms are zero and the swap is invisible. That
+    // is the whole reason for the offset; without it the handover is a visible step.
+    const float moon = glm::clamp((-alt - 0.04f) * 3.0f, 0.0f, 1.0f);
+    // Dim and cool, and deliberately not physical — real moonlight is ~1/400000 of sunlight
+    // and would be black here. It only has to be strong enough that a hill has a lit side.
+    const glm::vec3 moonColor = glm::vec3(0.115f, 0.145f, 0.235f) * moon;
+
+    const bool moonLit = day <= 0.0f;
+    // Night ambient can come back down now that the moon carries the shape. These are the
+    // pre-lift values from before the fill was doing all the work on its own.
     const glm::vec3 ambient =
-        glm::mix(glm::vec3(0.055f, 0.075f, 0.125f), glm::vec3(0.26f, 0.36f, 0.55f), day);
-    return {dir, color, ambient};
+        glm::mix(glm::vec3(0.030f, 0.040f, 0.072f), glm::vec3(0.26f, 0.36f, 0.55f), day);
+
+    SkyLight s;
+    s.sunDir = dir;
+    s.lightDir = moonLit ? -dir : dir;
+    s.color = moonLit ? moonColor : sunColor;
+    s.sunColor = sunColor;
+    s.ambient = ambient;
+    s.daylight = day;
+    return s;
 }
 
 float halton(int i, int base) {
@@ -78,7 +101,10 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     }
     const CameraFrame cam = buildCameraFrame(camera, fbW, fbH, jitter);
     const SkyLight sky = computeSky(fx.timeOfDay);
-    const glm::vec3 sunL = sky.dir;
+    // Everything that SHADES takes the celestial direction, so the cascades, NdotL and every
+    // specular lobe follow the moon after dusk. The sky pass is handed the true sun
+    // separately — see SkyLight.
+    const glm::vec3 sunL = sky.lightDir;
 
     rc.postfx.resize(rw, rh);
 
@@ -113,6 +139,9 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     glProgramUniform1f(rc.drawProgram, 26, time);
     glProgramUniform1f(rc.drawProgram, 27, fx.leafSss);
     glProgramUniform1f(rc.drawProgram, 28, fx.relief);
+    // Was derived in-shader from uSunL.y, which stops meaning "how light is it" the moment
+    // uSunL can point at the moon.
+    glProgramUniform1f(rc.drawProgram, 29, sky.daylight);
     glProgramUniform1f(rc.drawProgram, 5, fx.shadows ? 1.0f : 0.0f);
     glProgramUniformMatrix4fv(rc.drawProgram, 6, 3, GL_FALSE,
                               &rc.shadows.cascadeVp()[0][0][0]);
@@ -149,6 +178,7 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
                               &rc.shadows.cascadeVp()[0][0][0]);
     glProgramUniform3fv(rc.waterProgram, 23, 1, &splits.x);
     glProgramUniform3fv(rc.waterProgram, 24, 1, &texel.x);
+    glProgramUniform1f(rc.waterProgram, 25, sky.daylight);
     glBindTextureUnit(2, rc.postfx.sceneCopyTex());
     glBindTextureUnit(3, rc.postfx.depthTex());
     glEnable(GL_BLEND);
@@ -182,8 +212,13 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     rp.projScale = {aspect / f, 1.0f / f};
     rp.nearPlane = camera.nearPlane;
     rp.invViewRot = glm::transpose(glm::mat3(camera.viewAtOrigin()));
-    rp.sunL = sunL;
-    rp.sunColor = sky.color;
+    // The post stack needs BOTH: the true sun to draw the sky and place the flare, the
+    // celestial light to march volumetrics and contact shadows against the cascades.
+    rp.sunL = sky.sunDir;
+    rp.lightL = sunL;
+    rp.lightColor = sky.color;
+    rp.sunColor = sky.sunColor;
+    rp.daylight = sky.daylight;
     rp.fog = {fogEnd * 0.55f, fogEnd};
     rp.shadows = &rc.shadows;
     rp.toggles = fx;

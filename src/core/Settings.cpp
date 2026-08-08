@@ -81,6 +81,7 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
         else if (key == "bloomStrength") readFloat(val, fx.bloomStrength);
         else if (key == "emissive") readFloat(val, fx.emissive);
         else if (key == "lensFlare") readFloat(val, fx.lensFlare);
+        else if (key == "scotopic") readFloat(val, fx.scotopic);
         else if (key == "cloudShadow") readFloat(val, fx.cloudShadow);
         else if (key == "contactShadow") readFloat(val, fx.contactShadow);
         else if (key == "leafSss") readFloat(val, fx.leafSss);
@@ -114,6 +115,7 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
     fx.bloomStrength = std::clamp(fx.bloomStrength, 0.0f, 1.5f);
     fx.emissive = std::clamp(fx.emissive, 0.0f, 5.0f);
     fx.lensFlare = std::clamp(fx.lensFlare, 0.0f, 2.0f);
+    fx.scotopic = std::clamp(fx.scotopic, 0.0f, 1.0f);
     fx.cloudShadow = std::clamp(fx.cloudShadow, 0.0f, 1.0f);
     fx.contactShadow = std::clamp(fx.contactShadow, 0.0f, 1.0f);
     fx.leafSss = std::clamp(fx.leafSss, 0.0f, 2.0f);
@@ -162,6 +164,19 @@ bool save(const std::filesystem::path& file, const FxToggles& fx, bool vsync, bo
         << "dayLengthSec=" << fx.dayLengthSec << "\n"
         << "exposure=" << fx.exposure << "\n"
         << "bloomStrength=" << fx.bloomStrength << "\n"
+        // These eight were READ by load() and never written here, so every one of them
+        // silently reset to its default on the next launch — seven are Tier 3 features that
+        // were built and tuned. The two key lists drifted because they are two lists; the
+        // structural fix is one schema table both walk, and it is the next commit.
+        << "autoExposure=" << b(fx.autoExposure) << "\n"
+        << "emissive=" << fx.emissive << "\n"
+        << "lensFlare=" << fx.lensFlare << "\n"
+        << "cloudShadow=" << fx.cloudShadow << "\n"
+        << "contactShadow=" << fx.contactShadow << "\n"
+        << "leafSss=" << fx.leafSss << "\n"
+        << "relief=" << fx.relief << "\n"
+        << "lampSwatch=" << fx.lampSwatch << "\n"
+        << "scotopic=" << fx.scotopic << "\n"
         << "saturation=" << fx.saturation << "\n"
         << "contrast=" << fx.contrast << "\n"
         << "temperature=" << fx.temperature << "\n"

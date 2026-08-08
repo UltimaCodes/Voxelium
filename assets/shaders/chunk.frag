@@ -9,7 +9,10 @@ in float vShade; // interpolated per-corner brightness: AO x this corner's share
 
 layout(location = 0) out vec4 outColor; // HDR
 
-layout(location = 4) uniform vec3 uSunL;      // direction toward the sun
+// Toward whatever is lighting the world: the sun by day, the moon by night. The cascades are
+// rendered from this same direction, so NdotL and the shadow lookup stay consistent after
+// dusk. It is NOT "where the sun is" any more — use uDaylight for that.
+layout(location = 4) uniform vec3 uSunL;
 layout(location = 5) uniform float uShadowsOn;
 layout(location = 6) uniform mat4 uCascadeVp[3]; // consumes 6..17
 layout(location = 18) uniform vec3 uCascadeSplit; // radial split distances
@@ -22,6 +25,7 @@ layout(location = 25) uniform float uCloudShadow; // cloud shadow strength, 0 = 
 layout(location = 26) uniform float uTimeSky;     // same clock the cloud field drifts on
 layout(location = 27) uniform float uLeafSss;    // leaf translucency strength, 0 = off
 layout(location = 28) uniform float uRelief;     // derived surface relief, 0 = off
+layout(location = 29) uniform float uDaylight;   // 1 full day, 0 after dusk
 
 #include "clouds.glsl"
 
@@ -183,19 +187,22 @@ void main() {
     vec3 direct = uSunColor * (ndl * shadow * skyAccess * clouded);
 
     // How hard sky access gates the ambient fill. In daylight the sun dominates and a tight
-    // gate (0.10 floor, a 10x range) is what gives caves and overhangs their depth. At night
-    // there is NO directional light at all — computeSky multiplies the sun colour by `day`,
-    // which is 0 after dusk — so that same 10x range becomes the entire image, and every
-    // hollow reads as a hard black shadow with nothing to fill it. That is the "shadows are
-    // too harsh at night".
+    // gate (0.10 floor, a 10x range) is what gives caves and overhangs their depth.
     //
-    // Night light is scattered skylight and moonlight, which is far more omnidirectional
-    // than the sun, so a flatter gate is also the physically honest answer: the floor rises
-    // to 0.45 after dark, compressing the range from 10x to about 2.2x.
-    float daylight = clamp(uSunL.y * 3.0 + 0.12, 0.0, 1.0);
-    float gateFloor = mix(0.45, 0.10, daylight);
+    // The floor used to rise to 0.45 after dark, because night had no directional light at
+    // all and ambient WAS the entire image — every hollow went hard black with nothing to
+    // fill it. The moon now carries that shape (see computeSky), so the fill no longer has
+    // to, and 0.45 was flattening and brightening every night surface to buy something it
+    // is no longer buying. 0.20 keeps night light more omnidirectional than the sun, which
+    // is honest for scattered skylight, without erasing the relief.
+    float gateFloor = mix(0.20, 0.10, uDaylight);
+    // The flat term used to be an ungated constant, which reads as harmless next to a
+    // daylight ambient of 0.26-0.55 but was 40-64% of the night ambient — a day-neutral
+    // number that was, in practice, a night-only brightener. Faded out with daylight so it
+    // still stops fully-enclosed faces (interior leaf pockets, deep cave walls) crushing to
+    // pure black in daylight, without lifting the whole night off the floor.
     vec3 ambient = uSkyAmbient * (gateFloor + (1.0 - gateFloor) * skyL) +
-                   vec3(0.035, 0.04, 0.05);
+                   vec3(0.035, 0.04, 0.05) * mix(0.25, 1.0, uDaylight);
     // The emitter's own colour drives the tint now (M18), so the fixed warm multiplier
     // that used to supply it would double-tint. Keep a slight warm bias for the ember
     // feel and let the light itself carry the hue out to its falloff.

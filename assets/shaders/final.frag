@@ -22,6 +22,7 @@ layout(location = 7) uniform float uTime;        // grain animation only
 layout(location = 8) uniform float uSaturation;  // 1 = untouched
 layout(location = 9) uniform float uContrast;    // 1 = untouched
 layout(location = 10) uniform float uTemperature; // 0 = neutral, + warm, - cool
+layout(location = 12) uniform float uScotopic;    // night rod-vision shift, 0 = off
 
 vec3 aces(vec3 x) {
     return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
@@ -41,11 +42,34 @@ vec3 whiteBalance(vec3 c) {
 // clamped hard: an all-sky frame and a frame inside a sealed cave are several stops apart,
 // and letting the auto term chase that fully turns a dark cave into a grey one — the point
 // is to take the edge off, not to erase the difference between day and underground.
+//
+// The upper bound was 3.0, and night is precisely the case that pins to it: a dark frame
+// asks for all the gain on offer, so every other night fix was being multiplied by 3 on its
+// way to the screen. 2.0 still lifts a cave enough to navigate it and stops the adaptation
+// undoing the shading work.
 float exposureScale() {
     if (uAutoKey <= 0.0)
         return uExposure;
     float avgLum = exp(texture(uAdapt, vec2(0.5)).r);
-    return uExposure * clamp(uAutoKey / max(avgLum, 1e-4), 0.35, 3.0);
+    return uExposure * clamp(uAutoKey / max(avgLum, 1e-4), 0.35, 2.0);
+}
+
+// Scotopic (rod) vision: below about 0.01 cd/m2 the cones stop contributing, so night
+// vision is desaturated and shifted blue — the Purkinje effect. Worth having because it
+// makes a frame READ as night at a higher actual brightness than a purely dark frame does,
+// which is the opposite of the trap this engine fell into (crank the fill until you can see,
+// then wonder why night looks like overcast afternoon).
+//
+// Applied in LDR after the tonemap and keyed off the pixel's own luminance, so a lamp or a
+// moonlit rim keeps its colour and only the genuinely dark parts of the frame desaturate.
+vec3 scotopic(vec3 c, float amount) {
+    if (amount <= 0.0)
+        return c;
+    float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    // full effect in the deep shadows, none by the time anything is even dimly lit
+    float rod = (1.0 - smoothstep(0.0, 0.22, luma)) * amount;
+    vec3 night = vec3(luma) * vec3(0.82, 0.94, 1.28); // desaturated, cool
+    return mix(c, night, rod);
 }
 
 vec3 tonemap(vec3 hdr) {
@@ -77,6 +101,8 @@ void main() {
         c += (c * 4.0 - l - r - u - d) * uSharpen; // unsharp mask
     }
 
+    // Before the grade, so the saturation slider still has the last word on the result.
+    c = scotopic(c, uScotopic);
     c = grade(c);
 
     if (uVignette > 0.0) {

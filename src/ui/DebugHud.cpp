@@ -275,6 +275,11 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     ImGui::EndDisabled();
     ImGui::SetNextItemWidth(-110.0f);
     ImGui::SliderFloat("day length", &fx.dayLengthSec, 20.0f, 1200.0f, "%.0f s");
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("night vision", &fx.scotopic, 0.0f, 1.0f, "%.2f");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("rod-vision shift: desaturates and cools the darkest parts of the\n"
+                          "frame after dusk. faded in with darkness, so daylight is untouched.");
     ImGui::Checkbox("clouds", &fx.clouds);
     ImGui::BeginDisabled(!fx.clouds);
     ImGui::SetNextItemWidth(-110.0f);
