@@ -23,6 +23,9 @@ add_executable(voxelium
     src/gfx/GpuTimer.cpp
     src/gen/TerrainGenerator.cpp
     src/gfx/Shader.cpp
+    src/harness/Bench.cpp
+    src/harness/Smoke.cpp
+    src/harness/Tour.cpp
     src/io/ChunkSerializer.cpp
     src/io/RegionStore.cpp
     src/io/WorldStore.cpp
@@ -34,6 +37,7 @@ add_executable(voxelium
     src/platform/Window.cpp
     src/render/Particles.cpp
     src/render/Camera.cpp
+    src/render/FrameRenderer.cpp
     src/render/Overlay.cpp
     src/render/PostFx.cpp
     src/render/Renderer.cpp
