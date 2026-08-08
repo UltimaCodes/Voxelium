@@ -218,7 +218,8 @@ int main(int argc, char** argv) {
     }
 
     if (smoke) {
-        const int rc2 = runSmokeTest(rc, *world, *jobs, *light, camera, hud, *window, smokeOut);
+        const int rc2 = runSmokeTest(rc, *world, *jobs, *light, camera, hud, *window, smokeOut,
+                                    assets.parent_path() / "sounds");
         hud.shutdown();
         particles.shutdown();
         overlay.shutdown();
@@ -336,8 +337,26 @@ int main(int argc, char** argv) {
     bool caveCull = true;
     // sounds/ next to the assets dir; nothing ships in it, the user fills it themselves
     vx::AudioEngine audio;
-    audio.init(assets.parent_path() / "sounds");
+    // Decoded up front on the workers. Every clip is held as PCM for the process lifetime,
+    // which is the point: a play used to open the file and decode it whole, on this thread.
+    audio.init(assets.parent_path() / "sounds", jobs.get());
     double stepAccum = 0.0; // distance walked since the last footstep
+    // How blocked the path from a sound to the ear is, 0 clear .. 1 solid. One DDA per sound
+    // EVENT, which is far cheaper than it sounds — the crosshair already runs this same
+    // raycast every single frame. A break heard through a wall should not arrive at full
+    // volume, and this is the only thing that distinguishes the two.
+    const auto occlusionTo = [&](const glm::dvec3& src) {
+        const glm::dvec3 toEar = camera.position - src;
+        const double dist = glm::length(toEar);
+        if (dist < 1.5 || dist > 48.0)
+            return 0.0f; // close enough to be direct, or already past hearing range
+        const auto hit = vx::raycastVoxels(src, glm::vec3(toEar / dist), float(dist),
+                                           [&](const glm::ivec3& p) {
+                                               return vx::blocks::occludes(
+                                                   world->blockAtWorld(p));
+                                           });
+        return hit.hit ? fx.audioOcclusion : 0.0f;
+    };
     // live app only — a smoke run renders from fixed defaults, never a machine's saved
     // settings, or the reference image would move under it
     const std::filesystem::path settingsFile = "saves/settings.cfg";
@@ -511,8 +530,11 @@ int main(int argc, char** argv) {
                     const glm::dvec3 at(hit.voxel);
                     particles.spawnBlockBreak(at, vx::blockTopLayer(int(id)));
                     world->setBlock(renderer, *light, hit.voxel, vx::blocks::Air);
-                    if (!audio.playIfPresent("break_" + std::to_string(int(id)), at))
-                        audio.playAt("break", at);
+                    const float occ = occlusionTo(at);
+                    if (!audio.has("break_" + std::to_string(int(id))))
+                        audio.playOccluded("break", at, occ);
+                    else
+                        audio.playOccluded("break_" + std::to_string(int(id)), at, occ);
                     breakProgress = 0.0f;
                     breakTarget = {INT32_MIN, 0, 0};
                     breaking = false;
@@ -536,8 +558,11 @@ int main(int argc, char** argv) {
                                         : placeBlock;
                     world->setBlock(renderer, *light, hit.voxel + hit.normal,
                                     vx::BlockId(put));
-                    if (!audio.playIfPresent("place_" + std::to_string(put), at))
-                        audio.playAt("place", at);
+                    const float occ = occlusionTo(at);
+                    if (!audio.has("place_" + std::to_string(put)))
+                        audio.playOccluded("place", at, occ);
+                    else
+                        audio.playOccluded("place_" + std::to_string(put), at, occ);
                 }
             }
             mmbHeld = mmb;
@@ -545,6 +570,12 @@ int main(int argc, char** argv) {
 
         audio.setListener(camera.position, camera.forward());
         audio.setMasterVolume(fx.volume);
+        audio.setBusVolume(vx::AudioEngine::Bus::World, fx.volWorld);
+        audio.setBusVolume(vx::AudioEngine::Bus::Ui, fx.volUi);
+        audio.setBusVolume(vx::AudioEngine::Bus::Ambient, fx.volAmbient);
+        // Re-places live voices against the moved listener, retires faded steals, and
+        // settles the submerged filter. None of that can happen at play time.
+        audio.update(float(dt));
 
         world->update(*jobs, renderer, *light, camera.position);
         particles.update(float(dt));
@@ -596,9 +627,11 @@ int main(int argc, char** argv) {
             }
         }
 
-        // eye submerged -> underwater fog/tint in the composite pass
+        // eye submerged -> underwater fog/tint in the composite pass, and the same flag
+        // muffles the world bus. The renderer already knew this; audio never asked.
         const bool eyeUnderwater =
             vx::blocks::isWater(world->blockAtWorld(glm::ivec3(glm::floor(camera.position))));
+        audio.setUnderwater(eyeUnderwater);
 
         int fbW = 0;
         int fbH = 0;

@@ -43,7 +43,8 @@ bool runMesherOracle();
 // The test suite. Twenty groups, all must pass. Returns a process exit code.
 int runSmokeTest(RenderContext& rc, ChunkManager& world, JobSystem& jobs, LightEngine& light,
                  FlyCamera& camera, DebugHud& hud, Window& window,
-                 const std::filesystem::path& outPath);
+                 const std::filesystem::path& outPath,
+                 const std::filesystem::path& soundsDir);
 
 // Screenshots at five stops walking outward from spawn, plus night and underwater frames and
 // a sky-light invariant check. `settle` false does not wait, so shots land mid-stream.

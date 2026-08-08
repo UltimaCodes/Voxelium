@@ -1,5 +1,6 @@
 #include "harness/Harness.hpp"
 
+#include "audio/AudioEngine.hpp"
 #include "core/Bmp.hpp"
 #include "core/Log.hpp"
 #include "core/Paths.hpp"
@@ -81,7 +82,8 @@ bool runMesherOracle() {
 
 int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
                  vx::LightEngine& light, vx::FlyCamera& camera, vx::DebugHud& hud,
-                 vx::Window& window, const std::filesystem::path& outPath) {
+                 vx::Window& window, const std::filesystem::path& outPath,
+                 const std::filesystem::path& soundsDir) {
     world.radius = 10; // keep the smoke quick; the regen test bumps to 16 on its own
     const auto drain = [&] {
         for (int i = 0; i < 20000 && (world.busy() || !light.idle() || i == 0); ++i) {
@@ -620,6 +622,62 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
             VX_INFO("particles: %d spawned (cap %d), %d alive after 3.2 s -> %s", spawned,
                     vx::Particles::kCapacity, after, partOk ? "PASS" : "FAIL");
             if (!partOk)
+                return 1;
+        }
+
+        // Audio: the clips must be decoded ONCE, at init, and never again.
+        //
+        // This is the direct regression test for the jank. Every play used to call
+        // ma_sound_init_from_file with MA_SOUND_FLAG_DECODE — a file open plus a full FLAC
+        // decode, synchronously, on the calling thread, from inside the physics loop. The
+        // counter is the only way to see that from a headless run, because a CI box has no
+        // output device and hears nothing either way.
+        //
+        // It runs WITHOUT a device on purpose: the bank loads independently of the mixer, so
+        // this group exercises the real decode path wherever it runs. To watch it fail, put
+        // the decode back on the play path and this goes nonzero immediately.
+        {
+            vx::AudioEngine au;
+            au.init(soundsDir, &jobs);
+            const int clips = au.clipCount();
+            const std::uint64_t framesLoaded = au.bank().totalFrames();
+            // Bracket the play loop. Anything that decodes a file to satisfy a play shows up
+            // as a nonzero delta, which is the entire regression this group exists for.
+            const std::uint64_t decodesBefore = vx::SoundBank::decodeCount();
+
+            // Fire far more plays than there are voices, from several names, and drive the
+            // per-frame upkeep so voice retirement is exercised too.
+            for (int i = 0; i < 400; ++i) {
+                au.playAt("step", {double(i % 32), 70.0, 0.0}, 0.5f);
+                au.playAt("break", {0.0, 70.0, double(i % 32)});
+                au.play("place");
+                if (i % 8 == 0)
+                    au.update(0.05f); // past the repeat throttle, so plays are not all dropped
+            }
+            for (int i = 0; i < 80; ++i)
+                au.update(0.05f); // long past the steal fade, so every retirement expires
+
+            const std::uint64_t decodes = vx::SoundBank::decodeCount() - decodesBefore;
+            const int live = au.liveVoices();
+            const int retiring = au.retiringVoices();
+            // A bank that decoded nothing would satisfy a decode counter trivially, so the
+            // frame total has to be nonzero too whenever clips were actually found.
+            const bool bankOk = clips == 0 || framesLoaded > 0;
+            // NOT asserting live == 0. A voice ends when the audio DEVICE finishes playing
+            // it, which needs real wall-clock time, and this loop runs in microseconds — an
+            // assertion on it would be a sleep-dependent flake. What is deterministic is
+            // that the pool never overflows and that no stolen voice is left stuck mid-fade,
+            // since retirement is driven by the dt passed to update().
+            const bool poolOk = live <= 32 && retiring == 0;
+            const bool audioOk = decodes == 0 && poolOk && bankOk;
+            VX_INFO("audio: %d clip(s) %llu frames cached, %d plays, %llu decode(s) after "
+                    "init (want 0), %d live / %d stuck retiring (want 0), %llu throttled -> %s",
+                    clips, static_cast<unsigned long long>(framesLoaded), 1200,
+                    static_cast<unsigned long long>(decodes), live, retiring,
+                    static_cast<unsigned long long>(au.throttledCount()),
+                    audioOk ? "PASS" : "FAIL");
+            au.shutdown();
+            if (!audioOk)
                 return 1;
         }
 

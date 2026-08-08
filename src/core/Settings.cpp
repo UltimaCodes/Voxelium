@@ -97,6 +97,10 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
         else if (key == "crosshairA") readFloat(val, fx.crosshair[3]);
         else if (key == "lampSwatch") readInt(val, fx.lampSwatch);
         else if (key == "volume") readFloat(val, fx.volume);
+        else if (key == "volWorld") readFloat(val, fx.volWorld);
+        else if (key == "volUi") readFloat(val, fx.volUi);
+        else if (key == "volAmbient") readFloat(val, fx.volAmbient);
+        else if (key == "audioOcclusion") readFloat(val, fx.audioOcclusion);
         else if (key == "renderScale") readFloat(val, fx.renderScale);
         else if (key == "vsync") readBool(val, vsync);
         else if (key == "caveCull") readBool(val, caveCull);
@@ -132,6 +136,10 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
     for (float& c : fx.crosshair)
         c = std::clamp(c, 0.0f, 1.0f);
     fx.volume = std::clamp(fx.volume, 0.0f, 1.0f);
+    fx.volWorld = std::clamp(fx.volWorld, 0.0f, 1.0f);
+    fx.volUi = std::clamp(fx.volUi, 0.0f, 1.0f);
+    fx.volAmbient = std::clamp(fx.volAmbient, 0.0f, 1.0f);
+    fx.audioOcclusion = std::clamp(fx.audioOcclusion, 0.0f, 1.0f);
     fx.renderScale = std::clamp(fx.renderScale, 0.5f, 1.0f);
     return applied > 0;
 }
@@ -187,6 +195,10 @@ bool save(const std::filesystem::path& file, const FxToggles& fx, bool vsync, bo
         << "crosshairB=" << fx.crosshair[2] << "\n"
         << "crosshairA=" << fx.crosshair[3] << "\n"
         << "volume=" << fx.volume << "\n"
+        << "volWorld=" << fx.volWorld << "\n"
+        << "volUi=" << fx.volUi << "\n"
+        << "volAmbient=" << fx.volAmbient << "\n"
+        << "audioOcclusion=" << fx.audioOcclusion << "\n"
         << "renderScale=" << fx.renderScale << "\n"
         << "vsync=" << b(vsync) << "\n"
         << "caveCull=" << b(caveCull) << "\n"

@@ -69,6 +69,14 @@ struct FxToggles {
     // after that.
     int lampSwatch = 1;
     float volume = 0.7f; // master audio volume, same reason as crosshair: one struct
+    // Mixer buses. One flat volume also turned down the menu clicks and the wind bed along
+    // with the world, which is why there are three.
+    float volWorld = 1.0f;
+    float volUi = 0.8f;
+    float volAmbient = 0.6f;
+    // Muffle a sound whose path to the listener is blocked by solid voxels. Costs one
+    // raycast per sound EVENT (not per frame), against the same DDA the crosshair runs.
+    float audioOcclusion = 0.75f;
     // Internal render resolution as a fraction of the window. The whole HDR chain (scene,
     // ssao, ssgi, volumetrics, bloom, taa) runs at this size and only the final tonemap
     // pass runs at native, so it scales nearly everything that costs fill rate. 1.0 = off.

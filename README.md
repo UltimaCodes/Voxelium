@@ -1,8 +1,8 @@
 # Voxelium
 
 voxel engine from scratch in C++20 + OpenGL 4.6 (core profile, DSA everywhere). no engine,
-no bloat. the whole design is written up in [SPEC.md](SPEC.md), and every milestone gets its
-numbers recorded in `docs/` so optimizations are proven, not vibes.
+no bloat. the roadmap is in [SPEC.md](SPEC.md), and every milestone's numbers are kept in
+[docs/MILESTONES.md](docs/MILESTONES.md) so optimizations are proven, not vibes.
 
 ## building
 
@@ -46,9 +46,14 @@ controls:
 ESC opens the settings menu (it pauses too): every shader toggle — shadows, ssao, ssgi,
 god rays, bloom (with strength and emissive), clouds, fog, taa, motion blur — a grade
 section (saturation, contrast, temperature, vignette, grain), auto exposure, plus a
-day/night cycle (time of day + day length), exposure, fov, render scale, volume, vsync,
-cave culling and render distance. F3 is the read-only diagnostics overlay — frame graph,
-timings, chunk/arena stats, log.
+day/night cycle (time of day + day length), night vision, exposure, fov, render scale,
+audio (master + world/interface/ambience buses and occlusion), vsync, cave culling and
+render distance. F3 is the read-only diagnostics overlay — frame graph, timings,
+chunk/arena stats, log.
+
+night is lit by the moon, not by a raised ambient floor — it rides the same shadow cascades
+the sun does, so hills have a lit side after dark and the fill can stay low. drop your own
+clips in `sounds/` to hear anything; nothing audio ships beyond CC0 footsteps.
 
 ## worlds
 
@@ -63,7 +68,8 @@ world is usually a few tens of KB.
 
 ## what's in it
 
-all 12 milestones from [SPEC.md](SPEC.md), each written up with real numbers in `docs/`:
+all 12 milestones from [SPEC.md](SPEC.md), each written up with real numbers in
+[docs/MILESTONES.md](docs/MILESTONES.md):
 binary greedy meshing + vertex pulling (8-byte quads, no VBO), palette-compressed chunks,
 a jthread job system, GPU-driven culling with the whole world in one indirect draw call,
 cave culling, flood-fill RGB block + sky lighting, FastNoise2 terrain with caves and ores,

@@ -18,6 +18,7 @@ add_executable(voxelium
     src/core/Paths.cpp
     src/core/Settings.cpp
     src/audio/AudioEngine.cpp
+    src/audio/SoundBank.cpp
     src/gfx/BlockTextures.cpp
     src/gfx/GlDebug.cpp
     src/gfx/GpuTimer.cpp

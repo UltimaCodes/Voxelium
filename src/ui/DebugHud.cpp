@@ -264,8 +264,22 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     ImGui::SetNextItemWidth(-110.0f);
     ImGui::ColorEdit4("crosshair", fx.crosshair,
                       ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_AlphaPreviewHalf);
+    ImGui::SeparatorText("audio");
     ImGui::SetNextItemWidth(-110.0f);
-    ImGui::SliderFloat("volume", &fx.volume, 0.0f, 1.0f, "%.2f");
+    ImGui::SliderFloat("master", &fx.volume, 0.0f, 1.0f, "%.2f");
+    // Three buses rather than one slider: the old single volume also turned down the menu
+    // clicks and the ambience along with the world.
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("world", &fx.volWorld, 0.0f, 1.0f, "%.2f");
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("interface", &fx.volUi, 0.0f, 1.0f, "%.2f");
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("ambience", &fx.volAmbient, 0.0f, 1.0f, "%.2f");
+    ImGui::SetNextItemWidth(-110.0f);
+    ImGui::SliderFloat("occlusion", &fx.audioOcclusion, 0.0f, 1.0f, "%.2f");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("muffle a sound whose path to your ear is blocked by solid blocks.\n"
+                          "one raycast per sound event, not per frame.");
 
     ImGui::SeparatorText("sky & time");
     ImGui::Checkbox("day/night cycle", &fx.dayCycle);
