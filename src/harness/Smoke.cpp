@@ -772,37 +772,45 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         if (!same)
             return 1;
 
-        // (a2) settings round-trip: write non-default values, read them into a fresh set
-        // of defaults, and check every field came back. Uses its own file so it can never
-        // touch the real saves/settings.cfg, and nothing here feeds the render.
+        // (a2) settings round-trip, over EVERY key rather than a chosen few.
+        //
+        // The previous version of this group set 8 fields and asserted 10 of the 37 the
+        // loader knew about — and its comment claimed it checked "every field". It passed
+        // for as long as save and load had drifted apart, which is exactly how eight tuned
+        // settings came to be read on startup and never written. A test that inspects a
+        // subset reports success about the subset.
+        //
+        // perturbAll walks the schema, so this covers whatever the schema covers, forever.
+        // Uses its own file so it can never touch the real saves/settings.cfg.
         {
             const std::filesystem::path sf = outPath.parent_path() / "vxsettings_smoke.cfg";
             vx::FxToggles wrote;
-            wrote.shadows = false;
-            wrote.ssgi = false;
-            wrote.taa = true;
-            wrote.motionBlur = true;
-            wrote.timeOfDay = 0.77f;
-            wrote.exposure = 1.85f;
-            wrote.crosshair[0] = 0.20f;
-            wrote.crosshair[3] = 0.60f;
-            vx::Settings::save(sf, wrote, true, false, 24, 95.0f);
+            bool vsyncW = false;
+            bool caveCullW = true;
+            int radiusW = 16;
+            float fovW = 70.0f;
+            const int touched =
+                vx::Settings::perturbAll(wrote, vsyncW, caveCullW, radiusW, fovW);
+            vx::Settings::save(sf, wrote, vsyncW, caveCullW, radiusW, fovW);
 
-            vx::FxToggles read; // all defaults; load must overwrite each one
+            vx::FxToggles read; // all defaults; load must overwrite every one of them
             bool vsyncR = false;
             bool caveCullR = true;
             int radiusR = 16;
             float fovR = 70.0f;
             const bool got = vx::Settings::load(sf, read, vsyncR, caveCullR, radiusR, fovR);
-            const bool ok = got && !read.shadows && !read.ssgi && read.taa &&
-                            read.motionBlur && std::abs(read.timeOfDay - 0.77f) < 0.001f &&
-                            std::abs(read.exposure - 1.85f) < 0.001f && vsyncR &&
-                            !caveCullR && radiusR == 24 && std::abs(fovR - 95.0f) < 0.001f &&
-                            std::abs(read.crosshair[0] - 0.20f) < 0.001f &&
-                            std::abs(read.crosshair[3] - 0.60f) < 0.001f;
+            const int diff = vx::Settings::differences(wrote, vsyncW, caveCullW, radiusW,
+                                                       fovW, read, vsyncR, caveCullR,
+                                                       radiusR, fovR);
+            // touched == keyCount() is the half that matters: it proves the perturbation
+            // actually moved every field, so a value that failed to save cannot coincide
+            // with the default it would be compared against.
+            const bool ok = got && touched == vx::Settings::keyCount() && diff == 0;
             std::error_code sec;
             std::filesystem::remove(sf, sec);
-            VX_INFO("persistence: settings round-trip %s", ok ? "PASS" : "FAIL");
+            VX_INFO("persistence: settings round-trip %d/%d keys perturbed, %d differ after "
+                    "reload (want 0) -> %s",
+                    touched, vx::Settings::keyCount(), diff, ok ? "PASS" : "FAIL");
             if (!ok)
                 return 1;
         }

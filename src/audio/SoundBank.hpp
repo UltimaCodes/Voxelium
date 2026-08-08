@@ -49,7 +49,7 @@ public:
     int variantCount() const;
     std::uint64_t totalFrames() const;
     // Monotonic count of file decodes performed by any bank, for the life of the process.
-    // Never reset — a caller brackets the region it cares about and compares. That is what
+    // Never reset â€” a caller brackets the region it cares about and compares. That is what
     // makes it falsifiable: the first shape of this counter re-baselined itself inside
     // load(), so a second load cancelled out and the smoke group could not go red at all.
     static std::uint64_t decodeCount();

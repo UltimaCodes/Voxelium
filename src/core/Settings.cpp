@@ -4,7 +4,9 @@
 #include "world/Chunk.hpp" // lamp swatch count, for clamping on load
 
 #include <algorithm>
+#include <array>
 #include <charconv>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -13,6 +15,80 @@
 namespace vx::Settings {
 
 namespace {
+
+// ONE list, walked by load, save and the clamp pass alike.
+//
+// This used to be three separate lists — an if/else chain in load, a stream of `<<` in save,
+// and a run of std::clamp calls between them — and they drifted, silently and twice. At the
+// point this was written load read 37 keys and save wrote 29, so autoExposure, emissive,
+// lensFlare, cloudShadow, contactShadow, leafSss, relief and lampSwatch were read on startup
+// and never written: every one of them reset to its default on the next launch, and seven
+// were Tier 3 features that had been built and tuned. It happened AGAIN while adding the
+// audio buses, in the same sitting as the fix.
+//
+// A key cannot now exist in one place and not another, because there is only one place. The
+// cost of a new setting is one row.
+struct Bound {
+    const char* key;
+    enum class Type { Bool, Int, Float } type;
+    void* ptr;
+    float lo, hi; // clamp range; ignored for Bool
+};
+
+// Every setting the engine persists. Adding one is a row here and nothing else.
+constexpr std::size_t kSettingCount = 42;
+
+// Binds the schema to a live set of values. Non-const because load writes through it; save
+// binds a local copy for the same reason, which is cheaper than a second const walk and
+// keeps one definition of the layout.
+std::array<Bound, kSettingCount> bind(FxToggles& fx, bool& vsync, bool& caveCull, int& radius,
+                                      float& fovDeg) {
+    using T = Bound::Type;
+    return {{
+        {"shadows", T::Bool, &fx.shadows, 0, 0},
+        {"ssao", T::Bool, &fx.ssao, 0, 0},
+        {"volumetric", T::Bool, &fx.volumetric, 0, 0},
+        {"bloom", T::Bool, &fx.bloom, 0, 0},
+        {"clouds", T::Bool, &fx.clouds, 0, 0},
+        {"ssgi", T::Bool, &fx.ssgi, 0, 0},
+        {"taa", T::Bool, &fx.taa, 0, 0},
+        {"motionBlur", T::Bool, &fx.motionBlur, 0, 0},
+        {"fog", T::Bool, &fx.fog, 0, 0},
+        {"autoExposure", T::Bool, &fx.autoExposure, 0, 0},
+        {"dayCycle", T::Bool, &fx.dayCycle, 0, 0},
+        {"timeOfDay", T::Float, &fx.timeOfDay, 0.0f, 1.0f},
+        {"dayLengthSec", T::Float, &fx.dayLengthSec, 20.0f, 1200.0f},
+        {"exposure", T::Float, &fx.exposure, 0.4f, 2.5f},
+        {"bloomStrength", T::Float, &fx.bloomStrength, 0.0f, 1.5f},
+        {"emissive", T::Float, &fx.emissive, 0.0f, 5.0f},
+        {"lensFlare", T::Float, &fx.lensFlare, 0.0f, 2.0f},
+        {"scotopic", T::Float, &fx.scotopic, 0.0f, 1.0f},
+        {"cloudShadow", T::Float, &fx.cloudShadow, 0.0f, 1.0f},
+        {"contactShadow", T::Float, &fx.contactShadow, 0.0f, 1.0f},
+        {"leafSss", T::Float, &fx.leafSss, 0.0f, 2.0f},
+        {"relief", T::Float, &fx.relief, 0.0f, 2.0f},
+        {"saturation", T::Float, &fx.saturation, 0.0f, 2.0f},
+        {"contrast", T::Float, &fx.contrast, 0.5f, 1.8f},
+        {"temperature", T::Float, &fx.temperature, -1.0f, 1.0f},
+        {"vignette", T::Float, &fx.vignette, 0.0f, 1.0f},
+        {"grain", T::Float, &fx.grain, 0.0f, 1.0f},
+        {"crosshairR", T::Float, &fx.crosshair[0], 0.0f, 1.0f},
+        {"crosshairG", T::Float, &fx.crosshair[1], 0.0f, 1.0f},
+        {"crosshairB", T::Float, &fx.crosshair[2], 0.0f, 1.0f},
+        {"crosshairA", T::Float, &fx.crosshair[3], 0.0f, 1.0f},
+        {"lampSwatch", T::Int, &fx.lampSwatch, 0.0f, float(blocks::kLampCount - 1)},
+        {"volume", T::Float, &fx.volume, 0.0f, 1.0f},
+        {"volWorld", T::Float, &fx.volWorld, 0.0f, 1.0f},
+        {"volUi", T::Float, &fx.volUi, 0.0f, 1.0f},
+        {"volAmbient", T::Float, &fx.volAmbient, 0.0f, 1.0f},
+        {"audioOcclusion", T::Float, &fx.audioOcclusion, 0.0f, 1.0f},
+        {"renderScale", T::Float, &fx.renderScale, 0.5f, 1.0f},
+        {"vsync", T::Bool, &vsync, 0, 0},
+        {"caveCull", T::Bool, &caveCull, 0, 0},
+        {"radius", T::Int, &radius, 4.0f, 32.0f},
+        {"fov", T::Float, &fovDeg, 50.0f, 110.0f},
+    }};
+}
 
 std::string_view trim(std::string_view s) {
     const auto notSpace = [](char c) { return c != ' ' && c != '\t' && c != '\r'; };
@@ -24,29 +100,66 @@ std::string_view trim(std::string_view s) {
 }
 
 // "true"/"1" on, anything else off — keeps hand-edited files forgiving
-void readBool(std::string_view v, bool& out) { out = v == "1" || v == "true"; }
-
-void readInt(std::string_view v, int& out) {
-    int parsed = 0;
-    if (std::from_chars(v.data(), v.data() + v.size(), parsed).ec == std::errc{})
-        out = parsed;
+void readInto(const Bound& b, std::string_view v) {
+    switch (b.type) {
+    case Bound::Type::Bool:
+        *static_cast<bool*>(b.ptr) = (v == "1" || v == "true");
+        return;
+    case Bound::Type::Int: {
+        int parsed = 0;
+        if (std::from_chars(v.data(), v.data() + v.size(), parsed).ec == std::errc{})
+            *static_cast<int*>(b.ptr) = parsed;
+        return;
+    }
+    case Bound::Type::Float: {
+        // strtof, not from_chars: libstdc++'s floating-point from_chars isn't available on
+        // every target we build, and engine policy is no exceptions so stof is out. A
+        // malformed value leaves end == start, which keeps the default.
+        const std::string s(v);
+        char* end = nullptr;
+        const float parsed = std::strtof(s.c_str(), &end);
+        if (end != s.c_str())
+            *static_cast<float*>(b.ptr) = parsed;
+        return;
+    }
+    }
 }
 
-// strtof, not from_chars: libstdc++'s floating-point from_chars isn't available on every
-// target we build, and engine policy is no exceptions so stof is out. A malformed value
-// leaves end == start, which keeps the default.
-void readFloat(std::string_view v, float& out) {
-    const std::string s(v);
-    char* end = nullptr;
-    const float parsed = std::strtof(s.c_str(), &end);
-    if (end != s.c_str())
-        out = parsed;
+// A corrupt or truncated file could leave nonsense behind, so every numeric value is pinned
+// to the same range the ESC menu enforces — a bad value must not be able to wedge the app on
+// the next launch.
+void clampTo(const Bound& b) {
+    if (b.type == Bound::Type::Int) {
+        int& v = *static_cast<int*>(b.ptr);
+        v = std::clamp(v, int(b.lo), int(b.hi));
+    } else if (b.type == Bound::Type::Float) {
+        float& v = *static_cast<float*>(b.ptr);
+        v = std::clamp(v, b.lo, b.hi);
+    }
+}
+
+void writeFrom(std::ofstream& out, const Bound& b) {
+    out << b.key << '=';
+    switch (b.type) {
+    case Bound::Type::Bool:
+        out << (*static_cast<const bool*>(b.ptr) ? "true" : "false");
+        break;
+    case Bound::Type::Int:
+        out << *static_cast<const int*>(b.ptr);
+        break;
+    case Bound::Type::Float:
+        out << *static_cast<const float*>(b.ptr);
+        break;
+    }
+    out << '\n';
 }
 
 } // namespace
 
 bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& caveCull,
           int& radius, float& fovDeg) {
+    const auto schema = bind(fx, vsync, caveCull, radius, fovDeg);
+
     std::ifstream in(file);
     if (!in)
         return false;
@@ -62,85 +175,17 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
             continue;
         const std::string_view key = trim(raw.substr(0, eq));
         const std::string_view val = trim(raw.substr(eq + 1));
-        ++applied;
 
-        if (key == "shadows") readBool(val, fx.shadows);
-        else if (key == "ssao") readBool(val, fx.ssao);
-        else if (key == "volumetric") readBool(val, fx.volumetric);
-        else if (key == "bloom") readBool(val, fx.bloom);
-        else if (key == "clouds") readBool(val, fx.clouds);
-        else if (key == "ssgi") readBool(val, fx.ssgi);
-        else if (key == "taa") readBool(val, fx.taa);
-        else if (key == "motionBlur") readBool(val, fx.motionBlur);
-        else if (key == "fog") readBool(val, fx.fog);
-        else if (key == "autoExposure") readBool(val, fx.autoExposure);
-        else if (key == "dayCycle") readBool(val, fx.dayCycle);
-        else if (key == "timeOfDay") readFloat(val, fx.timeOfDay);
-        else if (key == "dayLengthSec") readFloat(val, fx.dayLengthSec);
-        else if (key == "exposure") readFloat(val, fx.exposure);
-        else if (key == "bloomStrength") readFloat(val, fx.bloomStrength);
-        else if (key == "emissive") readFloat(val, fx.emissive);
-        else if (key == "lensFlare") readFloat(val, fx.lensFlare);
-        else if (key == "scotopic") readFloat(val, fx.scotopic);
-        else if (key == "cloudShadow") readFloat(val, fx.cloudShadow);
-        else if (key == "contactShadow") readFloat(val, fx.contactShadow);
-        else if (key == "leafSss") readFloat(val, fx.leafSss);
-        else if (key == "relief") readFloat(val, fx.relief);
-        else if (key == "saturation") readFloat(val, fx.saturation);
-        else if (key == "contrast") readFloat(val, fx.contrast);
-        else if (key == "temperature") readFloat(val, fx.temperature);
-        else if (key == "vignette") readFloat(val, fx.vignette);
-        else if (key == "grain") readFloat(val, fx.grain);
-        else if (key == "crosshairR") readFloat(val, fx.crosshair[0]);
-        else if (key == "crosshairG") readFloat(val, fx.crosshair[1]);
-        else if (key == "crosshairB") readFloat(val, fx.crosshair[2]);
-        else if (key == "crosshairA") readFloat(val, fx.crosshair[3]);
-        else if (key == "lampSwatch") readInt(val, fx.lampSwatch);
-        else if (key == "volume") readFloat(val, fx.volume);
-        else if (key == "volWorld") readFloat(val, fx.volWorld);
-        else if (key == "volUi") readFloat(val, fx.volUi);
-        else if (key == "volAmbient") readFloat(val, fx.volAmbient);
-        else if (key == "audioOcclusion") readFloat(val, fx.audioOcclusion);
-        else if (key == "renderScale") readFloat(val, fx.renderScale);
-        else if (key == "vsync") readBool(val, vsync);
-        else if (key == "caveCull") readBool(val, caveCull);
-        else if (key == "radius") readInt(val, radius);
-        else if (key == "fov") readFloat(val, fovDeg);
-        else --applied; // unknown key from an older/newer build
+        const auto it = std::find_if(schema.begin(), schema.end(),
+                                     [&](const Bound& b) { return key == b.key; });
+        if (it == schema.end())
+            continue; // unknown key from an older/newer build
+        readInto(*it, val);
+        ++applied;
     }
 
-    // a corrupt or truncated file could leave nonsense here — clamp to the same ranges
-    // the ESC menu enforces so a bad value can't wedge the app on the next launch
-    radius = std::clamp(radius, 4, 32);
-    fovDeg = std::clamp(fovDeg, 50.0f, 110.0f);
-    fx.timeOfDay = std::clamp(fx.timeOfDay, 0.0f, 1.0f);
-    fx.dayLengthSec = std::clamp(fx.dayLengthSec, 20.0f, 1200.0f);
-    fx.exposure = std::clamp(fx.exposure, 0.4f, 2.5f);
-    fx.bloomStrength = std::clamp(fx.bloomStrength, 0.0f, 1.5f);
-    fx.emissive = std::clamp(fx.emissive, 0.0f, 5.0f);
-    fx.lensFlare = std::clamp(fx.lensFlare, 0.0f, 2.0f);
-    fx.scotopic = std::clamp(fx.scotopic, 0.0f, 1.0f);
-    fx.cloudShadow = std::clamp(fx.cloudShadow, 0.0f, 1.0f);
-    fx.contactShadow = std::clamp(fx.contactShadow, 0.0f, 1.0f);
-    fx.leafSss = std::clamp(fx.leafSss, 0.0f, 2.0f);
-    fx.relief = std::clamp(fx.relief, 0.0f, 2.0f);
-    fx.saturation = std::clamp(fx.saturation, 0.0f, 2.0f);
-    fx.contrast = std::clamp(fx.contrast, 0.5f, 1.8f);
-    fx.temperature = std::clamp(fx.temperature, -1.0f, 1.0f);
-    fx.vignette = std::clamp(fx.vignette, 0.0f, 1.0f);
-    fx.grain = std::clamp(fx.grain, 0.0f, 1.0f);
-    fx.lampSwatch = fx.lampSwatch < 0 ? 0
-                                      : (fx.lampSwatch >= blocks::kLampCount
-                                             ? blocks::kLampCount - 1
-                                             : fx.lampSwatch);
-    for (float& c : fx.crosshair)
-        c = std::clamp(c, 0.0f, 1.0f);
-    fx.volume = std::clamp(fx.volume, 0.0f, 1.0f);
-    fx.volWorld = std::clamp(fx.volWorld, 0.0f, 1.0f);
-    fx.volUi = std::clamp(fx.volUi, 0.0f, 1.0f);
-    fx.volAmbient = std::clamp(fx.volAmbient, 0.0f, 1.0f);
-    fx.audioOcclusion = std::clamp(fx.audioOcclusion, 0.0f, 1.0f);
-    fx.renderScale = std::clamp(fx.renderScale, 0.5f, 1.0f);
+    for (const Bound& b : schema)
+        clampTo(b);
     return applied > 0;
 }
 
@@ -156,55 +201,92 @@ bool save(const std::filesystem::path& file, const FxToggles& fx, bool vsync, bo
         return false;
     }
 
-    const auto b = [](bool v) { return v ? "true" : "false"; };
-    out << "# Voxelium settings. Delete this file to go back to defaults.\n"
-        << "shadows=" << b(fx.shadows) << "\n"
-        << "ssao=" << b(fx.ssao) << "\n"
-        << "volumetric=" << b(fx.volumetric) << "\n"
-        << "bloom=" << b(fx.bloom) << "\n"
-        << "clouds=" << b(fx.clouds) << "\n"
-        << "ssgi=" << b(fx.ssgi) << "\n"
-        << "taa=" << b(fx.taa) << "\n"
-        << "motionBlur=" << b(fx.motionBlur) << "\n"
-        << "fog=" << b(fx.fog) << "\n"
-        << "dayCycle=" << b(fx.dayCycle) << "\n"
-        << "timeOfDay=" << fx.timeOfDay << "\n"
-        << "dayLengthSec=" << fx.dayLengthSec << "\n"
-        << "exposure=" << fx.exposure << "\n"
-        << "bloomStrength=" << fx.bloomStrength << "\n"
-        // These eight were READ by load() and never written here, so every one of them
-        // silently reset to its default on the next launch — seven are Tier 3 features that
-        // were built and tuned. The two key lists drifted because they are two lists; the
-        // structural fix is one schema table both walk, and it is the next commit.
-        << "autoExposure=" << b(fx.autoExposure) << "\n"
-        << "emissive=" << fx.emissive << "\n"
-        << "lensFlare=" << fx.lensFlare << "\n"
-        << "cloudShadow=" << fx.cloudShadow << "\n"
-        << "contactShadow=" << fx.contactShadow << "\n"
-        << "leafSss=" << fx.leafSss << "\n"
-        << "relief=" << fx.relief << "\n"
-        << "lampSwatch=" << fx.lampSwatch << "\n"
-        << "scotopic=" << fx.scotopic << "\n"
-        << "saturation=" << fx.saturation << "\n"
-        << "contrast=" << fx.contrast << "\n"
-        << "temperature=" << fx.temperature << "\n"
-        << "vignette=" << fx.vignette << "\n"
-        << "grain=" << fx.grain << "\n"
-        << "crosshairR=" << fx.crosshair[0] << "\n"
-        << "crosshairG=" << fx.crosshair[1] << "\n"
-        << "crosshairB=" << fx.crosshair[2] << "\n"
-        << "crosshairA=" << fx.crosshair[3] << "\n"
-        << "volume=" << fx.volume << "\n"
-        << "volWorld=" << fx.volWorld << "\n"
-        << "volUi=" << fx.volUi << "\n"
-        << "volAmbient=" << fx.volAmbient << "\n"
-        << "audioOcclusion=" << fx.audioOcclusion << "\n"
-        << "renderScale=" << fx.renderScale << "\n"
-        << "vsync=" << b(vsync) << "\n"
-        << "caveCull=" << b(caveCull) << "\n"
-        << "radius=" << radius << "\n"
-        << "fov=" << fovDeg << "\n";
+    // Local copy purely so the one schema definition can be reused: bind() needs somewhere
+    // writable to point at, and FxToggles is small enough that copying it beats maintaining
+    // a second const walk that could drift from this one.
+    FxToggles tmp = fx;
+    bool v = vsync, cc = caveCull;
+    int r = radius;
+    float f = fovDeg;
+    const auto schema = bind(tmp, v, cc, r, f);
+
+    out << "# Voxelium settings. Delete this file to go back to defaults.\n";
+    for (const Bound& b : schema)
+        writeFrom(out, b);
     return bool(out);
+}
+
+int keyCount() { return int(kSettingCount); }
+
+int perturbAll(FxToggles& fx, bool& vsync, bool& caveCull, int& radius, float& fovDeg) {
+    const auto schema = bind(fx, vsync, caveCull, radius, fovDeg);
+    int changed = 0;
+    for (const Bound& b : schema) {
+        switch (b.type) {
+        case Bound::Type::Bool: {
+            bool& v = *static_cast<bool*>(b.ptr);
+            v = !v;
+            ++changed;
+            break;
+        }
+        case Bound::Type::Int: {
+            int& v = *static_cast<int*>(b.ptr);
+            // Two candidates so the perturbed value is never accidentally the original —
+            // a field that did not actually change would let a broken load pass unnoticed.
+            const int a = int(b.lo) + int((b.hi - b.lo) * 0.37f);
+            const int c = int(b.lo) + int((b.hi - b.lo) * 0.61f);
+            const int want = (v == a) ? c : a;
+            if (want != v) {
+                v = want;
+                ++changed;
+            }
+            break;
+        }
+        case Bound::Type::Float: {
+            float& v = *static_cast<float*>(b.ptr);
+            const float a = b.lo + (b.hi - b.lo) * 0.37f;
+            const float c = b.lo + (b.hi - b.lo) * 0.61f;
+            const float want = (std::abs(v - a) < 1e-5f) ? c : a;
+            if (std::abs(want - v) > 1e-5f) {
+                v = want;
+                ++changed;
+            }
+            break;
+        }
+        }
+    }
+    return changed;
+}
+
+int differences(const FxToggles& a, bool vsyncA, bool caveCullA, int radiusA, float fovA,
+                const FxToggles& b, bool vsyncB, bool caveCullB, int radiusB, float fovB) {
+    FxToggles ta = a, tb = b;
+    bool va = vsyncA, ca = caveCullA, vb = vsyncB, cb = caveCullB;
+    int ra = radiusA, rb = radiusB;
+    float fa = fovA, fb = fovB;
+    const auto sa = bind(ta, va, ca, ra, fa);
+    const auto sb = bind(tb, vb, cb, rb, fb);
+
+    int diff = 0;
+    for (std::size_t i = 0; i < sa.size(); ++i) {
+        switch (sa[i].type) {
+        case Bound::Type::Bool:
+            if (*static_cast<const bool*>(sa[i].ptr) != *static_cast<const bool*>(sb[i].ptr))
+                ++diff;
+            break;
+        case Bound::Type::Int:
+            if (*static_cast<const int*>(sa[i].ptr) != *static_cast<const int*>(sb[i].ptr))
+                ++diff;
+            break;
+        case Bound::Type::Float:
+            // Tolerance, not equality: the value makes a round trip through decimal text.
+            if (std::abs(*static_cast<const float*>(sa[i].ptr) -
+                         *static_cast<const float*>(sb[i].ptr)) > 1e-4f)
+                ++diff;
+            break;
+        }
+    }
+    return diff;
 }
 
 } // namespace vx::Settings
