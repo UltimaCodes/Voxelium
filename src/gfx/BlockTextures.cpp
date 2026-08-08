@@ -122,7 +122,16 @@ Rgba genLeaves(int x, int y) {
     // clustered blobs of lighter/darker green
     float cluster = h01(x / 3, y / 3, 12);
     float n = 0.7f + 0.5f * cluster + 0.12f * h01(x, y, 13);
-    return shade(0.22f, 0.44f, 0.18f, n);
+    Rgba c = shade(0.22f, 0.44f, 0.18f, n);
+    // Punch gaps. Leaves are a cutout block: the holes are what you see through, what light
+    // comes through, and what makes the shadow dappled instead of a solid slab. Driven off a
+    // different hash than the colour so the holes do not line up with the shading, and
+    // biased so the tile keeps roughly three quarters coverage — many small gaps read as
+    // foliage, a few big ones read as a broken texture.
+    const float hole = h01(x, y, 71) * 0.65f + h01(x / 2, y / 2, 72) * 0.35f;
+    if (hole > 0.74f)
+        c.a = 0;
+    return c;
 }
 
 Rgba genSand(int x, int y) {

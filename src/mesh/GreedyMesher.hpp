@@ -80,6 +80,13 @@ private:
     BlockId m_grid[kPad * kPad * kPad];
     std::uint16_t m_gridLight[kPad * kPad * kPad];
 
+    // Two masks, because a voxel HAVING geometry and a voxel HIDING its neighbour stopped
+    // being the same question once leaves became a cutout. m_solid* is presence (leaves
+    // included, so they still emit faces); m_opaque* is occlusion (leaves excluded, so the
+    // faces behind them survive and you can see through the gaps).
+    std::uint64_t m_solidX[kChunkSize][kChunkSize];
+    std::uint64_t m_solidY[kChunkSize][kChunkSize];
+    std::uint64_t m_solidZ[kChunkSize][kChunkSize];
     std::uint64_t m_opaqueX[kChunkSize][kChunkSize]; // [y][z]
     std::uint64_t m_opaqueY[kChunkSize][kChunkSize]; // [z][x]
     std::uint64_t m_opaqueZ[kChunkSize][kChunkSize]; // [y][x]

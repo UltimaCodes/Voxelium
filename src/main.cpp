@@ -200,6 +200,11 @@ void renderFrame(RenderContext& rc, const vx::FlyCamera& camera, const vx::FxTog
 
     if (timers) timers->shadow.begin();
     if (fx.shadows) {
+        // The shadow pass alpha-tests cutout blocks now, so it needs the block texture bound
+        // BEFORE it runs — it used to be bound further down for the scene pass only, and a
+        // depth-only pass had no use for it. Without this the leaf test samples whatever
+        // happened to be on unit 0.
+        glBindTextureUnit(0, rc.blockTex);
         rc.shadows.update(camera.position, camera.forward(), sunL,
                           glm::radians(camera.fovYDeg), aspect);
         rc.shadows.render(rc.renderer, cam.cameraChunk, cam.cameraFrac);

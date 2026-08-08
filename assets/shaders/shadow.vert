@@ -7,6 +7,12 @@ layout(std430, binding = 1) readonly buffer Offsets { vec4 uOffsets[]; };
 
 layout(location = 0) uniform mat4 uViewProj; // light view-proj, camera-relative space
 
+// Cutout blocks (leaves) have to be alpha-tested in the shadow pass too, or a canopy full
+// of holes still casts a solid slab of shadow. That needs the texture coords and the layer
+// down here, which a depth-only pass would otherwise never carry.
+out vec2 vUv;
+flat out uint vLayer;
+
 const int kTri[6] = int[6](0, 1, 2, 0, 2, 3);
 const vec2 kCorner[6][4] = vec2[6][4](
     vec2[4](vec2(0, 0), vec2(0, 1), vec2(1, 1), vec2(1, 0)),
@@ -16,6 +22,8 @@ const vec2 kCorner[6][4] = vec2[6][4](
     vec2[4](vec2(0, 0), vec2(1, 0), vec2(1, 1), vec2(0, 1)),
     vec2[4](vec2(1, 0), vec2(0, 0), vec2(0, 1), vec2(1, 1))
 );
+#include "texlayer.glsl"
+
 const float kBloat = 0.001;
 
 void main() {
@@ -30,6 +38,8 @@ void main() {
     // kCorner has six entries, so indexing it at 6 would be out of bounds, and a field of
     // grass self-shadowing at cascade resolution is noise rather than detail anyway.
     if (dir >= 6u) {
+        vUv = vec2(0.0);
+        vLayer = 0u;
         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
@@ -43,5 +53,7 @@ void main() {
     else if (dir == 4u) pos += vec3(uv.x, uv.y, 1.0);
     else                pos += vec3(uv.x, uv.y, 0.0);
 
+    vUv = uv;
+    vLayer = texLayer(q.y & 255u, dir);
     gl_Position = uViewProj * vec4(pos + uOffsets[gl_DrawID].xyz, 1.0);
 }

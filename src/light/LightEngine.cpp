@@ -203,7 +203,13 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
                     y = y & ~31; // whole chunk already filled above; skip it
                     continue;
                 }
-                if (blocks::opaque(c->get(dx, y & 31, dz)))
+                // The direct-sky column stops at anything that is not clear air. A cutout
+                // (leaves) does not BLOCK light, but it does not pass it at full strength
+                // either — so the descent ends here and the BFS carries it down from this
+                // voxel, attenuating per step. That is what makes a canopy dapple instead
+                // of either going black or letting a full-strength shaft through.
+                const BlockId b = c->get(dx, y & 31, dz);
+                if (blocks::blocksLight(b) || blocks::lightCost(b) > 1)
                     break;
                 c->setLight(dx, y & 31, dz,
                             light::withSky(c->lightAt(dx, y & 31, dz), 15));
@@ -231,7 +237,7 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
                 bool boundary = false;
                 for (int d = 0; d < 6 && !boundary; ++d) {
                     const glm::ivec3 n = p + kStep[d];
-                    boundary = !blocks::opaque(blockAt(n)) && getLevel(n, Sky) < 14;
+                    boundary = !blocks::blocksLight(blockAt(n)) && getLevel(n, Sky) < 14;
                 }
                 if (boundary)
                     enqueue(Sky, p);
@@ -301,7 +307,7 @@ void LightEngine::seedNewChunk(ChunkPos pos, bool skyAbove) {
         for (int y = 0; y < kChunkSize; ++y)
             for (int z = 0; z < kChunkSize; ++z)
                 for (int x = 0; x < kChunkSize; ++x) {
-                    if (blocks::opaque(c->get(x, y, z)))
+                    if (blocks::blocksLight(c->get(x, y, z)))
                         continue;
                     c->setLight(x, y, z, light::withSky(c->lightAt(x, y, z), 15));
                     enqueue(Sky, {baseX + x, baseY + y, baseZ + z});
@@ -340,11 +346,15 @@ void LightEngine::propagateStep(int channel, glm::ivec3 wp) {
         return;
     for (int d = 0; d < 6; ++d) {
         const glm::ivec3 n = wp + kStep[d];
-        // sky light at full strength keeps full strength going straight down
-        const int att = (channel == Sky && d == 3 && level == 15) ? 0 : 1;
-        const int target = level - att;
-        if (blocks::opaque(blockAt(n)))
+        const BlockId nb = blockAt(n);
+        if (blocks::blocksLight(nb))
             continue;
+        // sky light at full strength keeps full strength going straight down...
+        int att = (channel == Sky && d == 3 && level == 15) ? 0 : 1;
+        // ...unless it is crossing a cutout, which costs extra either way. Without this a
+        // shaft would pass through a canopy undimmed and leaves would light nothing.
+        att += blocks::lightCost(nb) - 1;
+        const int target = level - att;
         if (getLevel(n, channel) >= target)
             continue;
         setLevel(n, channel, target);
@@ -355,7 +365,7 @@ void LightEngine::propagateStep(int channel, glm::ivec3 wp) {
 void LightEngine::removeStep(int channel, Removal r) {
     for (int d = 0; d < 6; ++d) {
         const glm::ivec3 n = r.pos + kStep[d];
-        if (blocks::opaque(blockAt(n)))
+        if (blocks::blocksLight(blockAt(n)))
             continue;
         const int nl = getLevel(n, channel);
         if (nl == 0)
@@ -377,7 +387,7 @@ void LightEngine::onBlockChanged(const glm::ivec3& wp, BlockId oldId, BlockId ne
     const int oldE[3] = {blocks::emitR(oldId), blocks::emitG(oldId), blocks::emitB(oldId)};
     const int newE[3] = {blocks::emitR(newId), blocks::emitG(newId), blocks::emitB(newId)};
 
-    if (blocks::opaque(newId) && !blocks::opaque(oldId)) {
+    if (blocks::blocksLight(newId) && !blocks::blocksLight(oldId)) {
         // placed a solid block: kill whatever light was in this voxel
         for (int ch = 0; ch < kChannels; ++ch) {
             const int level = getLevel(wp, ch);
@@ -387,14 +397,14 @@ void LightEngine::onBlockChanged(const glm::ivec3& wp, BlockId oldId, BlockId ne
             }
         }
     }
-    if (!blocks::opaque(newId) && blocks::opaque(oldId)) {
+    if (!blocks::blocksLight(newId) && blocks::blocksLight(oldId)) {
         // broke a block: pull light in from every neighbor, and if the voxel above has
         // direct sky, the column below regains it
         for (int d = 0; d < 6; ++d)
             for (int ch = 0; ch < kChannels; ++ch)
                 enqueue(ch, wp + kStep[d]);
         if (getLevel(wp + glm::ivec3(0, 1, 0), Sky) == 15) {
-            for (int y = wp.y; y >= 0 && !blocks::opaque(blockAt({wp.x, y, wp.z})); --y) {
+            for (int y = wp.y; y >= 0 && !blocks::blocksLight(blockAt({wp.x, y, wp.z})); --y) {
                 setLevel({wp.x, y, wp.z}, Sky, 15);
                 enqueue(Sky, {wp.x, y, wp.z});
             }

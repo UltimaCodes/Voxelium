@@ -38,7 +38,7 @@ std::uint32_t GreedyMesher::cornerShade(int ax, int ay, int az, int dir,
             return kQuadShadeFull;
     }
     const auto opaque = [&](int gx, int gy, int gz) {
-        return blocks::opaque(m_grid[gi(gx, gy, gz)]) ? 1 : 0;
+        return blocks::occludes(m_grid[gi(gx, gy, gz)]) ? 1 : 0;
     };
 
     int ao[4];
@@ -285,6 +285,9 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
 }
 
 void GreedyMesher::buildColumns() {
+    std::memset(m_solidX, 0, sizeof(m_solidX));
+    std::memset(m_solidY, 0, sizeof(m_solidY));
+    std::memset(m_solidZ, 0, sizeof(m_solidZ));
     std::memset(m_opaqueX, 0, sizeof(m_opaqueX));
     std::memset(m_opaqueY, 0, sizeof(m_opaqueY));
     std::memset(m_opaqueZ, 0, sizeof(m_opaqueZ));
@@ -298,17 +301,20 @@ void GreedyMesher::buildColumns() {
             const std::uint64_t bit = 1ull << (i + 1);
             for (int b = 0; b < kChunkSize; ++b) {
                 const BlockId bx = m_grid[gi(i, a, b)]; // column along x, (y=a,z=b)
-                if (blocks::opaque(bx)) m_opaqueX[a][b] |= bit;
+                if (blocks::opaque(bx)) m_solidX[a][b] |= bit;
+                if (blocks::occludes(bx)) m_opaqueX[a][b] |= bit;
                 else if (blocks::isWater(bx)) m_waterX[a][b] |= bit;
             }
             for (int b = 0; b < kChunkSize; ++b) {
                 const BlockId by = m_grid[gi(b, i, a)]; // along y, (z=a,x=b)
-                if (blocks::opaque(by)) m_opaqueY[a][b] |= bit;
+                if (blocks::opaque(by)) m_solidY[a][b] |= bit;
+                if (blocks::occludes(by)) m_opaqueY[a][b] |= bit;
                 else if (blocks::isWater(by)) m_waterY[a][b] |= bit;
             }
             for (int b = 0; b < kChunkSize; ++b) {
                 const BlockId bz = m_grid[gi(b, a, i)]; // along z, (y=a,x=b)
-                if (blocks::opaque(bz)) m_opaqueZ[a][b] |= bit;
+                if (blocks::opaque(bz)) m_solidZ[a][b] |= bit;
+                if (blocks::occludes(bz)) m_opaqueZ[a][b] |= bit;
                 else if (blocks::isWater(bz)) m_waterZ[a][b] |= bit;
             }
         }
@@ -344,19 +350,22 @@ void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, Greedy
     m_planes.clear();
     std::memset(m_heads, 0xFF, sizeof(m_heads));
 
-    auto (&sx)[kChunkSize][kChunkSize] = water ? m_waterX : m_opaqueX;
-    auto (&sy)[kChunkSize][kChunkSize] = water ? m_waterY : m_opaqueY;
-    auto (&sz)[kChunkSize][kChunkSize] = water ? m_waterZ : m_opaqueZ;
+    // Presence: what has geometry here. Leaves are in m_solid but not in m_opaque.
+    auto (&sx)[kChunkSize][kChunkSize] = water ? m_waterX : m_solidX;
+    auto (&sy)[kChunkSize][kChunkSize] = water ? m_waterY : m_solidY;
+    auto (&sz)[kChunkSize][kChunkSize] = water ? m_waterZ : m_solidZ;
 
     for (int a = 0; a < kChunkSize; ++a) {
         for (int b = 0; b < kChunkSize; ++b) {
             const std::uint64_t colX = sx[a][b];
             const std::uint64_t colY = sy[a][b];
             const std::uint64_t colZ = sz[a][b];
-            // opaque faces are blocked only by opaque; water faces by opaque OR water
-            const std::uint64_t blkX = water ? (colX | m_opaqueX[a][b]) : colX;
-            const std::uint64_t blkY = water ? (colY | m_opaqueY[a][b]) : colY;
-            const std::uint64_t blkZ = water ? (colZ | m_opaqueZ[a][b]) : colZ;
+            // What HIDES a face, which is not the same as what has one. Solid faces are
+            // hidden only by occluders, so a leaf face against another leaf still gets
+            // emitted and the canopy has an inside; water faces by occluders or water.
+            const std::uint64_t blkX = water ? (colX | m_opaqueX[a][b]) : m_opaqueX[a][b];
+            const std::uint64_t blkY = water ? (colY | m_opaqueY[a][b]) : m_opaqueY[a][b];
+            const std::uint64_t blkZ = water ? (colZ | m_opaqueZ[a][b]) : m_opaqueZ[a][b];
 
             const auto scatter = [&](int dir, std::uint64_t faceBits) {
                 std::uint32_t m = std::uint32_t(faceBits >> 1);

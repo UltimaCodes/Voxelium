@@ -115,9 +115,12 @@ float sunShadow(vec3 pos, vec3 N) {
 void main() {
     vec3 N = kNormal[vDir];
     vec4 texel = texture(uBlockTex, vec3(vUv, float(vLayer)));
-    // Cross-plane foliage is alpha cut out: the tile is mostly empty and the empty part has
-    // to leave the world behind it showing, not a transparent-black rectangle.
-    if (vDir >= 6u && texel.a < 0.5)
+    // Alpha cutout. Two cases, same mechanism: cross-plane foliage (dir 6/7) is mostly
+    // empty tile, and LEAVES are a solid block riddled with gaps. Leaves are deliberately
+    // not occluders in the mesher either, so the faces behind them are still there to be
+    // seen through those gaps — that is what makes a canopy read as leaves rather than as a
+    // green cube, and it is why light and shadow get through it.
+    if ((vDir >= 6u || vLayer == 7u) && texel.a < 0.5)
         discard;
     vec3 albedo = texel.rgb;
 

@@ -21,7 +21,7 @@ int faceTouchMask(int x, int y, int z) {
 
 std::uint16_t computeConnectivity(const Chunk& chunk) {
     if (chunk.uniform())
-        return blocks::opaque(chunk.uniformId()) ? 0 : kAllFacesConnected;
+        return blocks::occludes(chunk.uniformId()) ? 0 : kAllFacesConnected;
 
     // explicit-queue BFS, seeded only from border air voxels — interior air bubbles
     // can't connect faces, so they are never visited at all
@@ -41,7 +41,7 @@ std::uint16_t computeConnectivity(const Chunk& chunk) {
     // flood through anything you can see through (air + water), not just air
     const auto floodFrom = [&](int sx, int sy, int sz) {
         const int seed = Chunk::index(sx, sy, sz);
-        if (isVisited(seed) || blocks::opaque(chunk.get(sx, sy, sz)))
+        if (isVisited(seed) || blocks::occludes(chunk.get(sx, sy, sz)))
             return;
         markVisited(seed);
         queue.clear();
@@ -64,7 +64,7 @@ std::uint16_t computeConnectivity(const Chunk& chunk) {
                     nz >= kChunkSize)
                     continue;
                 const int nidx = Chunk::index(nx, ny, nz);
-                if (isVisited(nidx) || blocks::opaque(chunk.get(nx, ny, nz)))
+                if (isVisited(nidx) || blocks::occludes(chunk.get(nx, ny, nz)))
                     continue;
                 markVisited(nidx);
                 queue.push_back(std::uint16_t(nidx));

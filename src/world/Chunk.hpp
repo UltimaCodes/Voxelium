@@ -161,6 +161,26 @@ inline constexpr bool opaque(BlockId id) {
     return id != Air && !isWater(id) && !isCross(id);
 }
 
+// CUTOUT blocks. The material is opaque where it exists, but the block is full of holes —
+// leaves. Three things follow, and they used to be one flag:
+//   - it does NOT hide what is behind it, so faces against it are still drawn and you can
+//     see into and through a canopy (this is Minecraft's "fancy" leaves)
+//   - it does NOT stop light, it attenuates it, so a canopy dapples instead of casting a
+//     solid black interior
+//   - it DOES still collide; a tree is not walk-through
+inline constexpr bool isCutout(BlockId id) { return id == Leaves; }
+
+// Hides the faces behind it, and blocks the cave-cull visibility flood. A cutout does not.
+inline constexpr bool occludes(BlockId id) { return opaque(id) && !isCutout(id); }
+
+// Hard stop for light propagation. Cutouts are not — see lightCost.
+inline constexpr bool blocksLight(BlockId id) { return occludes(id); }
+
+// What one step THROUGH this voxel costs the light BFS. Ordinary air is 1. Leaves take a
+// couple of levels out of whatever crosses them, which is what turns a canopy from a black
+// hole into a soft gradient with bright gaps.
+inline constexpr int lightCost(BlockId id) { return isCutout(id) ? 3 : 1; }
+
 // 8 = full source, 1 = thinnest film, 0 = not water. The source level never decays; every
 // other level is recomputed from its neighbours each fluid tick.
 inline constexpr int waterLevel(BlockId id) {
