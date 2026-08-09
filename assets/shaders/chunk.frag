@@ -43,6 +43,7 @@ layout(location = 26) uniform float uTimeSky;     // same clock the cloud field 
 layout(location = 27) uniform float uLeafSss;    // leaf translucency strength, 0 = off
 layout(location = 28) uniform float uRelief;     // derived surface relief, 0 = off
 layout(location = 29) uniform float uDaylight;   // 1 full day, 0 after dusk
+layout(location = 30) uniform float uWetness;    // 0 dry .. 1 soaked (#29)
 
 #include "clouds.glsl"
 
@@ -206,6 +207,11 @@ void main() {
                         ? mix(1.0, cloudSunlight(uCamPos + vWorldRel, uSunL, uTimeSky),
                               uCloudShadow)
                         : 1.0;
+    // Emitters: layer 4 is glow, 15..39 the 25 lamp swatches. Needed in two places below,
+    // so it is worked out once here rather than written out twice and allowed to disagree.
+    float emitMask =
+        (uEmissive > 0.0 && (vLayer == 4u || (vLayer >= 15u && vLayer <= 39u))) ? 1.0 : 0.0;
+
     vec3 direct = uSunColor * (ndl * shadow * skyAccess * clouded);
 
     // How hard sky access gates the ambient fill. In daylight the sun dominates and a tight
@@ -263,11 +269,43 @@ void main() {
         transmit = uSunColor * albedo * wrap * back * skyAccess * shadow * uLeafSss;
     }
 
-    vec3 emission = vec3(0.0);
-    if (uEmissive > 0.0 && (vLayer == 4u || (vLayer >= 15u && vLayer <= 39u)))
-        emission = albedo * uEmissive;
+    // Wet surfaces (#29). Three things happen to a surface in the rain, and all three are
+    // needed or it just looks darker: it darkens (a water film traps light in the
+    // microsurface), it gets a specular lobe (the film is smooth where the block is not),
+    // and it does neither where the rain cannot reach.
+    //
+    // skyL is that last test, already sitting in the quad: it is the voxel sky access the
+    // sun term uses, so a cave floor, an overhang and the underside of a ledge are dry for
+    // free. That is the whole reason this hooks in here rather than in a screen-space pass,
+    // which would have no idea what is under cover.
+    //
+    // Emitters stay dry-looking: a lamp's own light swamps a specular highlight anyway, and
+    // darkening the albedo of a light source is the #49 mistake again.
+    float wet = uWetness * skyL * skyL * (1.0 - emitMask);
+    vec3 wetSpec = vec3(0.0);
+    if (wet > 0.001) {
+        albedo *= mix(1.0, 0.62, wet);              // damp, not repainted
+        vec3 V = normalize(-vWorldRel);
+        vec3 H = normalize(uSunL + V);
+        // Two lobes for the same reason the water has two: one narrow highlight on its own
+        // reads as plastic. The broad one is what makes a wet road look wet.
+        float ndh = max(dot(N, H), 0.0);
+        float spec = pow(ndh, 90.0) * 1.5 + pow(ndh, 12.0) * 0.16;
+        // Shadowed by the cascade, so a wet surface under a tree does not glint.
+        wetSpec = uSunColor * spec * wet * shadow * skyAccess;
+    }
 
-    outColor = vec4(albedo * kShade[vDir] * (direct + ambient + torch) * vShade + emission +
-                        transmit,
+    vec3 emission = albedo * uEmissive * emitMask + wetSpec;
+
+    // Light a surface RECEIVES is ambient-occluded. Light it PRODUCES is not: AO answers
+    // "how much ambient reaches this corner", which means nothing for the face that is the
+    // source. That distinction is the whole of #49 — an emitter's own torch term is by far
+    // the largest thing in its shading, so AO on it puts a dark band along the bottom of
+    // every lamp sitting on the ground, exactly where the corners are most occluded. It
+    // reads as the block being shadowed at its base while it is lighting everything around
+    // it. kShade stays, so a lamp still reads as a cube rather than a flat sticker.
+    float ownShade = mix(vShade, 1.0, emitMask);
+    outColor = vec4(albedo * kShade[vDir] * ((direct + ambient) * vShade + torch * ownShade) +
+                        emission + transmit,
                     1.0);
 }

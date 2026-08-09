@@ -453,8 +453,26 @@ void main() {
     }
 
     vec3 color = texture(uScene, vUv).rgb;
-    if (uAoOn > 0.5)
-        color *= texture(uAo, vUv).r;
+    if (uAoOn > 0.5) {
+        // Ambient occlusion darkens a surface by how little AMBIENT light reaches it. A
+        // surface producing its own light is not receiving that light, so occluding it is
+        // meaningless — and it is what put a dark band along the bottom edge of every lamp
+        // sitting on the ground, exactly where the crease is deepest. That reads as the
+        // block being shadowed at its base while it lights everything around it (#49).
+        //
+        // Composite is screen-space and has no block ids, but it does not need them: what
+        // matters is whether the pixel's radiance is its own. Emitters come out of the scene
+        // pass far above 1.0 (a lamp's own light alone is ~1.8 before the tonemap), while
+        // ordinary lit terrain sits below it, so the HDR luminance already separates them.
+        // The window is set from what the two actually produce, not by taste. An emitter
+        // face totals roughly 3.2 before the tonemap (emission ~1.8 plus its own torch term
+        // ~1.45); the brightest fully sunlit terrain reaches about 1.7. Starting at 2.0
+        // leaves ordinary ground fully occluded — measured: a threshold of 1.0 leaked onto
+        // 2.4% of a daylight frame, this leaves 0.
+        float lum = dot(color, vec3(0.2126, 0.7152, 0.0722));
+        float emitting = smoothstep(2.0, 3.2, lum);
+        color *= mix(texture(uAo, vUv).r, 1.0, emitting);
+    }
     if (uSsgiOn > 0.5)
         color += texture(uSsgi, vUv).rgb * 0.9; // one-bounce indirect fill
 
