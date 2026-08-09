@@ -8,7 +8,15 @@ vxsave_smoke/
 cmake-build-*/
 *.bmp
 
-# audio: the bundled CC0 footsteps are tracked, anything else you drop in is yours
+# Audio. The bundled CC0 set is tracked; anything else you drop in stays yours and is not
+# swept into a commit by a stray `git add sounds/`.
+#
+# wav is whitelisted because the #62 clip set converts to it — the packs it came from ship
+# ogg, which the engine rejects, and there is no flac encoder on this toolchain. That does
+# mean a wav YOU add is no longer ignored by default, so check `git status` before staging.
+# The rule that matters is in sounds/README.md and is not negotiable: only CC0 or equivalent
+# goes in here, and no Minecraft audio, ever.
 sounds/*
 !sounds/README.md
 !sounds/*.flac
+!sounds/*.wav

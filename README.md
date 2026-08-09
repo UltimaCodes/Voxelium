@@ -52,7 +52,8 @@ ESC opens the settings menu (it pauses too), in five tabs:
 - **visuals** — the things a preset deliberately does *not* touch, because they are taste
   and not performance: fov, crosshair, day/night cycle, night vision, exposure, bloom,
   and the grade (saturation, contrast, temperature, vignette, grain).
-- **audio** — master plus world/interface/ambience buses, and occlusion.
+- **audio** — master plus world/interface/ambience buses, and how much solid rock muffles a
+  sound heard through it.
 - **world** — seed, save, load, delete, new world.
 - **controls** — key reference.
 
@@ -70,8 +71,34 @@ sky can actually reach them — caves, overhangs and ledge undersides stay dry, 
 shading reads the same voxel sky access the sun does.
 
 night is lit by the moon, not by a raised ambient floor — it rides the same shadow cascades
-the sun does, so hills have a lit side after dark and the fill can stay low. drop your own
-clips in `sounds/` to hear anything; nothing audio ships beyond CC0 footsteps.
+the sun does, so hills have a lit side after dark and the fill can stay low.
+
+## sound
+
+blocks sound like what they're made of, footsteps included. breaking, placing and walking
+each try the exact block first, then its **material** (stone, wood, glass, grass, sand,
+snow, dirt, gravel, water), then a generic clip — which matters because this engine stores
+data in the block id, so water is seven ids and a lamp is twenty-five, and keying audio on
+the id alone meant twenty-five copies of one file.
+
+you also get: a scuff when you jump, a landing that gets heavier the further you fell (a
+step off one block is a stride, not a drop), splashes going into and out of water, swim
+strokes, and bubbles while your head is under.
+
+ambience is eight looping beds crossfaded by where you actually are — day, night, wind,
+cave, deep underground, underwater, rain, and near water. "am i in a cave" is read off the
+voxel **sky light** rather than by casting rays, since the light engine has already worked
+that out, and it needs you to be enclosed *and* underground, so an overhang isn't a cave.
+heavy rain gets occasional thunder, rolled off by how much sky you can see.
+
+going underwater runs the world and ambience through a real low-pass sweeping 18 kHz down
+to 700 Hz — menus stay dry, because a menu click isn't in the water with you. sounds are
+also muffled by solid blocks between them and your ear, one raycast per sound, with its own
+slider.
+
+everything bundled is **CC0** with its source listed in `sounds/README.md`, and no clip is
+required — delete any of them and the engine just stays quiet for that one. drop your own
+in and they take over; the naming rules are in that same file.
 
 ## worlds
 

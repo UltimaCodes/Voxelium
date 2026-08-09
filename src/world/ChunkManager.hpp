@@ -76,6 +76,12 @@ public:
     }
 
     BlockId blockAtWorld(const glm::ivec3& wp) const;
+    // Sky light 0..15 at a world voxel, 0 where nothing is loaded. The ambience director
+    // wants "how enclosed is the ear", and this already answers it exactly — the light BFS
+    // has done the work, so asking costs one chunk lookup instead of a cover raycast every
+    // frame. An absent chunk reads 0 (sealed) rather than 15, so streaming in never makes a
+    // cave briefly sound like open sky.
+    int skyLightAtWorld(const glm::ivec3& wp) const;
     // debug: has this column been through a completed light seed?
     bool columnSeeded(ChunkPos col) const { return m_seededColumns.contains(col); }
     bool columnProvisional(ChunkPos col) const { return m_provisionalColumns.contains(col); }
@@ -116,7 +122,13 @@ public:
     // stone that caves then undercut — so a scan finds thousands of unsupported blocks the
     // moment a world loads and never stops moving them, remeshing continuously. Gravel
     // that nobody has touched staying put is also the behaviour you want.
-    int stepFalling(Renderer& renderer, LightEngine& light);
+    // `landed` counts blocks that came to rest THIS tick having actually fallen, and
+    // `landedAt` is one of them — enough for a sound, since a collapsing pile is one event to
+    // the ear rather than thirty. The distinction matters: a block that cannot fall was not
+    // necessarily falling, it may have just been placed on solid ground, and that already
+    // made its own noise.
+    int stepFalling(Renderer& renderer, LightEngine& light, int* landed = nullptr,
+                    glm::ivec3* landedAt = nullptr);
     // A voxel worth re-testing for falling: the block itself, and whatever sits on it.
     void queueFallCheck(const glm::ivec3& p);
 
@@ -315,6 +327,10 @@ private:
     // cheaper than hashing every push.
     std::vector<glm::ivec3> m_fallQueue;
     std::vector<glm::ivec3> m_fallScratch;
+    // Where blocks moved TO on the previous tick. A block that cannot fall only counts as
+    // having landed if it is one of these; otherwise it was never in motion.
+    std::vector<glm::ivec3> m_fellLast;
+    std::vector<glm::ivec3> m_fellNow;
 
     // a detailed re-gen finished on a worker; carries its own chunk so completion doesn't
     // depend on the entry still existing (it's released if the entry went away)

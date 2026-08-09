@@ -64,8 +64,11 @@ public:
     // One-shot at a world position, attenuated and panned relative to the listener.
     void playAt(const std::string& name, const glm::dvec3& worldPos, float volume = 1.0f,
                 float pitch = 1.0f);
-    // One-shot with no position — UI clicks, stings.
-    void play(const std::string& name, float volume = 1.0f, float pitch = 1.0f);
+    // One-shot with no position — UI clicks, and weather that has no position because it is
+    // the whole sky. The bus is explicit because those two must not share a slider: thunder
+    // belongs to the world's atmosphere and should duck underwater, a menu click does not.
+    void play(const std::string& name, float volume = 1.0f, float pitch = 1.0f,
+              Bus bus = Bus::Ui);
 
     // Plays only if the user actually supplied that clip, and says whether it did. Lets
     // callers try a specific name first and fall back to a generic one.
@@ -77,6 +80,23 @@ public:
     // caller because only the world knows: AudioEngine must not depend on ChunkManager.
     void playOccluded(const std::string& name, const glm::dvec3& worldPos, float occlusion,
                       float volume = 1.0f, float pitch = 1.0f);
+
+    // Ambience beds: looping clips on the Ambient bus, each driven by a target gain that the
+    // caller re-states every frame. The engine owns starting, crossfading and stopping, so a
+    // caller only ever describes where the player IS — never which sound to begin or end.
+    // That is the whole reason beds are not one-shots: an "enter the cave" event has to be
+    // detected, and a cave gain does not.
+    //
+    // Beds live in their own voice pool. Sharing the one-shot pool would let a burst of
+    // block breaks steal the bed the player is standing in, and a bed cut mid-loop is the
+    // most obvious artefact in the mix.
+    void setBed(const std::string& name, float gain);
+    // Every bed not named since the last call fades out. Saves the caller tracking which
+    // beds it stopped asking for.
+    void endUnsetBeds();
+    int liveBeds() const;
+    // Current (faded, not target) gain of a bed, 0 if it is not running. For --smoke.
+    float bedGain(const std::string& name) const;
 
     bool available() const { return m_ready; }
     const SoundBank& bank() const { return m_bank; }
@@ -100,6 +120,14 @@ private:
     // Two plays of the same clip closer together than this are the same event as far as the
     // ear is concerned; the second is dropped rather than eating a voice.
     static constexpr double kMinRepeatSec = 0.04;
+    // One slot per bed the director can name, so a request can never be dropped for want of
+    // a slot. It is not a budget: a cave mouth at dawn in the rain beside a lake genuinely
+    // wants day, night, wind, cave, deep, rain and water audible at once, and the whole
+    // point of crossfading is that those overlap.
+    static constexpr int kBeds = 8;
+    // Beds crossfade over roughly a second and a half. Fast enough that walking into a cave
+    // mouth feels like a threshold, slow enough that skimming a doorway does not pump.
+    static constexpr float kBedFadePerSec = 0.65f;
 
     struct Voice {
         bool live = false;
@@ -109,9 +137,17 @@ private:
         glm::dvec3 worldPos{0.0};
     };
 
+    struct Bed {
+        std::string name; // empty = slot free
+        float gain = 0.0f;
+        float target = 0.0f;
+        bool named = false; // set by setBed, cleared by endUnsetBeds
+    };
+
     int acquireVoice();
     void startVoice(int idx, const SoundBank::Sample& s, float volume, float pitch,
-                    bool spatialised, float lowpass);
+                    Bus bus, bool spatialised, float lowpass);
+    void updateBeds(float dt);
     bool throttled(const std::string& name);
     const SoundBank::Sample* pick(const std::string& name);
 
@@ -124,6 +160,7 @@ private:
     Voice m_voice[kVoices] = {};
     int m_nextVoice = 0;
     std::uint64_t m_throttled = 0;
+    Bed m_bed[kBeds] = {};
 
     // name -> last play time, for the repeat throttle. Small and linear on purpose: it only
     // ever holds the handful of names actually being triggered.
@@ -135,15 +172,18 @@ private:
     double m_clock = 0.0;
 
     bool m_underwater = false;
-    float m_wet = 0.0f; // 0 dry .. 1 fully submerged, crossfaded in update()
+    float m_wet = 0.0f;  // 0 dry .. 1 fully submerged, crossfaded in update()
+    int m_wetStep = -1;  // quantised m_wet, so the filter is only re-tuned when it moves
 
     // miniaudio types are opaque here so its 90k-line header stays out of every TU that
     // wants to make a noise. Constructed in init().
     void* m_engine = nullptr;
-    void* m_sounds = nullptr;  // ma_sound[kVoices]
-    void* m_refs = nullptr;    // ma_audio_buffer_ref[kVoices], one cursor per voice
-    void* m_groups = nullptr;  // ma_sound_group[3], indexed by Bus
-    void* m_lowpass = nullptr; // ma_lpf_node on the world bus
+    void* m_sounds = nullptr;   // ma_sound[kVoices]
+    void* m_refs = nullptr;     // ma_audio_buffer_ref[kVoices], one cursor per voice
+    void* m_groups = nullptr;   // ma_sound_group[3], indexed by Bus
+    void* m_bedSounds = nullptr; // ma_sound[kBeds]
+    void* m_bedRefs = nullptr;   // ma_audio_buffer_ref[kBeds]
+    void* m_lowpass = nullptr;   // ma_lpf_node, world + ambient -> endpoint
 };
 
 } // namespace vx

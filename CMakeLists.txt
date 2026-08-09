@@ -17,7 +17,9 @@ add_executable(voxelium
     src/core/Log.cpp
     src/core/Paths.cpp
     src/core/Settings.cpp
+    src/audio/Ambience.cpp
     src/audio/AudioEngine.cpp
+    src/audio/PlayerSounds.cpp
     src/audio/SoundBank.cpp
     src/gfx/BlockTextures.cpp
     src/gfx/GlDebug.cpp

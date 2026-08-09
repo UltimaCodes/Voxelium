@@ -1,6 +1,8 @@
 #include "harness/Harness.hpp"
 
+#include "audio/Ambience.hpp"
 #include "audio/AudioEngine.hpp"
+#include "audio/PlayerSounds.hpp"
 #include "core/Bmp.hpp"
 #include "core/Log.hpp"
 #include "core/Paths.hpp"
@@ -588,19 +590,41 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                                 world.blockAtWorld({sx, floorY + 5, sz}) == vx::blocks::Air &&
                                 world.blockAtWorld({sx, floorY + 6, sz}) == vx::blocks::Sand;
             int settleTick = 1;
-            for (; settleTick < 40; ++settleTick)
-                if (world.stepFalling(rc.renderer, light) == 0)
+            int landings = 0;
+            for (; settleTick < 40; ++settleTick) {
+                int landed = 0;
+                glm::ivec3 landedAt{0};
+                const int moved = world.stepFalling(rc.renderer, light, &landed, &landedAt);
+                landings += landed;
+                if (moved == 0)
                     break;
+            }
             int stack = 0;
             for (int dy = 1; dy <= 4; ++dy)
                 if (world.blockAtWorld({sx, floorY + dy, sz}) == vx::blocks::Sand)
                     ++stack;
             const bool airAbove = world.blockAtWorld({sx, floorY + 5, sz}) == vx::blocks::Air;
-            const bool fallOk = stepOk && stack == 3 && airAbove;
+
+            // A block set down on solid ground goes through this same queue and reaches the
+            // same "cannot fall" branch, but it was never in motion and must not report a
+            // landing — it already made its own placement sound.
+            int placedLanded = 0;
+            world.setBlock(rc.renderer, light, {sx, floorY + 4, sz}, vx::blocks::Air);
+            world.setBlock(rc.renderer, light, {sx + 2, floorY, sz + 2}, vx::blocks::Stone);
+            world.setBlock(rc.renderer, light, {sx + 2, floorY + 1, sz + 2}, vx::blocks::Sand);
+            for (int t = 0; t < 4; ++t) {
+                int landed = 0;
+                world.stepFalling(rc.renderer, light, &landed, nullptr);
+                placedLanded += landed;
+            }
+
+            const bool fallOk = stepOk && stack == 3 && airAbove && landings > 0 &&
+                                placedLanded == 0;
             VX_INFO("falling: one block/tick=%d, stacked %d of 3 on the floor, source clear=%d,"
-                    " settled after %d ticks -> %s",
-                    stepOk ? 1 : 0, stack, airAbove ? 1 : 0, settleTick,
-                    fallOk ? "PASS" : "FAIL");
+                    " settled after %d ticks, %d landing(s) reported, %d from a block merely"
+                    " placed (want 0) -> %s",
+                    stepOk ? 1 : 0, stack, airAbove ? 1 : 0, settleTick, landings,
+                    placedLanded, fallOk ? "PASS" : "FAIL");
             if (!fallOk)
                 return 1;
         }
@@ -733,6 +757,368 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                     audioOk ? "PASS" : "FAIL");
             au.shutdown();
             if (!audioOk)
+                return 1;
+        }
+
+        // Submerging must take the TOP off the world, not just turn it down.
+        //
+        // Ducking the volume and low-pass filtering both make the meter drop, and only one of
+        // them sounds like being underwater — so a peak comparison would pass either way and
+        // prove nothing. This measures brightness instead: mean absolute sample-to-sample
+        // difference over mean absolute level, which falls when high frequencies go and does
+        // not move when the gain does. Nothing is added to AudioEngine for it; readFrames is
+        // already public because the mixer has to be pullable at all.
+        {
+            const auto brightness = [](vx::AudioEngine& au) {
+                std::vector<float> buf(4096 * 2, 0.0f);
+                const int got = au.readFrames(buf.data(), 4096);
+                double level = 0.0, delta = 0.0;
+                for (int i = 2; i < got * 2; i += 2) { // left channel only
+                    level += std::abs(double(buf[std::size_t(i)]));
+                    delta += std::abs(double(buf[std::size_t(i)]) -
+                                      double(buf[std::size_t(i - 2)]));
+                }
+                return level > 1e-9 ? delta / level : 0.0;
+            };
+            vx::AudioEngine au;
+            au.init(soundsDir, &jobs, /*offline=*/true);
+            bool wetOk = true;
+            double dry = 0.0, wet = 0.0;
+            if (au.clipCount() > 0) {
+                au.setMasterVolume(1.0f);
+                au.setBusVolume(vx::AudioEngine::Bus::World, 1.0f);
+                au.setListener({0.0, 0.0, 0.0}, {0.0f, 0.0f, -1.0f});
+                au.setUnderwater(false);
+                for (int f = 0; f < 30; ++f) // settle the filter at the dry end
+                    au.update(1.0f / 60.0f);
+                au.playAt("step", {0.0, 0.0, -1.0});
+                dry = brightness(au);
+
+                au.setUnderwater(true);
+                for (int f = 0; f < 60; ++f) // ~1 s: well past the 150 ms crossover
+                    au.update(1.0f / 60.0f);
+                au.playAt("break_stone", {0.0, 0.0, -1.0});
+                if (!au.has("break_stone"))
+                    au.playAt("step", {0.0, 0.0, -1.0});
+                wet = brightness(au);
+                // Half the brightness is a wide margin; the filter takes far more than that
+                // out. A wide margin is deliberate — this must not flake on clip choice.
+                wetOk = dry > 0.0 && wet < dry * 0.5;
+            }
+            VX_INFO("underwater: brightness dry %.4f -> submerged %.4f (want < half) -> %s",
+                    dry, wet, wetOk ? "PASS" : "FAIL");
+            au.shutdown();
+            if (!wetOk)
+                return 1;
+        }
+
+        // Every block must resolve to a real clip for every action it can be on the
+        // receiving end of.
+        //
+        // This is the group that catches a content bug, and content bugs here are silent by
+        // construction: a clip whose name does not match what the lookup asks for simply
+        // never plays, and nothing anywhere reports it. Renaming one file is enough to make
+        // this go red, which is the point — the id/material/generic chain has three tiers and
+        // the middle one exists precisely because ids alone left almost everything unmatched.
+        {
+            vx::AudioEngine au;
+            au.init(soundsDir, &jobs, /*offline=*/true);
+            int unmatched = 0;
+            int viaId = 0, viaMaterial = 0, viaGeneric = 0;
+            std::string firstMiss;
+            if (au.clipCount() > 0) {
+                for (int id = 1; id < vx::blocks::kBlockCount; ++id) {
+                    const char* mat = vx::blocks::soundMaterial(vx::BlockId(id));
+                    for (const char* kind : {"break", "place", "step"}) {
+                        const std::string k = kind;
+                        if (au.has(k + "_" + std::to_string(id)))
+                            ++viaId;
+                        else if (au.has(k + "_" + mat))
+                            ++viaMaterial;
+                        else if (au.has(k))
+                            ++viaGeneric;
+                        else if (au.has("step_" + std::string(mat)) || au.has("step")) {
+                            ++viaGeneric; // the pitched-footstep stand-in, still audible
+                        } else {
+                            ++unmatched;
+                            if (firstMiss.empty())
+                                firstMiss = k + " id " + std::to_string(id) + " (" + mat + ")";
+                        }
+                    }
+                }
+            }
+            // Nothing silent is the floor, but on its own it is nearly unfalsifiable: one
+            // generic break.wav satisfies every block in the world, so deleting a whole
+            // material's content leaves this green. The second assertion is the real one —
+            // if the bundled pack is installed (break_stone is the marker), then EVERY
+            // material a block can name must resolve at its own tier rather than sliding
+            // down to the generic. Removing sounds/break_glass*.wav turns this red, which is
+            // exactly the failure the first assertion cannot see.
+            std::string thinMaterial;
+            if (au.has("break_stone")) {
+                for (int id = 1; id < vx::blocks::kBlockCount; ++id) {
+                    const std::string mat = vx::blocks::soundMaterial(vx::BlockId(id));
+                    if (!au.has("break_" + mat) && thinMaterial.empty())
+                        thinMaterial = "break_" + mat;
+                }
+            }
+            const bool covOk =
+                (au.clipCount() == 0 || unmatched == 0) && thinMaterial.empty();
+            VX_INFO("audio coverage: %d block(s) x 3 actions -> %d by id, %d by material, "
+                    "%d generic, %d SILENT%s%s -> %s",
+                    vx::blocks::kBlockCount - 1, viaId, viaMaterial, viaGeneric, unmatched,
+                    firstMiss.empty() ? "" : (" first: " + firstMiss).c_str(),
+                    thinMaterial.empty() ? ""
+                                         : (", MISSING " + thinMaterial).c_str(),
+                    covOk ? "PASS" : "FAIL");
+            au.shutdown();
+            if (!covOk)
+                return 1;
+        }
+
+        // Ambience: the decision, then the sound.
+        //
+        // mixAmbience is deliberately a pure function of world state so the first half can be
+        // asserted with no device, no clips and no clock. The second half is the part that
+        // has burned this project before — the Ambient bus existed, was wired, and had never
+        // once been proven to carry a sample.
+        {
+            vx::AmbienceState open; // open field, noon
+            open.daylight = 1.0f;
+            open.skyAccess = 1.0f;
+            open.depth = -2.0f;
+            const vx::BedMix dayMix = vx::mixAmbience(open);
+
+            vx::AmbienceState cave; // sealed, forty blocks down
+            cave.daylight = 1.0f;
+            cave.skyAccess = 0.0f;
+            cave.depth = 40.0f;
+            const vx::BedMix caveMix = vx::mixAmbience(cave);
+
+            vx::AmbienceState night = open;
+            night.daylight = 0.0f;
+            const vx::BedMix nightMix = vx::mixAmbience(night);
+
+            vx::AmbienceState sub = open;
+            sub.underwater = true;
+            const vx::BedMix subMix = vx::mixAmbience(sub);
+
+            // Each of these is a thing a player would immediately notice being wrong.
+            // Standing in a roofed house at ground level must NOT sound like a cave. It is
+            // the case the enclosure test gets wrong if it forgets that being under cover
+            // and being underground are two different things.
+            vx::AmbienceState house;
+            house.daylight = 1.0f;
+            house.skyAccess = 0.0f;
+            house.depth = -1.6f; // eye height above the surface, i.e. indoors at grade
+            const vx::BedMix houseMix = vx::mixAmbience(house);
+
+            // And wind has to actually respond to height, rather than sitting on its floor
+            // for every value a player will ever stand at.
+            vx::AmbienceState tower = open;
+            tower.depth = -60.0f; // sixty blocks up
+            const float windLow = vx::mixAmbience(open).wind;
+            const float windHigh = vx::mixAmbience(tower).wind;
+
+            const bool mixOk = dayMix.day > 0.5f && dayMix.cave == 0.0f &&
+                               dayMix.night == 0.0f && caveMix.cave > 0.9f &&
+                               caveMix.day < 0.05f && caveMix.deep > 0.0f &&
+                               nightMix.night > 0.5f && nightMix.day == 0.0f &&
+                               subMix.underwater > 0.9f && subMix.day == 0.0f &&
+                               subMix.night == 0.0f && subMix.rain == 0.0f &&
+                               houseMix.cave == 0.0f && windHigh > windLow * 1.4f;
+            VX_INFO("ambience mix: field day/night %.2f/%.2f, cave cave/deep/day "
+                    "%.2f/%.2f/%.2f, night night %.2f, submerged under/day %.2f/%.2f, "
+                    "roofed house cave %.2f (want 0), wind ground %.2f -> 60 up %.2f -> %s",
+                    double(dayMix.day), double(dayMix.night), double(caveMix.cave),
+                    double(caveMix.deep), double(caveMix.day), double(nightMix.night),
+                    double(subMix.underwater), double(subMix.day), double(houseMix.cave),
+                    double(windLow), double(windHigh), mixOk ? "PASS" : "FAIL");
+            if (!mixOk)
+                return 1;
+
+            vx::AudioEngine au;
+            au.init(soundsDir, &jobs, /*offline=*/true);
+            bool bedOk = true;
+            if (au.has("amb_cave")) {
+                au.setMasterVolume(1.0f);
+                au.setBusVolume(vx::AudioEngine::Bus::Ambient, 1.0f);
+                float peakBed = 0.0f;
+                // Two seconds of frames: long enough for the crossfade to climb out of the
+                // noise, which is itself the assertion that beds fade rather than snap.
+                for (int f = 0; f < 120; ++f) {
+                    vx::applyAmbience(au, caveMix, 1.0f);
+                    au.update(1.0f / 60.0f);
+                    peakBed = std::max(peakBed, au.renderPeak(800));
+                }
+                const float gainIn = au.bedGain("amb_cave");
+                const int beds = au.liveBeds();
+                // Now walk out of the cave and make sure it lets go.
+                for (int f = 0; f < 600; ++f) {
+                    vx::applyAmbience(au, dayMix, 1.0f);
+                    au.update(1.0f / 60.0f);
+                    au.renderPeak(800);
+                }
+                const float gainOut = au.bedGain("amb_cave");
+                bedOk = peakBed > 0.001f && gainIn > 0.5f && beds > 0 && gainOut == 0.0f;
+                VX_INFO("ambience beds: cave peak %.4f (want > 0.001), gain in %.2f -> out "
+                        "%.2f, %d bed(s) live -> %s",
+                        double(peakBed), double(gainIn), double(gainOut), beds,
+                        bedOk ? "PASS" : "FAIL");
+            } else {
+                VX_INFO("ambience beds: no amb_cave clip supplied, nothing to assert -> PASS");
+            }
+            // Thunder has to be rare, has to happen at all, and must not fire in fair
+            // weather. A storm that rumbles on a fixed short interval is the failure mode,
+            // so the count over a fixed stretch of simulated time is the assertion.
+            vx::StormSounds storm;
+            int strikes = 0;
+            for (int f = 0; f < 60 * 300; ++f) // five simulated minutes of heavy rain
+                strikes += storm.update(au, 1.0f, 1.0f, 1.0f / 60.0f) ? 1 : 0;
+            vx::StormSounds calm;
+            int dryStrikes = 0;
+            for (int f = 0; f < 60 * 300; ++f)
+                dryStrikes += calm.update(au, 0.0f, 1.0f, 1.0f / 60.0f) ? 1 : 0;
+            // Thunder must ride the AMBIENCE slider, not the interface one. It went out on
+            // the UI bus first time round — `play()` defaults there, which is right for a
+            // menu click and wrong for weather — and nothing would have caught it except a
+            // routing assertion, because it is perfectly audible either way.
+            // Each case gets a FRESH engine. Reusing the one above measured ~0 for the second
+            // case whichever bus thunder was on — voices and bed state carried over — so the
+            // check passed without testing anything. The control below is there so that can
+            // never go unnoticed again: it plays a clip explicitly on the interface bus, and
+            // if THAT is inaudible the measurement is broken rather than the routing correct.
+            float onAmbient = 0.0f, onUi = 0.0f, control = 0.0f;
+            const bool haveThunder = au.has("thunder");
+            if (haveThunder) {
+                const auto fireAndMeasure = [&](float ambientVol, float uiVol) {
+                    vx::AudioEngine one;
+                    one.init(soundsDir, &jobs, /*offline=*/true);
+                    one.setMasterVolume(1.0f);
+                    one.setBusVolume(vx::AudioEngine::Bus::Ambient, ambientVol);
+                    one.setBusVolume(vx::AudioEngine::Bus::Ui, uiVol);
+                    vx::StormSounds s;
+                    for (int f = 0; f < 60 * 200; ++f)
+                        if (s.update(one, 1.0f, 1.0f, 1.0f / 60.0f))
+                            break;
+                    const float p = one.renderPeak(16384);
+                    one.shutdown();
+                    return p;
+                };
+                onAmbient = fireAndMeasure(1.0f, 0.0f);
+                onUi = fireAndMeasure(0.0f, 1.0f);
+
+                vx::AudioEngine ctl;
+                ctl.init(soundsDir, &jobs, /*offline=*/true);
+                ctl.setMasterVolume(1.0f);
+                ctl.setBusVolume(vx::AudioEngine::Bus::Ambient, 0.0f);
+                ctl.setBusVolume(vx::AudioEngine::Bus::Ui, 1.0f);
+                ctl.play("thunder", 1.0f, 1.0f, vx::AudioEngine::Bus::Ui);
+                control = ctl.renderPeak(16384);
+                ctl.shutdown();
+            }
+            const bool routeOk =
+                !haveThunder ||
+                (onAmbient > 0.001f && control > 0.001f && onUi < onAmbient * 0.05f);
+            const bool stormOk = strikes >= 4 && strikes <= 40 && dryStrikes == 0 && routeOk;
+            VX_INFO("storm: %d thunder in 5 min of downpour (want 4..40), %d in clear sky "
+                    "(want 0); peak on ambience %.4f, on interface %.4f (want ~0), "
+                    "interface control %.4f (want > 0) -> %s",
+                    strikes, dryStrikes, double(onAmbient), double(onUi), double(control),
+                    stormOk ? "PASS" : "FAIL");
+
+            au.shutdown();
+            if (!bedOk || !stormOk)
+                return 1;
+        }
+
+        // Jumping and landing. Both are EDGES, and the edge is the whole feature: "a sound
+        // when you go down a block" is not a state anything can read off the player.
+        {
+            vx::AudioEngine au;
+            au.init(soundsDir, &jobs, /*offline=*/true);
+            vx::PlayerSounds ps;
+            vx::Player p;
+            const int gy = world.generator().surfaceHeight(24, 24);
+
+            // Drop from well above the surface: exactly one landing, and it must register as
+            // a hard one rather than as an ordinary stride.
+            p.position = {24.5, double(gy) + 12.0, 24.5};
+            int landings = 0, steps = 0;
+            for (int t = 0; t < 240 && landings == 0; ++t) {
+                const glm::dvec3 before = p.position;
+                p.step(world, {});
+                const vx::PlayerSounds::Event e = ps.tick(au, world, p, before);
+                landings += e.landed ? 1 : 0;
+                steps += e.stepped ? 1 : 0;
+            }
+            // Keep ticking on the ground: a landing must not repeat itself.
+            int extra = 0;
+            for (int t = 0; t < 120; ++t) {
+                const glm::dvec3 before = p.position;
+                p.step(world, {});
+                extra += ps.tick(au, world, p, before).landed ? 1 : 0;
+            }
+            // Walking on the flat must produce strides but never a landing. It needs a floor
+            // that is actually flat: the first version of this walked over open terrain and
+            // counted six landings, which was not a bug but a hillside — every step DOWN a
+            // slope is a real drop, and reading that as a failure would have hidden the
+            // opposite mistake.
+            const int fy = world.generator().surfaceHeight(200, 200) + 6;
+            std::vector<vx::ChunkManager::BlockEdit> deck;
+            for (int dz = -3; dz <= 3; ++dz)
+                for (int dx = -3; dx <= 34; ++dx)
+                    deck.push_back({{200 + dx, fy, 200 + dz}, vx::blocks::Planks});
+            world.setBlocks(rc.renderer, light, deck);
+
+            vx::PlayerSounds walkPs;
+            vx::Player w;
+            w.position = {200.5, double(fy) + 1.0, 200.5};
+            vx::PlayerInput in;
+            in.forward = 1.0f;
+            // yaw 90 is +x: fwd is (sin y, 0, -cos y). Getting this backwards walked him
+            // straight off the edge, which read as a landing and looked like a real failure.
+            in.yawDeg = 90.0f;
+            int walkSteps = 0, walkLandings = 0;
+            for (int t = 0; t < 300; ++t) {
+                const glm::dvec3 before = w.position;
+                w.step(world, in);
+                const vx::PlayerSounds::Event e = walkPs.tick(au, world, w, before);
+                walkSteps += e.stepped ? 1 : 0;
+                walkLandings += e.landed ? 1 : 0;
+            }
+            // Being MOVED is not falling. Fly up, switch to walk mode, and the first step on
+            // the ground must not arrive as a landing from wherever the camera had got to —
+            // the fall counter only ever climbs while airborne, so without reset() it carries
+            // the whole flight over. Simulated here the way F5 does it: place the player and
+            // reset, then walk.
+            vx::PlayerSounds tpPs;
+            vx::Player tp;
+            tp.position = {200.5, double(fy) + 90.0, 200.5}; // "flew up"
+            for (int t = 0; t < 30; ++t) {
+                const glm::dvec3 before = tp.position;
+                tp.step(world, {});
+                tpPs.tick(au, world, tp, before);
+            }
+            tp.position = {200.5, double(fy) + 1.0, 200.5}; // F5: placed on the deck
+            tp.velocity = {0.0, 0.0, 0.0};
+            tpPs.reset(tp);
+            int ghostLandings = 0;
+            for (int t = 0; t < 120; ++t) {
+                const glm::dvec3 before = tp.position;
+                tp.step(world, in);
+                ghostLandings += tpPs.tick(au, world, tp, before).landed ? 1 : 0;
+            }
+
+            const bool jumpOk = landings == 1 && extra == 0 && walkSteps >= 2 &&
+                                walkLandings == 0 && ghostLandings == 0;
+            VX_INFO("player sounds: 12-block drop -> %d landing (%d step), %d repeat while "
+                    "resting (want 0); walking -> %d stride, %d landing (want 0); after a "
+                    "90-block teleport down -> %d landing (want 0) -> %s",
+                    landings, steps, extra, walkSteps, walkLandings, ghostLandings,
+                    jumpOk ? "PASS" : "FAIL");
+            au.shutdown();
+            if (!jumpOk)
                 return 1;
         }
 

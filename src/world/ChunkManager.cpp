@@ -1011,6 +1011,11 @@ BlockId ChunkManager::blockAtWorld(const glm::ivec3& wp) const {
     return c ? c->get(wp.x & 31, wp.y & 31, wp.z & 31) : blocks::Stone;
 }
 
+int ChunkManager::skyLightAtWorld(const glm::ivec3& wp) const {
+    const Chunk* c = voxelsAt({wp.x >> 5, wp.y >> 5, wp.z >> 5});
+    return c ? light::sky(c->lightAt(wp.x & 31, wp.y & 31, wp.z & 31)) : 0;
+}
+
 void ChunkManager::remeshNow(Renderer& renderer, ChunkPos pos) {
     const auto it = m_chunks.find(pos);
     if (it == m_chunks.end() || it->second.state == ChunkState::Generating)
@@ -1155,15 +1160,21 @@ void ChunkManager::queueFallCheck(const glm::ivec3& p) {
         m_fallQueue.push_back(p);
 }
 
-int ChunkManager::stepFalling(Renderer& renderer, LightEngine& light) {
-    if (m_fallQueue.empty())
+int ChunkManager::stepFalling(Renderer& renderer, LightEngine& light, int* landed,
+                              glm::ivec3* landedAt) {
+    if (landed != nullptr)
+        *landed = 0;
+    if (m_fallQueue.empty()) {
+        m_fellLast.clear();
         return 0;
+    }
     // Swap out first: setBlocks below feeds new candidates back into m_fallQueue, and that
     // is exactly how a column keeps coming down over successive ticks.
     m_fallScratch.clear();
     m_fallScratch.swap(m_fallQueue);
 
     m_fluidEdits.clear();
+    m_fellNow.clear();
     for (const glm::ivec3& p : m_fallScratch) {
         const BlockId here = blockAtWorld(p);
         // Cross-plane foliage cannot stand on nothing. Break the dirt under a flower and the
@@ -1186,11 +1197,22 @@ int ChunkManager::stepFalling(Renderer& renderer, LightEngine& light) {
         const BlockId below = blockAtWorld({p.x, p.y - 1, p.z});
         // falls through air and through water — sinking is what you want when you drop
         // gravel into a lake, and water is not a support
-        if (below != blocks::Air && !blocks::isWater(below))
+        if (below != blocks::Air && !blocks::isWater(below)) {
+            // Come to rest. Only counts if it actually moved last tick; a block placed onto
+            // solid ground reaches here too, and it already made a placement sound.
+            if (landed != nullptr &&
+                std::find(m_fellLast.begin(), m_fellLast.end(), p) != m_fellLast.end()) {
+                if (*landed == 0 && landedAt != nullptr)
+                    *landedAt = p;
+                ++*landed;
+            }
             continue;
+        }
         m_fluidEdits.push_back({p, blocks::Air});
         m_fluidEdits.push_back({{p.x, p.y - 1, p.z}, here});
+        m_fellNow.push_back({p.x, p.y - 1, p.z});
     }
+    m_fellLast.swap(m_fellNow);
 
     if (m_fluidEdits.empty())
         return 0;

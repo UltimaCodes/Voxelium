@@ -1,4 +1,6 @@
+#include "audio/Ambience.hpp"
 #include "audio/AudioEngine.hpp"
+#include "audio/PlayerSounds.hpp"
 #include "core/AllocTracker.hpp"
 #include "core/Log.hpp"
 #include "core/Paths.hpp"
@@ -393,30 +395,40 @@ int main(int argc, char** argv) {
     // Decoded up front on the workers. Every clip is held as PCM for the process lifetime,
     // which is the point: a play used to open the file and decode it whole, on this thread.
     audio.init(assets.parent_path() / "sounds", jobs.get());
-    double stepAccum = 0.0; // distance walked since the last footstep
+    vx::PlayerSounds playerSounds;
+    vx::AmbienceState ambience;
+    vx::StormSounds storm;
     // How blocked the path from a sound to the ear is, 0 clear .. 1 solid. One DDA per sound
     // EVENT, which is far cheaper than it sounds — the crosshair already runs this same
     // raycast every single frame. A break heard through a wall should not arrive at full
     // volume, and this is the only thing that distinguishes the two.
-    // Tries the specific clip, then the generic one, then the material's footstep at a
-    // shifted pitch. The last step is what keeps block edits audible while break/place
-    // clips are still missing content.
-    const auto audioHit = [](vx::AudioEngine& au, const std::string& specific,
-                             const char* generic, int blockId, const glm::dvec3& at,
-                             float occ, float pitch, float vol) {
-        if (au.has(specific)) {
-            au.playOccluded(specific, at, occ, vol, 1.0f);
-            return;
+    //
+    // Four tiers, narrowest first: this exact block, its material family, the generic clip,
+    // and finally the material's own FOOTSTEP at a shifted pitch. The material tier is the
+    // one that matters — block sounds are keyed by numeric id, and this engine stores data in
+    // the id, so water is seven ids and a lamp is twenty-five. Without it, per-block audio
+    // meant twenty-five copies of one file and nearly everything fell through to generic.
+    const auto audioHit = [](vx::AudioEngine& au, const char* kind, int blockId,
+                             const glm::dvec3& at, float occ, float pitch, float vol) {
+        const std::string k = kind;
+        const char* mat = vx::blocks::soundMaterial(vx::BlockId(blockId));
+        for (const std::string& name :
+             {k + "_" + std::to_string(blockId), k + "_" + mat, k}) {
+            if (au.has(name)) {
+                au.playOccluded(name, at, occ, vol, 1.0f);
+                return;
+            }
         }
-        if (au.has(generic)) {
-            au.playOccluded(generic, at, occ, vol, 1.0f);
-            return;
+        // Nothing supplied for this action at all. A footstep on stone and a stone being
+        // struck are the same material making the same noise, so a pitch shift stands in
+        // rather than leaving the most common interaction in the engine silent.
+        for (const std::string& name :
+             {"step_" + std::to_string(blockId), "step_" + std::string(mat), std::string("step")}) {
+            if (au.has(name)) {
+                au.playOccluded(name, at, occ, vol, pitch);
+                return;
+            }
         }
-        const std::string step = "step_" + std::to_string(blockId);
-        if (au.has(step))
-            au.playOccluded(step, at, occ, vol, pitch);
-        else if (au.has("step"))
-            au.playOccluded("step", at, occ, vol, pitch);
     };
 
     const auto occlusionTo = [&](const glm::dvec3& src) {
@@ -454,6 +466,7 @@ int main(int argc, char** argv) {
     glm::ivec3 breakTarget{INT32_MIN, 0, 0};
     float breakProgress = 0.0f;
     bool breaking = false;
+    double digClock = 0.0; // paces the chipping sound while a break is held
     constexpr int kHotbar[] = {vx::blocks::Stone,  vx::blocks::Dirt,   vx::blocks::Grass,
                                vx::blocks::Sand,   vx::blocks::Snow,   vx::blocks::Wood,
                                vx::blocks::Planks, vx::blocks::Bricks, vx::blocks::Leaves,
@@ -501,6 +514,9 @@ int main(int argc, char** argv) {
                 player.position = camera.position - glm::dvec3(0.0, vx::Player::kEyeHeight, 0.0);
                 player.velocity = {0.0, 0.0, 0.0};
                 physAccum = 0.0;
+                // The player was placed here, not dropped here. Without this the first
+                // landing is measured from however high the camera had flown.
+                playerSounds.reset(player);
             }
         }
         f5Held = f5;
@@ -558,31 +574,19 @@ int main(int argc, char** argv) {
                 const glm::dvec3 before = player.position;
                 player.step(*world, in);
                 physAccum -= vx::Player::kTickDt;
-                // footsteps are paced by distance, not time, so they don't machine-gun
-                // when you sprint or stall when you walk into a wall
-                if (player.onGround) {
-                    const glm::dvec3 d = player.position - before;
-                    stepAccum += std::sqrt(d.x * d.x + d.z * d.z);
-                    if (stepAccum > 2.2) {
-                        stepAccum = 0.0;
-                        const glm::ivec3 under(glm::floor(player.position.x),
-                                               glm::floor(player.position.y) - 1,
-                                               glm::floor(player.position.z));
-                        const int id = world->blockAtWorld(under);
-                        // a puff off the ground you are actually standing on
-                        if (vx::blocks::opaque(vx::BlockId(id)))
-                            particles.spawnFootstep(
-                                {player.position.x, double(under.y) + 1.0, player.position.z},
-                                vx::blockTopLayer(id));
-                        else if (vx::blocks::isWater(vx::BlockId(id)))
-                            particles.spawnSplash(
-                                {player.position.x, double(under.y) + 1.0, player.position.z});
-                        if (!audio.playIfPresent("step_" + std::to_string(id),
-                                                 player.position, 0.5f))
-                            audio.playAt("step", player.position, 0.5f);
-                    }
-                } else {
-                    stepAccum = 0.0;
+                // Footsteps, jumps, landings, splashes and swim strokes all live in
+                // PlayerSounds because every one of them is an edge that has to be
+                // remembered across ticks. It hands back what it fired so the matching
+                // particle still spawns here, where the particle system is.
+                const vx::PlayerSounds::Event se =
+                    playerSounds.tick(audio, *world, player, before);
+                if (se.stepped) {
+                    const double top = std::floor(player.position.y);
+                    if (vx::blocks::opaque(vx::BlockId(se.blockId)))
+                        particles.spawnFootstep({se.at.x, top, se.at.z},
+                                                vx::blockTopLayer(se.blockId));
+                    else if (vx::blocks::isWater(vx::BlockId(se.blockId)))
+                        particles.spawnSplash({se.at.x, top, se.at.z});
                 }
             }
             camera.position = player.eye();
@@ -610,22 +614,25 @@ int main(int argc, char** argv) {
                 const vx::BlockId id = world->blockAtWorld(hit.voxel);
                 breakProgress += float(dt) / std::max(0.05f, vx::blocks::hardness(id));
                 breaking = true;
+                // Chipping away is audible, not just the moment it gives. Without this,
+                // holding the button on stone is a second and a half of silence followed by
+                // one crack, which reads as a delay rather than as work.
+                //
+                // Nothing supplies a "dig" clip, and that is fine: audioHit falls through to
+                // the material's own footstep, pitched, which is exactly what this should be.
+                // Dropping dig_stone.wav into sounds/ later takes over with no code change.
+                digClock += dt;
+                if (digClock > 0.28) {
+                    digClock = 0.0;
+                    audioHit(audio, "dig", int(id), glm::dvec3(hit.voxel),
+                             occlusionTo(glm::dvec3(hit.voxel)), 1.15f, 0.22f);
+                }
                 if (breakProgress >= 1.0f) {
                     const glm::dvec3 at(hit.voxel);
                     particles.spawnBlockBreak(at, vx::blockTopLayer(int(id)));
                     world->setBlock(renderer, *light, hit.voxel, vx::blocks::Air);
                     const float occ = occlusionTo(at);
-                    // break_<id> -> break -> the material's own FOOTSTEP, pitched down.
-                    //
-                    // That last fallback is why breaking a block makes a noise at all right
-                    // now: nothing ships a break clip (see sounds/README.md), so without it
-                    // the most common interaction in the engine is silent. A footstep on
-                    // stone and a stone breaking are the same material being struck, so
-                    // dropping the pitch and lifting the volume is a fair stand-in until
-                    // real clips exist — and it costs no new content, which matters because
-                    // bundled audio has to be CC0.
-                    audioHit(audio, "break_" + std::to_string(int(id)), "break", int(id), at,
-                             occ, 0.72f, 1.0f);
+                    audioHit(audio, "break", int(id), at, occ, 0.72f, 1.0f);
                     breakProgress = 0.0f;
                     breakTarget = {INT32_MIN, 0, 0};
                     breaking = false;
@@ -633,6 +640,9 @@ int main(int argc, char** argv) {
             } else {
                 breakProgress = 0.0f;
                 breakTarget = {INT32_MIN, 0, 0};
+                // Let go and the next press chips immediately rather than waiting out
+                // whatever was left of the last interval.
+                digClock = 1.0;
             }
 
             if (mmb && !mmbHeld && hit.hit) {
@@ -652,15 +662,52 @@ int main(int argc, char** argv) {
                     const float occ = occlusionTo(at);
                     // Same chain, pitched UP: setting a block down is a lighter sound than
                     // breaking one.
-                    audioHit(audio, "place_" + std::to_string(put), "place", put, at, occ,
-                             1.25f, 0.85f);
+                    audioHit(audio, "place", put, at, occ, 1.25f, 0.85f);
                 }
             }
             mmbHeld = mmb;
         }
 
-        // Re-places live voices against the moved listener, retires faded steals, and
-        // settles the submerged filter. None of that can happen at play time.
+        // eye submerged -> underwater fog/tint in the composite pass, and the same flag
+        // muffles the world bus and swaps the ambience bed. Computed here rather than next
+        // to the render call because everything below wants it in the SAME frame the camera
+        // moved, not one behind.
+        const bool eyeUnderwater =
+            vx::blocks::isWater(world->blockAtWorld(glm::ivec3(glm::floor(camera.position))));
+        audio.setUnderwater(eyeUnderwater);
+        playerSounds.frame(audio, camera.position, eyeUnderwater, float(dt));
+
+        // What the world sounds like from here. Sky light answers "how enclosed am I" for
+        // free — the light BFS has already done that work, so this is one chunk lookup
+        // rather than a cover raycast every frame.
+        {
+            const glm::ivec3 ear(glm::floor(camera.position));
+            ambience.skyAccess = float(world->skyLightAtWorld(ear)) / 15.0f;
+            ambience.depth =
+                float(world->generator().surfaceHeight(ear.x, ear.z) - ear.y);
+            // Same function the frame shades from, so dusk sounds like dusk looks rather
+            // than crossing over at its own private time of day.
+            ambience.daylight = vx::computeSky(fx.timeOfDay).daylight;
+            ambience.precip = fx.precip;
+            ambience.underwater = eyeUnderwater;
+            // A coarse count of the water around the ear, so standing by a lake is audibly
+            // different from standing in a field. Sampled on a lattice rather than swept:
+            // this runs every frame and the answer only has to be roughly right.
+            int wet = 0;
+            for (int dy = -4; dy <= 4; dy += 4)
+                for (int dz = -6; dz <= 6; dz += 6)
+                    for (int dx = -6; dx <= 6; dx += 6)
+                        wet += vx::blocks::isWater(
+                                   world->blockAtWorld(ear + glm::ivec3(dx, dy, dz)))
+                                   ? 1
+                                   : 0;
+            ambience.nearWater = float(wet) / 27.0f;
+            vx::applyAmbience(audio, vx::mixAmbience(ambience), fx.volAmbient);
+            storm.update(audio, fx.precip, ambience.skyAccess, float(dt));
+        }
+
+        // Re-places live voices against the moved listener, retires faded steals, crossfades
+        // the beds, and settles the submerged filter. None of that can happen at play time.
         audio.update(float(dt));
 
         world->update(*jobs, renderer, *light, camera.position);
@@ -683,7 +730,18 @@ int main(int argc, char** argv) {
         fallClock += dt;
         if (fallClock >= 1.0 / 12.0) {
             fallClock = 0.0;
-            world->stepFalling(renderer, *light);
+            int landed = 0;
+            glm::ivec3 landedAt{0};
+            world->stepFalling(renderer, *light, &landed, &landedAt);
+            if (landed > 0) {
+                // One sound for the whole collapse, not one per block — thirty grains of
+                // sand arriving in the same tick is a single event to the ear. The count
+                // only sets how big it sounds.
+                const glm::dvec3 at(landedAt);
+                const vx::BlockId what = world->blockAtWorld(landedAt);
+                audioHit(audio, "break", int(what), at, occlusionTo(at), 0.85f,
+                         std::min(0.30f + 0.06f * float(landed), 0.75f));
+            }
         }
         if (world->consumeDirty()) {
             world->collectDrawInfo(drawInfo, waterInfo);
@@ -712,12 +770,6 @@ int main(int argc, char** argv) {
                 selMin = glm::vec3(glm::dvec3(sel.voxel) - camera.position);
             }
         }
-
-        // eye submerged -> underwater fog/tint in the composite pass, and the same flag
-        // muffles the world bus. The renderer already knew this; audio never asked.
-        const bool eyeUnderwater =
-            vx::blocks::isWater(world->blockAtWorld(glm::ivec3(glm::floor(camera.position))));
-        audio.setUnderwater(eyeUnderwater);
 
         int fbW = 0;
         int fbH = 0;

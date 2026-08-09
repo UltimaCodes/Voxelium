@@ -199,6 +199,31 @@ inline constexpr BlockId waterForLevel(int level) {
 }
 // solid = collides with the player. water is swim-through (no collision).
 inline constexpr bool solid(BlockId id) { return opaque(id); }
+
+// Which family of sounds a block belongs to. Minecraft's model, and it is here for the same
+// reason it is there: this engine carries data in the block id, so water is seven ids and a
+// lamp is twenty-five. Keying audio on the id alone therefore asked for twenty-five copies
+// of one clip and left almost every block falling through to the generic sound.
+//
+// Leaves and foliage answer "grass" on purpose. A canopy and a lawn are the same rustle in
+// every game that has bothered to distinguish them, and it is one clip rather than three.
+inline constexpr const char* soundMaterial(BlockId id) {
+    if (isWater(id))
+        return "water";
+    if (isLamp(id) || id == Glow)
+        return "glass";
+    if (isCross(id) || id == Leaves || id == Grass)
+        return "grass";
+    switch (id) {
+        case Wood:
+        case Planks: return "wood";
+        case Sand: return "sand";
+        case Snow: return "snow";
+        case Dirt: return "dirt";
+        case Gravel: return "gravel";
+        default: return "stone"; // stone, bricks, the ores, and anything added later
+    }
+}
 } // namespace blocks
 
 // Packed per-voxel light: 4 bits each of red, green, blue and sky.

@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 
@@ -63,6 +64,7 @@ std::string SoundBank::baseName(std::string stem) {
 
 void SoundBank::load(const std::filesystem::path& dir, JobSystem* jobs) {
     m_clips.clear();
+    const auto t0 = std::chrono::steady_clock::now();
 
     std::error_code ec;
     if (!std::filesystem::is_directory(dir, ec)) {
@@ -160,8 +162,14 @@ void SoundBank::load(const std::filesystem::path& dir, JobSystem* jobs) {
               [](const Clip& a, const Clip& b) { return a.name < b.name; });
 
     const double mb = double(totalFrames() * kChannels * sizeof(float)) / (1024.0 * 1024.0);
-    VX_INFO("audio: %d clip(s), %d variant file(s), %.2f MB of PCM from %s%s", clipCount(),
-            variantCount(), mb, dir.string().c_str(),
+    // The decode time is worth printing, not just the size: this runs inside startup, and a
+    // folder big enough to stall the loading screen should say so rather than being guessed
+    // at. It is also the number that decides whether the ambience beds are too long.
+    const double ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - t0)
+                          .count();
+    VX_INFO("audio: %d clip(s), %d variant file(s), %.2f MB of PCM in %.0f ms from %s%s",
+            clipCount(), variantCount(), mb, ms, dir.string().c_str(),
             skipped > 0 ? " (some files skipped: wav/mp3/flac only)" : "");
 }
 
