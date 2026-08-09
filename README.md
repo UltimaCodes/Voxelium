@@ -65,6 +65,10 @@ cache means the second visit to a preset is nearly free.
 
 F3 is the read-only diagnostics overlay — frame graph, timings, chunk/arena stats, log.
 
+weather is in the visuals tab: rain, snow, and wet surfaces that only get wet where the
+sky can actually reach them — caves, overhangs and ledge undersides stay dry, because the
+shading reads the same voxel sky access the sun does.
+
 night is lit by the moon, not by a raised ambient floor — it rides the same shadow cascades
 the sun does, so hills have a lit side after dark and the fill can stay low. drop your own
 clips in `sounds/` to hear anything; nothing audio ships beyond CC0 footsteps.
