@@ -23,9 +23,22 @@ layout(location = 8) uniform float uSaturation;  // 1 = untouched
 layout(location = 9) uniform float uContrast;    // 1 = untouched
 layout(location = 10) uniform float uTemperature; // 0 = neutral, + warm, - cool
 layout(location = 12) uniform float uScotopic;    // night rod-vision shift, 0 = off
+layout(location = 14) uniform float uDither;      // 8-bit output dither, 0 = off
 
 vec3 aces(vec3 x) {
     return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+
+// Ordered dither before the 8-bit write. A sky gradient spans a few hundred code values over
+// a thousand pixels, so the steps land as visible bands — the one artefact in this renderer
+// that is purely a quantisation problem. A triangular-PDF dither of one code value turns the
+// step into noise below the threshold of vision, for about three instructions.
+float triDither(vec2 p) {
+    // two uniform hashes summed = triangular distribution, which is what makes the noise
+    // symmetric about zero instead of biasing the image brighter
+    float a = fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+    float b = fract(sin(dot(p + 17.0, vec2(39.3468, 11.135))) * 24634.6345);
+    return a + b - 1.0;
 }
 
 // White balance belongs BEFORE the tonemap: it is a property of the light in the scene,
@@ -139,5 +152,8 @@ void main() {
         c += n * uGrain * 0.12 * (1.0 - luma);
     }
 
+    // Last thing before the 8-bit write, so it dithers the value that is actually quantised.
+    if (uDither > 0.0)
+        c += triDither(gl_FragCoord.xy) * (uDither / 255.0);
     outColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }

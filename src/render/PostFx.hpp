@@ -78,6 +78,14 @@ struct FxToggles {
     // Muffle a sound whose path to the listener is blocked by solid voxels. Costs one
     // raycast per sound EVENT (not per frame), against the same DDA the crosshair runs.
     float audioOcclusion = 0.75f;
+    // Output dither, in 8-bit code values. Kills the banding in the sky gradient.
+    float dither = 1.0f;
+    // Weather (#29). `precip` is how hard it is coming down, `snow` picks rain vs snow.
+    // Wetness is derived from precip rather than being its own knob: a surface that is wet
+    // without visible rain, or dry in a downpour, is the sort of inconsistency nobody can
+    // put their finger on but everybody notices.
+    float precip = 0.0f;
+    float snow = 0.0f;
     // Shader quality tier, 0 Low .. 3 Ultra. Injected as VX_QUALITY and baked into the
     // programs, so changing it costs a shader rebuild — not a per-frame branch. 2 is the
     // build that existed before presets, which is what every other tier is judged against.

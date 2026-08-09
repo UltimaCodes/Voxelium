@@ -44,6 +44,7 @@ add_executable(voxelium
     src/render/QualityPreset.cpp
     src/render/Renderer.cpp
     src/render/ShadowMap.cpp
+    src/render/Weather.cpp
     src/ui/DebugHud.cpp
     src/world/Chunk.cpp
     src/world/ChunkManager.cpp

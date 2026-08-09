@@ -13,6 +13,7 @@ class Renderer;
 class ShadowMap;
 class Overlay;
 class Particles;
+class Weather;
 
 // Everything needed to draw one frame of the world, shared by the live game loop and by all
 // three offscreen harnesses (--smoke, --bench, --tour). It lives here rather than in main so
@@ -72,6 +73,7 @@ struct RenderContext {
     PostFx& postfx;
     Overlay& overlay;
     Particles* particles; // null in the offscreen paths that never spawn any
+    Weather* weather;     // null where precipitation is not wanted
     unsigned int drawProgram;
     unsigned int waterProgram;
     unsigned int blockTex;

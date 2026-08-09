@@ -402,6 +402,7 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform1f(m_progFinal, 10, p.toggles.temperature);
     // Faded in as daylight goes, so it costs nothing by day and never touches a day frame.
     glProgramUniform1f(m_progFinal, 12, p.toggles.scotopic * (1.0f - p.daylight));
+    glProgramUniform1f(m_progFinal, 14, p.toggles.dither);
     // 0.18 is middle grey. Only meaningful when the adaptation actually ran this frame.
     glProgramUniform1f(m_progFinal, 11,
                        (p.toggles.autoExposure && m_adaptValid) ? 0.18f : 0.0f);

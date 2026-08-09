@@ -367,6 +367,18 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
                                   "of the frame after dusk. faded in with darkness, so\n"
                                   "daylight is untouched.");
 
+            ImGui::SeparatorText("weather");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("precipitation", &fx.precip, 0.0f, 1.0f, "%.2f");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("rain/snow, and how wet surfaces get. wetness follows the\n"
+                                  "rain rather than being its own slider, so the two cannot\n"
+                                  "disagree. dry under cover: it reads the voxel sky access.");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("snow", &fx.snow, 0.0f, 1.0f, "%.2f");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("0 rain, 1 snow. snow drifts and does not wet anything.");
+
             ImGui::SeparatorText("exposure & bloom");
             ImGui::Checkbox("auto exposure", &fx.autoExposure);
             ImGui::SetNextItemWidth(-125.0f);

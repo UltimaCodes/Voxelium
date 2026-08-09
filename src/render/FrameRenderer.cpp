@@ -3,6 +3,7 @@
 #include "render/Overlay.hpp"
 #include "render/Particles.hpp"
 #include "render/Renderer.hpp"
+#include "render/Weather.hpp"
 #include "render/ShadowMap.hpp"
 #include "world/Chunk.hpp"
 
@@ -142,6 +143,8 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     // Was derived in-shader from uSunL.y, which stops meaning "how light is it" the moment
     // uSunL can point at the moon.
     glProgramUniform1f(rc.drawProgram, 29, sky.daylight);
+    // Wetness follows the rain, and snow does not wet anything — it settles.
+    glProgramUniform1f(rc.drawProgram, 30, fx.precip * (1.0f - fx.snow));
     glProgramUniform1f(rc.drawProgram, 5, fx.shadows ? 1.0f : 0.0f);
     glProgramUniformMatrix4fv(rc.drawProgram, 6, 3, GL_FALSE,
                               &rc.shadows.cascadeVp()[0][0][0]);
@@ -196,6 +199,27 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
         const glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0.0f, 1.0f, 0.0f)));
         const glm::vec3 up = glm::cross(right, fwd);
         rc.particles->draw(cam.viewProj, camera.position, right, up, rc.blockTex);
+    }
+
+    // Precipitation last in the scene pass: alpha blended over the lit world and the water,
+    // still inside HDR so it tonemaps and fogs with everything else rather than being pasted
+    // on afterwards.
+    if (rc.weather && fx.precip > 0.001f) {
+        Weather::Params wp;
+        wp.viewProj = cam.viewProj;
+        const glm::vec3 fwd = camera.forward();
+        wp.right = glm::normalize(glm::cross(fwd, glm::vec3(0.0f, 1.0f, 0.0f)));
+        wp.up = glm::cross(wp.right, fwd);
+        // Fractional part of the camera within its own cell. Anchoring the field to the cell
+        // rather than to the camera is what stops the whole thing sliding along with you.
+        wp.camFrac = glm::vec3(camera.position - glm::floor(camera.position));
+        wp.time = time;
+        wp.strength = fx.precip;
+        wp.snow = fx.snow;
+        // Lit by the sky rather than a constant, so precipitation goes dark after dusk
+        // instead of glowing — the same mistake the water body tint used to make.
+        wp.tint = sky.ambient * 2.2f + sky.color * 0.10f;
+        rc.weather->draw(wp);
     }
 
     // block-selection wireframe, in the HDR scene so it depth-tests against the world

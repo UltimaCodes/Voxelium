@@ -20,6 +20,7 @@
 #include "render/PostFx.hpp"
 #include "render/QualityPreset.hpp"
 #include "render/Renderer.hpp"
+#include "render/Weather.hpp"
 #include "render/ShadowMap.hpp"
 #include "ui/DebugHud.hpp"
 #include "world/Chunk.hpp"
@@ -198,10 +199,13 @@ int main(int argc, char** argv) {
     vx::Particles particles;
     if (!particles.init(shaders))
         return 1;
+    vx::Weather weather;
+    if (!weather.init(shaders))
+        return 1;
     vx::shutdownShaderCache(); // every program is built by here
     const GLuint blockTex = vx::createBlockTextureArray(assets / "textures");
-    RenderContext rc{renderer,     shadowMap,    postfx,   overlay, &particles,
-                     drawProgram, waterProgram, blockTex};
+    RenderContext rc{renderer,   shadowMap,    postfx,   overlay,  &particles,
+                     &weather,   drawProgram,  waterProgram, blockTex};
 
     // isolate the smoke test's save data so repeated runs start clean and can't touch a
     // real world save

@@ -254,6 +254,27 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
                 int(62.0 - 50.0));
     }
 
+    // One rain frame from stop 2. Same argument as the night and underwater views: #29
+    // changes both the precipitation field and the SHADING of every surface the sky can
+    // reach, and neither is visible in any of the five clear-weather stops.
+    {
+        vx::FxToggles wet = fx;
+        wet.precip = 0.85f;
+        wet.snow = 0.0f;
+        if (const char* sn = std::getenv("VX_TOUR_SNOW"))
+            wet.snow = std::clamp(float(std::atof(sn)), 0.0f, 1.0f);
+        camera.position = stops[2];
+        camera.yawDeg = -35.0f;
+        camera.pitchDeg = -12.0f;
+        rc.renderer.beginFrame();
+        renderFrame(rc, camera, wet, true, w, h, fbo, 0.6f, nullptr);
+        rc.renderer.endFrame();
+        glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, pixels.data());
+        vx::writeBmp24(settle ? "tour_rain.bmp" : "tour_rain_moving.bmp", w, h, pixels);
+        VX_INFO("tour rain: stop 2 at precip %.2f snow %.2f -> tour_rain.bmp",
+                double(wet.precip), double(wet.snow));
+    }
+
     // One night frame from stop 0. Night has hidden two separate bugs now — water that
     // stayed at full daylight brightness after dark, and contact shadows darkening the
     // ambient that is the only light left once the sun is down — and neither was visible in
