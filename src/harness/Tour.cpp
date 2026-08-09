@@ -83,6 +83,12 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
     // of it, and this is the only way to get one offscreen.
     if (const char* s = std::getenv("VX_TOUR_SCALE"))
         fx.renderScale = std::clamp(float(std::atof(s)), 0.5f, 1.0f);
+    // Cloud shadows are the one lighting term with NO other offscreen A/B. The owner
+    // reported hard diagonal bands sweeping the terrain (#58b) and the only way to separate
+    // "that is the cloud shadow" from "that is the terrain" is the same frame with the term
+    // off. Rendering both and diffing answers it in one run.
+    if (const char* c = std::getenv("VX_TOUR_CLOUDSHADOW"))
+        fx.cloudShadow = std::clamp(float(std::atof(c)), 0.0f, 1.0f);
 
     std::vector<std::uint8_t> pixels(std::size_t(w) * h * 3);
     // walk outward from spawn: the report is that things degrade with distance travelled.
