@@ -305,7 +305,20 @@ void main() {
     // reads as the block being shadowed at its base while it is lighting everything around
     // it. kShade stays, so a lamp still reads as a cube rather than a flat sticker.
     float ownShade = mix(vShade, 1.0, emitMask);
-    outColor = vec4(albedo * kShade[vDir] * ((direct + ambient) * vShade + torch * ownShade) +
+    // Ambient is gated TWICE, and that is what crushes a shaded terrace face to black.
+    // Once by skyL above (the voxel sky access), and again by vShade — which is AO times
+    // that corner's share of the quad's light, and the light includes sky. So sky access
+    // is applied on top of itself, squared, on exactly the surfaces that have least of it:
+    // the inside faces of a notch, the risers of a terrace, anything under an overhang.
+    //
+    // AO genuinely does belong on ambient; the corner's light share does not, because
+    // skyL already answered that question. They are baked into one 3-bit value at mesh
+    // time and cannot be separated here, so the corner term is softened for the ambient
+    // path rather than removed: at worst it takes 45% instead of everything. `direct`
+    // keeps the full term — a face the sun does not reach should still go dark.
+    float ambShade = mix(0.55, 1.0, vShade);
+    outColor = vec4(albedo * kShade[vDir] *
+                            (direct * vShade + ambient * ambShade + torch * ownShade) +
                         emission + transmit,
                     1.0);
 }

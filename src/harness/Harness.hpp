@@ -40,7 +40,7 @@ double benchBestMs(int runs, F&& fn) {
 // both meshers read through Chunk::get(). If this fails, stop.
 bool runMesherOracle();
 
-// The test suite. Twenty-one groups, all must pass. Returns a process exit code.
+// The test suite. Twenty-three groups, all must pass. Returns a process exit code.
 int runSmokeTest(RenderContext& rc, ChunkManager& world, JobSystem& jobs, LightEngine& light,
                  FlyCamera& camera, DebugHud& hud, Window& window,
                  const std::filesystem::path& outPath,

@@ -21,10 +21,11 @@ namespace vx {
 
 namespace {
 
-// The engine's mixing format. Decoding to it up front means a voice never converts at play
-// time — the whole point of the bank.
-constexpr ma_uint32 kSampleRate = 48000;
-constexpr ma_uint32 kChannels = 1; // mono: spatialisation needs a point source anyway
+// Decoding to the engine's format up front means a voice never converts at play time —
+// the whole point of the bank. Both constants live in the header so the engine cannot
+// disagree with them.
+constexpr ma_uint32 kSampleRate = SoundBank::kSampleRate;
+constexpr ma_uint32 kChannels = SoundBank::kChannels;
 
 // Monotonic for the process lifetime; see the header on why it is never reset.
 std::atomic<std::uint64_t> g_decodes{0};

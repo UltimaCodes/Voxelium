@@ -8,6 +8,8 @@
 #include <miniaudio.h>
 
 #include <algorithm>
+#include <cmath>
+#include <vector>
 
 namespace vx {
 
@@ -35,14 +37,23 @@ constexpr float kWetLerpPerSec = 6.5f; // ~150 ms to cross over
 
 } // namespace
 
-bool AudioEngine::init(const std::filesystem::path& soundsDir, JobSystem* jobs) {
+bool AudioEngine::init(const std::filesystem::path& soundsDir, JobSystem* jobs,
+                       bool offline) {
     // Bank first, and unconditionally. The old code returned before ever scanning the
     // directory when there was no output device, which meant the decode path could not be
     // exercised headless — so --smoke could never assert anything about it.
     m_bank.load(soundsDir, jobs);
 
     m_engine = new ma_engine{};
-    if (ma_engine_init(nullptr, eng(m_engine)) != MA_SUCCESS) {
+    ma_engine_config cfg = ma_engine_config_init();
+    if (offline) {
+        // No device: nothing is opened, and the caller drives mixing through readFrames().
+        cfg.noDevice = MA_TRUE;
+        cfg.channels = 2;
+        cfg.sampleRate = SoundBank::kSampleRate;
+        m_offline = true;
+    }
+    if (ma_engine_init(&cfg, eng(m_engine)) != MA_SUCCESS) {
         // no audio device (headless, no drivers) is not fatal — the engine plays silently
         delete eng(m_engine);
         m_engine = nullptr;
@@ -115,6 +126,26 @@ void AudioEngine::setBusVolume(Bus bus, float v) {
 }
 
 void AudioEngine::setUnderwater(bool on) { m_underwater = on; }
+
+int AudioEngine::readFrames(float* out, int frames) {
+    if (!m_ready || !m_offline)
+        return 0;
+    ma_uint64 got = 0;
+    if (ma_engine_read_pcm_frames(eng(m_engine), out, ma_uint64(frames), &got) != MA_SUCCESS)
+        return 0;
+    return int(got);
+}
+
+float AudioEngine::renderPeak(int frames) {
+    if (!m_ready || !m_offline)
+        return 0.0f;
+    std::vector<float> buf(std::size_t(frames) * 2, 0.0f);
+    const int got = readFrames(buf.data(), frames);
+    float peak = 0.0f;
+    for (int i = 0; i < got * 2; ++i)
+        peak = std::max(peak, std::abs(buf[std::size_t(i)]));
+    return peak;
+}
 
 int AudioEngine::liveVoices() const {
     int n = 0;

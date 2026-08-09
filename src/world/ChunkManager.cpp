@@ -1166,6 +1166,21 @@ int ChunkManager::stepFalling(Renderer& renderer, LightEngine& light) {
     m_fluidEdits.clear();
     for (const glm::ivec3& p : m_fallScratch) {
         const BlockId here = blockAtWorld(p);
+        // Cross-plane foliage cannot stand on nothing. Break the dirt under a flower and the
+        // flower has to go with it, or it is left hovering — which is the one thing that
+        // makes decoration read as pasted on rather than grown.
+        //
+        // This rides the falling queue rather than adding a scan of its own because
+        // setBlocks already queues the changed voxel AND the one above it, and the one above
+        // a broken block is exactly where the foliage is. Nothing new has to be searched for.
+        // Foliage does not FALL, it is removed: a tuft that slid down a cliff one block per
+        // tick would be worse than one that vanishes.
+        if (blocks::isCross(here)) {
+            const BlockId under = blockAtWorld({p.x, p.y - 1, p.z});
+            if (under == blocks::Air || blocks::isWater(under) || blocks::isCross(under))
+                m_fluidEdits.push_back({p, blocks::Air});
+            continue;
+        }
         if (!blocks::falls(here))
             continue;
         const BlockId below = blockAtWorld({p.x, p.y - 1, p.z});

@@ -23,6 +23,12 @@ class JobSystem;
 // reach the code. A bank with no device still loads, so the cache is assertable.
 class SoundBank {
 public:
+    // The format everything is decoded to, and the rate the engine must run at. A
+    // ma_audio_buffer_ref carries no sample rate of its own — miniaudio assumes raw PCM is
+    // already at the engine's rate — so if these two ever disagree, every clip plays at the
+    // wrong speed. One constant, referenced by both.
+    static constexpr unsigned kSampleRate = 48000;
+    static constexpr unsigned kChannels = 1; // mono: spatialisation needs a point source
     // Scans `dir` and decodes everything in it. Decodes are submitted to `jobs` so a hundred
     // clips land across every worker rather than serially; pass nullptr to decode inline.
     // Missing directory is not an error — the engine simply has nothing to play.
@@ -46,6 +52,8 @@ public:
     bool has(const std::string& name) const { return find(name) != nullptr; }
 
     int clipCount() const { return int(m_clips.size()); }
+    // Any loaded clip name, for a test that just needs something to play.
+    std::string anyName() const { return m_clips.empty() ? std::string() : m_clips[0].name; }
     int variantCount() const;
     std::uint64_t totalFrames() const;
     // Monotonic count of file decodes performed by any bank, for the life of the process.

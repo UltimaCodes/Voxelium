@@ -637,8 +637,63 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         // this group exercises the real decode path wherever it runs. To watch it fail, put
         // the decode back on the play path and this goes nonzero immediately.
         {
+            // OFFLINE, so the mixer can be pulled and listened to. The previous version of
+            // this group used a real device and asserted only that clips were cached and
+            // voices acquired — neither of which can tell whether a single sample reaches an
+            // output, which is exactly how the engine shipped completely silent with this
+            // group green. "31 voices live" only means miniaudio believes it is playing.
             vx::AudioEngine au;
-            au.init(soundsDir, &jobs);
+            au.init(soundsDir, &jobs, /*offline=*/true);
+
+            // The one assertion that matters: play something and listen.
+            if (au.clipCount() > 0) {
+                au.setMasterVolume(1.0f);
+                au.setBusVolume(vx::AudioEngine::Bus::World, 1.0f);
+                au.setListener({0.0, 0.0, 0.0}, {0.0f, 0.0f, -1.0f});
+                au.play("step"); // 2D, so no attenuation can explain silence away
+                if (!au.has("step"))
+                    au.play(au.bank().anyName());
+                const float peak2d = au.renderPeak(4096);
+
+                // And again through the SPATIALISED path, which is the one the game
+                // actually uses for footsteps, breaking and placing. Testing only the 2D
+                // path would leave the whole world bus — attenuation, positioning, the
+                // listener — uncovered, and that is where a silence would hide.
+                au.setListener({10.0, 70.0, 10.0}, {0.0f, 0.0f, -1.0f});
+                au.playAt("step", {10.0, 70.0, 9.0}); // one block in front of the ear
+                const float peak3d = au.renderPeak(4096);
+
+                // Now the GAME's exact per-frame sequence, with the game's defaults. The
+                // two probes above pass with hand-set volumes and a listener at the origin;
+                // this is the one that has to match what the player actually gets.
+                vx::FxToggles def;
+                float peakGame = 0.0f;
+                {
+                    const glm::dvec3 feet{100.0, 70.0, 100.0};
+                    const glm::dvec3 eye{100.0, 71.6, 100.0};
+                    for (int frame = 0; frame < 8; ++frame) {
+                        if (frame == 2) { // a footstep, exactly as the physics loop plays it
+                            if (!au.playIfPresent("step_3", feet, 0.5f))
+                                au.playAt("step", feet, 0.5f);
+                        }
+                        au.setListener(eye, {0.0f, 0.0f, -1.0f});
+                        au.setMasterVolume(def.volume);
+                        au.setBusVolume(vx::AudioEngine::Bus::World, def.volWorld);
+                        au.setBusVolume(vx::AudioEngine::Bus::Ui, def.volUi);
+                        au.setBusVolume(vx::AudioEngine::Bus::Ambient, def.volAmbient);
+                        au.update(1.0f / 60.0f);
+                        peakGame = std::max(peakGame, au.renderPeak(800));
+                    }
+                }
+
+                const bool audible = peak2d > 0.001f && peak3d > 0.001f && peakGame > 0.001f;
+                VX_INFO("audio: peak 2d %.4f, spatialised %.4f, GAME sequence %.4f "
+                        "(want > 0.001) -> %s",
+                        double(peak2d), double(peak3d), double(peakGame),
+                        audible ? "PASS" : "FAIL");
+                if (!audible)
+                    return 1;
+            }
             const int clips = au.clipCount();
             const std::uint64_t framesLoaded = au.bank().totalFrames();
             // Bracket the play loop. Anything that decodes a file to satisfy a play shows up
@@ -678,6 +733,29 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                     audioOk ? "PASS" : "FAIL");
             au.shutdown();
             if (!audioOk)
+                return 1;
+        }
+
+        // Foliage cannot stand on nothing: break the block under a tuft and the tuft goes
+        // with it. Rides the falling queue, so this also proves that queue reaches the voxel
+        // ABOVE an edit — which is the only reason it needs no scan of its own.
+        {
+            const int fx0 = 40, fz0 = 40;
+            const int gy = world.generator().surfaceHeight(fx0, fz0);
+            const glm::ivec3 ground{fx0, gy, fz0};
+            const glm::ivec3 above{fx0, gy + 1, fz0};
+            world.setBlock(rc.renderer, light, ground, vx::blocks::Grass);
+            world.setBlock(rc.renderer, light, above, vx::blocks::GrassTuft);
+            const bool placed = world.blockAtWorld(above) == vx::blocks::GrassTuft;
+            // knock the ground out from under it
+            world.setBlock(rc.renderer, light, ground, vx::blocks::Air);
+            int ticks = 0;
+            for (; ticks < 8 && world.blockAtWorld(above) == vx::blocks::GrassTuft; ++ticks)
+                world.stepFalling(rc.renderer, light);
+            const bool gone = world.blockAtWorld(above) == vx::blocks::Air;
+            VX_INFO("foliage: tuft placed %d, cleared after %d tick(s) -> %s", placed ? 1 : 0,
+                    ticks, (placed && gone) ? "PASS" : "FAIL");
+            if (!(placed && gone))
                 return 1;
         }
 

@@ -32,7 +32,20 @@ class AudioEngine {
 public:
     // `jobs` may be null; it only parallelises the initial decode. The bank loads even when
     // there is no output device, so a headless run still has something to assert about.
-    bool init(const std::filesystem::path& soundsDir, JobSystem* jobs);
+    //
+    // `offline` builds the engine with no device and hands the mixing to readFrames(). That
+    // exists because the smoke group written alongside the sound bank asserted that clips
+    // were cached and that voices were acquired, and NEITHER of those can tell whether a
+    // single sample ever reaches an output — which is how the engine shipped completely
+    // silent with a green test. A test that cannot hear is not a test of audio.
+    bool init(const std::filesystem::path& soundsDir, JobSystem* jobs, bool offline = false);
+
+    // Offline mixing: pulls `frames` interleaved stereo frames from the engine. Only valid
+    // when init() was given offline = true. Returns frames actually produced.
+    int readFrames(float* out, int frames);
+    // Peak absolute sample over `frames` of mixing. The one number that answers "is this
+    // thing making any sound at all".
+    float renderPeak(int frames);
     void shutdown();
 
     // Per-frame upkeep: re-place live voices against the current listener, retire faded ones,
@@ -103,6 +116,7 @@ private:
     const SoundBank::Sample* pick(const std::string& name);
 
     bool m_ready = false;
+    bool m_offline = false;
     glm::dvec3 m_listener{0.0};
     SoundBank m_bank;
     std::uint32_t m_rng = 0x9E3779B9u;

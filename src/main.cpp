@@ -398,6 +398,27 @@ int main(int argc, char** argv) {
     // EVENT, which is far cheaper than it sounds — the crosshair already runs this same
     // raycast every single frame. A break heard through a wall should not arrive at full
     // volume, and this is the only thing that distinguishes the two.
+    // Tries the specific clip, then the generic one, then the material's footstep at a
+    // shifted pitch. The last step is what keeps block edits audible while break/place
+    // clips are still missing content.
+    const auto audioHit = [](vx::AudioEngine& au, const std::string& specific,
+                             const char* generic, int blockId, const glm::dvec3& at,
+                             float occ, float pitch, float vol) {
+        if (au.has(specific)) {
+            au.playOccluded(specific, at, occ, vol, 1.0f);
+            return;
+        }
+        if (au.has(generic)) {
+            au.playOccluded(generic, at, occ, vol, 1.0f);
+            return;
+        }
+        const std::string step = "step_" + std::to_string(blockId);
+        if (au.has(step))
+            au.playOccluded(step, at, occ, vol, pitch);
+        else if (au.has("step"))
+            au.playOccluded("step", at, occ, vol, pitch);
+    };
+
     const auto occlusionTo = [&](const glm::dvec3& src) {
         const glm::dvec3 toEar = camera.position - src;
         const double dist = glm::length(toEar);
@@ -447,6 +468,16 @@ int main(int argc, char** argv) {
 
     while (!window->shouldClose()) {
         window->pollEvents();
+        // BEFORE anything can play. These used to sit near the end of the frame, after the
+        // physics loop had already fired footsteps — so every sound was positioned against
+        // the PREVIOUS frame's listener, and on the very first frame against a listener
+        // still at the world origin. A footstep a hundred blocks from the ear is attenuated
+        // to nothing, which is a silent first step and a subtly wrong position after that.
+        audio.setListener(camera.position, camera.forward());
+        audio.setMasterVolume(fx.volume);
+        audio.setBusVolume(vx::AudioEngine::Bus::World, fx.volWorld);
+        audio.setBusVolume(vx::AudioEngine::Bus::Ui, fx.volUi);
+        audio.setBusVolume(vx::AudioEngine::Bus::Ambient, fx.volAmbient);
         const bool esc = window->keyDown(GLFW_KEY_ESCAPE);
         if (esc && !escHeld) {
             settingsOpen = !settingsOpen; // ESC pauses into the settings menu, not quit
@@ -584,10 +615,17 @@ int main(int argc, char** argv) {
                     particles.spawnBlockBreak(at, vx::blockTopLayer(int(id)));
                     world->setBlock(renderer, *light, hit.voxel, vx::blocks::Air);
                     const float occ = occlusionTo(at);
-                    if (!audio.has("break_" + std::to_string(int(id))))
-                        audio.playOccluded("break", at, occ);
-                    else
-                        audio.playOccluded("break_" + std::to_string(int(id)), at, occ);
+                    // break_<id> -> break -> the material's own FOOTSTEP, pitched down.
+                    //
+                    // That last fallback is why breaking a block makes a noise at all right
+                    // now: nothing ships a break clip (see sounds/README.md), so without it
+                    // the most common interaction in the engine is silent. A footstep on
+                    // stone and a stone breaking are the same material being struck, so
+                    // dropping the pitch and lifting the volume is a fair stand-in until
+                    // real clips exist — and it costs no new content, which matters because
+                    // bundled audio has to be CC0.
+                    audioHit(audio, "break_" + std::to_string(int(id)), "break", int(id), at,
+                             occ, 0.72f, 1.0f);
                     breakProgress = 0.0f;
                     breakTarget = {INT32_MIN, 0, 0};
                     breaking = false;
@@ -612,20 +650,15 @@ int main(int argc, char** argv) {
                     world->setBlock(renderer, *light, hit.voxel + hit.normal,
                                     vx::BlockId(put));
                     const float occ = occlusionTo(at);
-                    if (!audio.has("place_" + std::to_string(put)))
-                        audio.playOccluded("place", at, occ);
-                    else
-                        audio.playOccluded("place_" + std::to_string(put), at, occ);
+                    // Same chain, pitched UP: setting a block down is a lighter sound than
+                    // breaking one.
+                    audioHit(audio, "place_" + std::to_string(put), "place", put, at, occ,
+                             1.25f, 0.85f);
                 }
             }
             mmbHeld = mmb;
         }
 
-        audio.setListener(camera.position, camera.forward());
-        audio.setMasterVolume(fx.volume);
-        audio.setBusVolume(vx::AudioEngine::Bus::World, fx.volWorld);
-        audio.setBusVolume(vx::AudioEngine::Bus::Ui, fx.volUi);
-        audio.setBusVolume(vx::AudioEngine::Bus::Ambient, fx.volAmbient);
         // Re-places live voices against the moved listener, retires faded steals, and
         // settles the submerged filter. None of that can happen at play time.
         audio.update(float(dt));
