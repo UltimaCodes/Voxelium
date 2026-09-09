@@ -87,12 +87,20 @@ bool deserialize(std::span<const std::uint8_t> bytes, Chunk& chunk) {
     // the whole-chunk fast paths (the light seeder's fillLight, the descent's chunk skip,
     // the mesher's all-air early-out) plus a 32 KB index array it does not need. Most of
     // the world is uniform air or uniform stone, so this is the common case, not an edge.
+    // A ChunkSerializer run has no relation to whatever process wrote it — a hand-edited
+    // save, a future format sharing this reader, or plain disk corruption downstream of the
+    // temp-file+rename that protects a crash mid-write but nothing else. `set()` below has
+    // no reason to distrust its caller and stores whatever id it is given, so this is the
+    // only place that stands between an out-of-range varint and a block id that later reads
+    // past the end of every id-indexed table (kLampRGB, the texture layer array, hardness) —
+    // undefined behaviour rather than a wrong-but-safe block. `id < kBlockCount` is exact:
+    // every value 0..48 is a real block, there is no gap to allow for.
     if (runs == 1) {
         std::uint32_t len = 0;
         std::uint32_t id = 0;
         if (!getVarint(bytes, pos, len) || !getVarint(bytes, pos, id))
             return false;
-        if (len != kChunkSize3)
+        if (len != kChunkSize3 || id >= std::uint32_t(blocks::kBlockCount))
             return false;
         chunk.makeUniform(BlockId(id));
         return true;
@@ -105,6 +113,8 @@ bool deserialize(std::span<const std::uint8_t> bytes, Chunk& chunk) {
         std::uint32_t id = 0;
         if (!getVarint(bytes, pos, len) || !getVarint(bytes, pos, id))
             return false;
+        if (id >= std::uint32_t(blocks::kBlockCount))
+            return false; // corrupt: not a real block
         if (voxel + std::int64_t(len) > kChunkSize3)
             return false; // corrupt: runs overflow the grid
         for (std::uint32_t i = 0; i < len; ++i, ++voxel) {

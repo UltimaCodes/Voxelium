@@ -593,8 +593,21 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         // so reLod could never fire for it again. That happens whenever the camera moves
         // between a chunk being queued for generation (which picks coarse/detailed) and
         // being meshed (which picks the LOD), which vertical streaming made common.
+        //
+        // `!e.dirty` is load-bearing, not an optimisation. The regen job below tries
+        // `m_regions.load` first and only calls the generator if nothing is saved yet — so a
+        // chunk edited while coarse but not yet WRITTEN to disk (saveDirty hasn't run, it
+        // hasn't been evicted) would regenerate from the seed and silently discard the edit
+        // the moment it crossed into the detail band, which for a coarse chunk means gaining
+        // caves it never had. That reads as "I dig a hole and the world corrupts, stone
+        // reappears" — found by reading the swap below, which replaces e.voxels outright
+        // with no check for unsaved edits. The correct fix is not to serialize it inline
+        // here to unblock the regen (INFO.md: never block the main thread on disk I/O, and
+        // this scan runs every frame) — it is to leave a dirty coarse chunk coarse until it
+        // is saved by the normal path (F2, or eviction), at which point this condition opens
+        // and it regens detailed like any other chunk, loading back exactly what was saved.
         if (e.state == ChunkState::Meshed && !e.detailed && desired < kCoarseLod &&
-            !e.voxels->uniform()) {
+            !e.voxels->uniform() && !e.dirty) {
             m_regenScratch.push_back(item.first);
             continue;
         }
@@ -722,6 +735,18 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         if (e.voxels->hasJobRefs()) { // a neighbour mesh job still reads the old voxels
             std::lock_guard lock(m_regenDoneMutex);
             m_regenDone.push_back(r); // retry next frame; keep the job slot counted
+            continue;
+        }
+        // The chunk was edited AFTER this regen was submitted (selection only checks dirty
+        // at the moment it queues the job) — the edit landed on e.voxels, the coarse chunk,
+        // while r.voxels was being built from the pre-edit seed on a worker. Swapping in
+        // r.voxels now would discard that edit exactly like the selection guard above is
+        // meant to prevent. Drop the stale regen instead: the chunk stays coarse, and once
+        // it is saved it will be picked up and regenerated (loading the edit back) normally.
+        if (e.dirty) {
+            m_pool.release(r.voxels);
+            e.pendingDetail = nullptr;
+            --m_jobsInFlight;
             continue;
         }
         Chunk* old = e.voxels;

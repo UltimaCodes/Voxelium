@@ -253,6 +253,19 @@ int main(int argc, char** argv) {
     }
     camera.yawDeg = -35.0f;
     camera.pitchDeg = -25.0f;
+    // Applied HERE, before the initial settle below: world and camera both already exist
+    // (constructed above), and the saved radius/fov must be live BEFORE the loading screen
+    // decides how much world to stream and light. Applying it after the settle (as this
+    // used to) meant the first settle always ran at ChunkManager's built-in default of 16
+    // regardless of what was saved or what preset was picked — so choosing Ultra (radius 32)
+    // loaded and lit a radius-16 world behind the loading screen, then silently doubled the
+    // streaming target the instant gameplay started. That is the exact "chunks don't render
+    // past spawn, and it's laggy" report: the game never finished loading, it just stopped
+    // showing a loading screen.
+    if (liveApp) {
+        world->radius = savedRadius;
+        camera.fovYDeg = savedFov;
+    }
 
     vx::DebugHud hud;
     if (!hud.init(window->handle()))
@@ -443,11 +456,6 @@ int main(int argc, char** argv) {
                                            });
         return hit.hit ? fx.audioOcclusion : 0.0f;
     };
-    // The two values the early load could not place, because their owners did not exist yet.
-    if (liveApp) {
-        world->radius = savedRadius;
-        camera.fovYDeg = savedFov;
-    }
     window->setVsync(vsync);
     bool loadLogged = false;
     bool everBusy = false; // don't log the "loaded" summary before streaming even starts

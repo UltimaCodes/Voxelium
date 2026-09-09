@@ -7,6 +7,16 @@ vxsave_smoke/
 .idea/
 cmake-build-*/
 *.bmp
+*.log
+
+# Working memory, not shipped documentation. INFO.md/SPEC.md/docs/ are how an agent (or a
+# fresh contributor) picks this project back up — architecture, the roadmap, current known
+# problems — and they are edited constantly, but that history is noise, not signal, in a
+# repo whose real record is the commit log itself. README.md is the one exception: it is
+# what a stranger sees first and is the only doc meant to be read outside this checkout.
+INFO.md
+SPEC.md
+docs/
 
 # Audio. The bundled CC0 set is tracked; anything else you drop in stays yours and is not
 # swept into a commit by a stray `git add sounds/`.

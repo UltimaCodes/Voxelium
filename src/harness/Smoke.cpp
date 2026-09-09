@@ -152,6 +152,51 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
             return 1;
     }
 
+    // An edit made to a chunk while it is still COARSE must survive that chunk's later
+    // regeneration to detailed. The regen path tries a disk load before it ever calls the
+    // generator, but an edit that has not been SAVED yet (no F2, no eviction) has nothing on
+    // disk to load — so the naive version of this regen just re-ran the generator over the
+    // dirty chunk and threw the edit away the instant the player got close enough to see it
+    // happen, which reads as "I dig a hole and the world corrupts, stone reappears". Minimal
+    // repro: place a block nobody's generator will ever put there (Bricks) in a chunk while
+    // it is far enough to be coarse, then walk up to it exactly as the regen group above
+    // does, and check the block is still Bricks once the approach settles — not whatever the
+    // generator would have put there instead.
+    {
+        const int cx = 15, cz = 8; // same coarse distance as the group above, different
+                                   // column so the two tests cannot leave stale state for
+                                   // each other
+        world.radius = 16;
+        drain();
+        const glm::ivec3 editAt{cx * 32 + 16,
+                                world.generator().surfaceHeight(cx * 32 + 16, cz * 32 + 16) + 1,
+                                cz * 32 + 16};
+        const bool placed = world.setBlock(rc.renderer, light, editAt, vx::blocks::Bricks);
+        camera.position = {double(editAt.x), double(editAt.y + 3), double(editAt.z)};
+        for (int i = 0; i < 80; ++i)
+            drain();
+        // Check HERE, while the chunk this edit lives in is still resident. Moving the
+        // camera back to spawn afterwards (as the group above does) evicts it — correctly,
+        // since it is now far outside a radius-10 world — and an absent chunk legitimately
+        // answers blockAtWorld with Stone by the same convention meshing uses for unloaded
+        // neighbours. Checking after that eviction would be testing THAT convention, not
+        // this fix, and very nearly was: it read back as Stone and looked exactly like the
+        // bug this test exists to catch until a per-iteration trace showed the edit was
+        // still Bricks all the way through the approach and only vanished once the chunk
+        // itself did.
+        const vx::BlockId survived = world.blockAtWorld(editAt);
+        camera.position = {16.0, 110.0, 16.0};
+        world.radius = 10;
+        drain();
+        const bool editOk = placed && survived == vx::blocks::Bricks;
+        VX_INFO("regen: edit to a coarse chunk placed=%d, block after approach %d (want %d, "
+                "Bricks) -> %s",
+                placed ? 1 : 0, int(survived), int(vx::blocks::Bricks),
+                editOk ? "PASS" : "FAIL");
+        if (!editOk)
+            return 1;
+    }
+
     // Moving vertically must not strand the chunk that enters the bottom of the band.
     // The load range is center.y +- kVerticalRadius while eviction only fires past
     // kVerticalRadius + 1, so descending one chunk grows every resident column WITHOUT
