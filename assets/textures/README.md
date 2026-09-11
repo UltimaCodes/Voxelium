@@ -31,8 +31,17 @@ The mapping, in case you want to swap an individual tile back:
 ## filenames the loader looks for
 
     stone.png  dirt.png  grass_top.png  grass_side.png  sand.png
-    wood_side.png  wood_top.png  leaves.png  glow.png  snow.png
+    wood_side.png  wood_top.png  glow.png  snow.png
     planks.png  bricks.png  coal_ore.png  iron_ore.png  gravel.png
+
+`leaves.png` (the pack's `oak_leaves.png`) is deliberately NOT here any more: it had **no
+alpha channel at all** (checked directly — every pixel 255), which silently defeated
+`genLeaves`'s hole-punching (the shadow AND main pass both alpha-cut leaves specifically so
+canopies aren't a solid slab) every time this file existed on disk, since a loaded file
+always wins over the procedural fallback. Canopies rendered as flat solid green cubes with
+no gaps at all until this was removed — confirmed by diffing tour screenshots with the file
+present vs. absent, byte-identical everywhere except the leaf geometry itself. If a leaf
+texture ever goes back here, it MUST have real alpha holes, or this regresses silently again.
 
 ## what is not overridable yet
 
