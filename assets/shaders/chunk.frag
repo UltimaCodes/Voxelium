@@ -87,10 +87,33 @@ const vec2 kPoisson[16] = vec2[16](
 // is far above the receiver), then PCF with that radius. shadow map is conventional depth
 // (near light = smaller), so a blocker is a stored depth in front of the receiver.
 float sampleCascade(vec3 pos, vec3 N, int c) {
-    // normal-offset bias scaled by the cascade texel kills acne without peter panning
-    vec4 sc = uCascadeVp[c] * vec4(pos + N * uCascadeTexel[c] * 1.5, 1.0);
+    // Both bias terms below fight the same problem from two angles, and both need to grow
+    // as the surface turns edge-on to the light (ndl -> 0). A shadow texel's world-space
+    // footprint stays roughly constant, but the RECEIVER's depth changes faster and faster
+    // across that footprint as the face goes grazing, so a fixed offset/bias tuned for a
+    // face pointed at the sun stops covering a steep slope under a low sun — that exact
+    // combination is what showed up as fine, regular self-shadow striping distinct from the
+    // cloud-shadow bands (owner report, tour stop 0 at VX_TOUR_TIME 0.28). N is always one
+    // of the six axis-aligned face directions here, so this is exact, not interpolated.
+    // Floored at 0.2 rather than letting it blow up toward ndl=0 — sunShadow() already
+    // zeroes this whole term below that via its own ndl>0 gate on the caller side, so a
+    // shadow this function still gets asked to sample is never more than moderately
+    // grazing, and the floor only needs to hold the worst case sane.
+    float ndl = max(dot(N, uSunL), 0.0);
+    float slope = 1.0 / max(ndl, 0.2);
+
+    // normal-offset bias, in cascade-texel units so it means the same thing at every
+    // distance, now ALSO scaled by slope so a grazing face is pushed further along its own
+    // normal. Clamped (3x, not unbounded) so this cannot peter-pan a shadow off a thin
+    // object the way an unclamped slope scale would.
+    vec4 sc = uCascadeVp[c] * vec4(pos + N * uCascadeTexel[c] * 1.5 * min(slope, 3.0), 1.0);
     vec2 uv = sc.xy * 0.5 + 0.5;
     float receiver = sc.z;
+
+    // depth-compare bias: fixed at 0.0016 this was tuned for a face pointed at the sun.
+    // Scaled by the same slope, clamped tighter (2.5x) since this one trades directly
+    // against contact-shadow precision rather than just nudging the sample position.
+    float depthBias = 0.0016 * min(slope, 2.5);
 
     float searchR = 3.0 / VX_SHADOW_RES;
     float blockerSum = 0.0;
@@ -102,7 +125,7 @@ float sampleCascade(vec3 pos, vec3 N, int c) {
 #endif
     for (int i = 0; i < kBlockerTaps; ++i) {
         float d = texture(uShadowDepth, vec3(uv + kPoisson[i] * searchR, float(c))).r;
-        if (d < receiver - 0.0016) {
+        if (d < receiver - depthBias) {
             blockerSum += d;
             ++blockerN;
         }
@@ -114,7 +137,7 @@ float sampleCascade(vec3 pos, vec3 N, int c) {
     float penumbra = (receiver - avgBlocker) / max(avgBlocker, 1e-4);
     float radius = clamp(penumbra * 45.0, 1.0, 7.0) / VX_SHADOW_RES;
 
-    float depth = receiver - 0.0016;
+    float depth = receiver - depthBias;
     float sum = 0.0;
     for (int i = 0; i < 16; ++i)
         sum += texture(uShadowMap, vec4(uv + kPoisson[i] * radius, float(c), depth));

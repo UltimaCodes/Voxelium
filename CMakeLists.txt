@@ -50,6 +50,7 @@ add_executable(voxelium
     src/ui/DebugHud.cpp
     src/world/Chunk.cpp
     src/world/ChunkManager.cpp
+    src/world/MeshBufferPool.cpp
     src/world/Player.cpp
 )
 

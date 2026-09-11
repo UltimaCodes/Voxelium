@@ -223,6 +223,14 @@ void ChunkManager::processEvictions(Renderer& renderer, JobSystem& jobs) {
             renderer.free(e.waterRange);
             m_dirty = true;
         }
+        // Return the mesh buffers to the pool before the Entry (and its pointers) are gone
+        // for good — miss this and the slot is still sitting in m_slots, just unreachable
+        // from the free list, so the pool grows a little every eviction for the rest of the
+        // session instead of steady-stating.
+        if (e.quadBuf)
+            m_quadPool.checkin(e.quadBuf);
+        if (e.waterBuf)
+            m_waterPool.checkin(e.waterBuf);
         m_pool.release(e.voxels);
         m_seededColumns.erase(ChunkPos{m_evictList[i].x, 0, m_evictList[i].z});
         m_provisionalColumns.erase(ChunkPos{m_evictList[i].x, 0, m_evictList[i].z});
@@ -239,13 +247,13 @@ void ChunkManager::rebuildArena(Renderer& renderer) {
         Entry& e = item.second;
         if (e.state != ChunkState::Meshed)
             continue;
-        if (!e.quadsCpu.empty()) {
-            e.range = renderer.alloc(e.quadsCpu);
+        if (e.quadBuf && !e.quadBuf->empty()) {
+            e.range = renderer.alloc(*e.quadBuf);
             if (e.range.count == 0)
                 VX_ERROR("arena rebuild: chunk still does not fit — arena too small");
         }
-        if (!e.waterQuadsCpu.empty())
-            e.waterRange = renderer.alloc(e.waterQuadsCpu);
+        if (e.waterBuf && !e.waterBuf->empty())
+            e.waterRange = renderer.alloc(*e.waterBuf);
     }
     m_dirty = true;
 }
@@ -661,24 +669,28 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         ++m_jobsInFlight;
         --m_pendingMesh;
         Chunk* voxels = e.voxels;
-        jobs.submit([this, voxels, nb, pos, lod, skirt] {
-            // one mesher + scratch per worker thread, reused across jobs
-            thread_local GreedyMesher mesher;
-            thread_local std::vector<std::uint64_t> quadScratch;
-            thread_local std::vector<std::uint64_t> waterScratch;
+        // Checked out here, on the main thread, and captured as raw pointers — the worker
+        // dereferences them directly and never touches the pool's own bookkeeping (the free
+        // list, or growing its storage), so there is nothing for it to race the main thread
+        // over; see MeshBufferPool.hpp for why that matters. It also gets exclusive access
+        // to the pointee for the job's duration, the same ownership discipline
+        // retainJob()/releaseJob() already gives it over the voxels. The mesher writes
+        // STRAIGHT into pool storage now: no thread_local scratch, no copy at the end. That
+        // copy — `{scratch.begin(), scratch.end()}`, a fresh heap allocation once per
+        // meshed chunk — was the ~11 heap-allocs/update left over after JobSystem stopped
+        // allocating on submit (SPEC.md #67).
+        std::vector<std::uint64_t>* quadBuf = m_quadPool.checkout();
+        std::vector<std::uint64_t>* waterBuf = m_waterPool.checkout();
+        jobs.submit([this, voxels, nb, pos, lod, skirt, quadBuf, waterBuf] {
+            thread_local GreedyMesher mesher; // one per worker thread, reused across jobs
             const auto t0 = Clock::now();
             const GreedyStats stats =
-                mesher.mesh(*voxels, nb.data(), quadScratch, waterScratch, lod, skirt);
+                mesher.mesh(*voxels, nb.data(), *quadBuf, *waterBuf, lod, skirt);
             const std::uint16_t connectivity = computeConnectivity(*voxels);
             m_meshNanos.fetch_add(nsSince(t0), std::memory_order_relaxed);
             m_meshCount.fetch_add(1, std::memory_order_relaxed);
 
-            MeshResult result{pos,
-                              {quadScratch.begin(), quadScratch.end()},
-                              {waterScratch.begin(), waterScratch.end()},
-                              stats,
-                              connectivity,
-                              std::int8_t(lod)};
+            MeshResult result{pos, quadBuf, waterBuf, stats, connectivity, std::int8_t(lod)};
             voxels->releaseJob();
             for (const Chunk* n : nb)
                 if (n)
@@ -809,27 +821,42 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                 renderer.free(e.waterRange);
                 e.waterRange = {};
             }
-            e.quads = int(r.quads.size());
-            e.waterQuads = int(r.water.size());
-            if (!r.quads.empty()) {
-                e.range = renderer.alloc(r.quads);
+            e.quads = int(r.quadBuf->size());
+            e.waterQuads = int(r.waterBuf->size());
+            if (!r.quadBuf->empty()) {
+                e.range = renderer.alloc(*r.quadBuf);
                 if (e.range.count == 0) { // arena full — defrag and retry once
+                    // e.quadBuf is still the OLD buffer here, untouched — rebuildArena walks
+                    // every Meshed entry including this one, and this entry's e.range was
+                    // just freed above, so it needs e.quadBuf to still hold valid data to
+                    // re-upload. Only swap in the new buffer once nothing can read the old
+                    // one out from under it.
                     rebuildArena(renderer);
-                    e.range = renderer.alloc(r.quads);
+                    e.range = renderer.alloc(*r.quadBuf);
                 }
-                e.quadsCpu = std::move(r.quads);
+                if (e.quadBuf)
+                    m_quadPool.checkin(e.quadBuf);
+                e.quadBuf = r.quadBuf;
             } else {
-                e.quadsCpu.clear();
+                if (e.quadBuf)
+                    m_quadPool.checkin(e.quadBuf);
+                m_quadPool.checkin(r.quadBuf); // fresh but empty — nothing worth keeping
+                e.quadBuf = nullptr;
             }
-            if (!r.water.empty()) {
-                e.waterRange = renderer.alloc(r.water);
+            if (!r.waterBuf->empty()) {
+                e.waterRange = renderer.alloc(*r.waterBuf);
                 if (e.waterRange.count == 0) {
                     rebuildArena(renderer);
-                    e.waterRange = renderer.alloc(r.water);
+                    e.waterRange = renderer.alloc(*r.waterBuf);
                 }
-                e.waterQuadsCpu = std::move(r.water);
+                if (e.waterBuf)
+                    m_waterPool.checkin(e.waterBuf);
+                e.waterBuf = r.waterBuf;
             } else {
-                e.waterQuadsCpu.clear();
+                if (e.waterBuf)
+                    m_waterPool.checkin(e.waterBuf);
+                m_waterPool.checkin(r.waterBuf);
+                e.waterBuf = nullptr;
             }
             e.connectivity = r.connectivity;
             e.sunlit = r.stats.sunlit;
@@ -844,6 +871,13 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             // settled the whole time, which is what made it look like a test fixture bug
             // rather than a lost re-LOD.
             m_meshScanDirty = true;
+        } else {
+            // Rejected: a stale re-LOD result (dropped so the scan can re-submit at the
+            // current LOD), or the chunk was evicted entirely while the job was in flight.
+            // Either way nothing will ever read these buffers again — hand them back now,
+            // or the pool leaks a slot every time this happens.
+            m_quadPool.checkin(r.quadBuf);
+            m_waterPool.checkin(r.waterBuf);
         }
         // Light moved while this job was out. The geometry it brought back is still the
         // newest there is, so keep it and send the chunk round once more rather than
@@ -879,6 +913,10 @@ void ChunkManager::loadWorld(Renderer& renderer, int seed, std::filesystem::path
             renderer.free(e.range);
         if (e.waterRange.count != 0)
             renderer.free(e.waterRange);
+        if (e.quadBuf)
+            m_quadPool.checkin(e.quadBuf);
+        if (e.waterBuf)
+            m_waterPool.checkin(e.waterBuf);
         if (e.pendingDetail)
             m_pool.release(e.pendingDetail);
         if (e.voxels)
@@ -1052,9 +1090,15 @@ void ChunkManager::remeshNow(Renderer& renderer, ChunkPos pos) {
         voxelsAt({pos.x, pos.y + 1, pos.z}), voxelsAt({pos.x, pos.y - 1, pos.z}),
         voxelsAt({pos.x, pos.y, pos.z + 1}), voxelsAt({pos.x, pos.y, pos.z - 1}),
     };
+    // Synchronous (this runs on an edit, right on the main thread — no worker involved), but
+    // still pool-backed rather than a thread_local scratch: this entry's OLD buffers need to
+    // stay valid through a possible rebuildArena() retry below, same as the async path in
+    // update(), so the same checkout-fresh/defer-checkin-old pattern applies even without a
+    // thread hop.
+    std::vector<std::uint64_t>* quadBuf = m_quadPool.checkout();
+    std::vector<std::uint64_t>* waterBuf = m_waterPool.checkout();
     // edits are always on full-detail chunks, but one can still border a coarser ring
-    const GreedyStats stats = m_mesher.mesh(*e.voxels, neighbors, m_quadScratch,
-                                            m_waterScratch, 0,
+    const GreedyStats stats = m_mesher.mesh(*e.voxels, neighbors, *quadBuf, *waterBuf, 0,
                                             coarseNeighborMask(pos, 0, m_center, radius));
     e.connectivity = computeConnectivity(*e.voxels);
     e.sunlit = stats.sunlit; // an edit can open a sealed chunk to the sky, or seal it
@@ -1070,24 +1114,34 @@ void ChunkManager::remeshNow(Renderer& renderer, ChunkPos pos) {
     e.quads = stats.quads;
     e.waterQuads = stats.waterQuads;
     if (stats.quads > 0) {
-        e.range = renderer.alloc(m_quadScratch);
+        e.range = renderer.alloc(*quadBuf);
         if (e.range.count == 0) {
-            rebuildArena(renderer);
-            e.range = renderer.alloc(m_quadScratch);
+            rebuildArena(renderer); // e.quadBuf is still the OLD buffer here — still valid
+            e.range = renderer.alloc(*quadBuf);
         }
-        e.quadsCpu.assign(m_quadScratch.begin(), m_quadScratch.end());
+        if (e.quadBuf)
+            m_quadPool.checkin(e.quadBuf);
+        e.quadBuf = quadBuf;
     } else {
-        e.quadsCpu.clear();
+        if (e.quadBuf)
+            m_quadPool.checkin(e.quadBuf);
+        m_quadPool.checkin(quadBuf); // fresh but empty — nothing worth keeping
+        e.quadBuf = nullptr;
     }
     if (stats.waterQuads > 0) {
-        e.waterRange = renderer.alloc(m_waterScratch);
+        e.waterRange = renderer.alloc(*waterBuf);
         if (e.waterRange.count == 0) {
             rebuildArena(renderer);
-            e.waterRange = renderer.alloc(m_waterScratch);
+            e.waterRange = renderer.alloc(*waterBuf);
         }
-        e.waterQuadsCpu.assign(m_waterScratch.begin(), m_waterScratch.end());
+        if (e.waterBuf)
+            m_waterPool.checkin(e.waterBuf);
+        e.waterBuf = waterBuf;
     } else {
-        e.waterQuadsCpu.clear();
+        if (e.waterBuf)
+            m_waterPool.checkin(e.waterBuf);
+        m_waterPool.checkin(waterBuf);
+        e.waterBuf = nullptr;
     }
     e.lod = 0;         // edits are always on near (full-detail) chunks
     e.meshingLod = -1; // drop any in-flight async re-LOD result for this chunk

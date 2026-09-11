@@ -7,6 +7,7 @@
 #include "render/Renderer.hpp"
 #include "world/Chunk.hpp"
 #include "world/ChunkPos.hpp"
+#include "world/MeshBufferPool.hpp"
 
 #include <glm/glm.hpp>
 
@@ -244,14 +245,17 @@ private:
         std::uint16_t connectivity = 0x7FFF;
         std::int32_t metaIndex = -1;   // slot in the cull meta buffer, -1 = not drawn
         std::uint32_t floodStamp = 0;  // visited marker for the visibility flood
-        std::vector<std::uint64_t> quadsCpu;      // opaque, kept for arena rebuilds
-        std::vector<std::uint64_t> waterQuadsCpu; // transparent
+        // Opaque/transparent quads, kept for the chunk's whole residency (arena rebuilds
+        // re-upload from them). Borrowed from m_quadPool/m_waterPool, not owned directly —
+        // see MeshBufferPool.hpp. null = no geometry of that kind, or nothing meshed yet.
+        std::vector<std::uint64_t>* quadBuf = nullptr;
+        std::vector<std::uint64_t>* waterBuf = nullptr;
     };
 
     struct MeshResult {
         ChunkPos pos;
-        std::vector<std::uint64_t> quads;
-        std::vector<std::uint64_t> water;
+        std::vector<std::uint64_t>* quadBuf = nullptr;
+        std::vector<std::uint64_t>* waterBuf = nullptr;
         GreedyStats stats;
         std::uint16_t connectivity = 0;
         std::int8_t lod = 0;
@@ -286,8 +290,13 @@ private:
     TerrainGenerator m_gen;
     RegionStore m_regions;
     GreedyMesher m_mesher; // main-thread instance for the synchronous edit remesh path
-    std::vector<std::uint64_t> m_quadScratch;
-    std::vector<std::uint64_t> m_waterScratch;
+    // Every chunk's quad data, kept for its whole residency, lives in a slot here rather
+    // than in a vector it owns directly — see MeshBufferPool.hpp. The async mesh-job path
+    // (workers) and the synchronous edit-remesh path (remeshNow, main-thread-only) share
+    // both pools; only checkout()/checkin() need to run on the main thread, which both
+    // paths already do (the async path via the upload-drain loop, this one directly).
+    MeshBufferPool m_quadPool;
+    MeshBufferPool m_waterPool;
     std::vector<std::uint8_t> m_saveScratch;
 
     std::vector<ChunkPos> m_genQueue; // farthest-first, pop_back serves nearest
