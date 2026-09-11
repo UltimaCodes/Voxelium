@@ -87,6 +87,21 @@ public:
         return int(n);
     }
 
+    // For SPEC #3's "where does column-seeding time actually go" question: descent bulk-skips
+    // uniform-air chunks and stops at the first blocker, so it was suspected cheap even for a
+    // radius-32 settle's thousands of coarse (no-cave) columns already, before spending any
+    // engineering on an analytical fast path for them — this is what actually measures that
+    // suspicion instead of assuming it. Spread is where a cave column's cost lives: every cave
+    // mouth/overhang reachable from the surface is a boundary case pure heightmap terrain never
+    // hits (see stepSeedColumn's own comments). Nanoseconds, cumulative since the last reset.
+    struct SeedPhaseNanos {
+        std::uint64_t descent = 0;
+        std::uint64_t spread = 0;
+        std::uint64_t emissive = 0;
+    };
+    SeedPhaseNanos seedPhaseNanos() const { return m_seedPhaseNanos; }
+    void resetSeedPhaseNanos() { m_seedPhaseNanos = {}; }
+
 private:
     // Four independent BFS channels. Block light is three of them so a coloured emitter
     // keeps its hue across its whole falloff; sky is the fourth because it seeds and
@@ -154,6 +169,7 @@ private:
     };
     SeedState m_seed;
     bool m_seedAborted = false;
+    SeedPhaseNanos m_seedPhaseNanos;
     // Refetch + validate the column's resident chunks. The range is no longer 0..world
     // top — there is no world top — so it comes back through y0/y1, and skyAtTop says
     // whether the descent starts in open sky or buried.

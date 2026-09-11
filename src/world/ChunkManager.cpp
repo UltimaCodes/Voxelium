@@ -463,6 +463,25 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             }
         }
 
+        // Nearest column first, same reason m_genQueue is sorted the same way: columns
+        // finish generating in WORKER COMPLETION order, not distance order, and a coarse
+        // (no-cave) far column generates roughly 4x faster than a detailed near one — so
+        // under real load, far columns push_back continuously while a near column (quite
+        // possibly the one the camera is standing in) is still generating. The queue used
+        // to be consumed pure LIFO (pop_back, whatever pushed most recently), which meant
+        // every fresh far-column completion cut in line ahead of anything already waiting —
+        // an old entry can be starved indefinitely for as long as new ones keep arriving
+        // faster than the 2ms/frame budget drains them. That is "nothing generates in the
+        // area I spawn in and I have to fly to the nearest chunk": voxels exist (gen queue
+        // is fine), but light-seeding — which meshing waits on — never reached the one
+        // column that mattered most, while whichever far columns won the completion race
+        // got lit and meshed instead. Sorting by distance every frame, right before
+        // consuming, guarantees the camera's own column always wins that race regardless of
+        // completion order — same fix shape as m_genQueue, just applied per-frame since this
+        // queue receives new entries continuously instead of all at once from rescan().
+        std::sort(m_seedQueue.begin(), m_seedQueue.end(), [center](ChunkPos a, ChunkPos b) {
+            return horizontalDist2(a, center) > horizontalDist2(b, center);
+        });
         // The budget has to apply even when nothing seeds — right after a teleport every
         // column's neighbourhood is still mid-generation, and the old "only check the
         // clock once something seeded" walked the whole queue every frame for no work.
@@ -485,12 +504,11 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                     markLit(col);
             }
         }
-        // Put deferred columns back at the front so they're retried only after everything
-        // else (pop_back serves the tail). One splice a frame, not one memmove of the
-        // whole vector per deferral, which is what made this quadratic.
+        // Deferred columns go back in at their normal distance priority (next frame's sort
+        // places them correctly) rather than a fixed front/back slot — a near column that
+        // was momentarily deferred still deserves to be seeded before a far one once ready.
         if (!m_seedDeferred.empty()) {
-            m_seedQueue.insert(m_seedQueue.begin(), m_seedDeferred.begin(),
-                               m_seedDeferred.end());
+            m_seedQueue.insert(m_seedQueue.end(), m_seedDeferred.begin(), m_seedDeferred.end());
             m_seedDeferred.clear();
         }
     }

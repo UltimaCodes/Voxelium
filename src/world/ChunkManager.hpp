@@ -224,6 +224,15 @@ public:
     };
     LodAudit auditLod() const;
 
+    // For --smoke: is this specific chunk actually meshed and lit, as opposed to "voxels
+    // exist but nothing drew it yet" — the distinction a starved light-seed queue can leave
+    // indefinitely on exactly the column that matters most (SPEC: "nothing generates in the
+    // area I spawn in").
+    bool chunkMeshedAndLit(ChunkPos pos) const {
+        const auto it = m_chunks.find(pos);
+        return it != m_chunks.end() && it->second.state == ChunkState::Meshed && it->second.lit;
+    }
+
     int radius = 16; // render radius in chunks, horizontal
 
 private:

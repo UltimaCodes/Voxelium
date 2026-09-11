@@ -23,6 +23,23 @@ ChunkPos chunkOf(const glm::ivec3& wp) {
     return {wp.x >> 5, wp.y >> 5, wp.z >> 5};
 }
 
+// Accumulates wall time into `target` on scope exit, early return included — a seed phase's
+// while loop can bail out mid-column via its own budget check, so the only exit that is
+// guaranteed to run is a destructor, not a line manually placed after the loop.
+class ScopedNanoAccum {
+public:
+    explicit ScopedNanoAccum(std::uint64_t& target) : m_target(target) {}
+    ~ScopedNanoAccum() {
+        m_target += std::uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                       std::chrono::steady_clock::now() - m_t0)
+                                       .count());
+    }
+
+private:
+    std::uint64_t& m_target;
+    std::chrono::steady_clock::time_point m_t0 = std::chrono::steady_clock::now();
+};
+
 } // namespace
 
 Chunk* LightEngine::lookupChunk(ChunkPos p) const {
@@ -182,6 +199,7 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
 
     // straight-down descent, direct pointers so this stays cheap (no hashing)
     if (m_seed.phase == SeedPhase::Descent) {
+        ScopedNanoAccum _timeThis(m_seedPhaseNanos.descent);
         while (m_seed.cursor < kCells) {
             if (m_seed.cursor % kDescentCheck == 0 && m_seed.cursor > 0 && over())
                 return false;
@@ -224,6 +242,7 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
     // spread sources: direct-sky voxels bordering shadowed air (cave mouths, overhangs).
     // pure heightmap terrain has none — the loop breaks immediately per column
     if (m_seed.phase == SeedPhase::Spread) {
+        ScopedNanoAccum _timeThis(m_seedPhaseNanos.spread);
         while (m_seed.cursor < kCells) {
             if (m_seed.cursor % kSpreadCheck == 0 && m_seed.cursor > 0 && over())
                 return false;
@@ -251,30 +270,33 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
     }
 
     // emissive blocks — palette check skips the scan for almost every chunk
-    while (m_seed.cursor < m_seed.y1 - m_seed.y0 + 1) {
-        if (m_seed.cursor > 0 && over())
-            return false;
-        const int slot = m_seed.cursor; // index into the band, NOT an absolute chunk Y
-        const int cy = m_seed.y0 + slot;
-        ++m_seed.cursor;
-        const Chunk* c = stack[slot];
-        if (!c->paletteHasEmissive())
-            continue;
-        for (int y = 0; y < kChunkSize; ++y)
-            for (int z = 0; z < kChunkSize; ++z)
-                for (int x = 0; x < kChunkSize; ++x) {
-                    const BlockId id = c->get(x, y, z);
-                    if (blocks::emissive(id)) {
-                        const glm::ivec3 wp{baseX + x, cy * kChunkSize + y, baseZ + z};
-                        const int e[3] = {blocks::emitR(id), blocks::emitG(id),
-                                          blocks::emitB(id)};
-                        for (int ch = R; ch <= B; ++ch)
-                            if (e[ch] > 0) {
-                                setLevel(wp, ch, e[ch]);
-                                enqueue(ch, wp);
-                            }
+    {
+        ScopedNanoAccum _timeThis(m_seedPhaseNanos.emissive);
+        while (m_seed.cursor < m_seed.y1 - m_seed.y0 + 1) {
+            if (m_seed.cursor > 0 && over())
+                return false;
+            const int slot = m_seed.cursor; // index into the band, NOT an absolute chunk Y
+            const int cy = m_seed.y0 + slot;
+            ++m_seed.cursor;
+            const Chunk* c = stack[slot];
+            if (!c->paletteHasEmissive())
+                continue;
+            for (int y = 0; y < kChunkSize; ++y)
+                for (int z = 0; z < kChunkSize; ++z)
+                    for (int x = 0; x < kChunkSize; ++x) {
+                        const BlockId id = c->get(x, y, z);
+                        if (blocks::emissive(id)) {
+                            const glm::ivec3 wp{baseX + x, cy * kChunkSize + y, baseZ + z};
+                            const int e[3] = {blocks::emitR(id), blocks::emitG(id),
+                                              blocks::emitB(id)};
+                            for (int ch = R; ch <= B; ++ch)
+                                if (e[ch] > 0) {
+                                    setLevel(wp, ch, e[ch]);
+                                    enqueue(ch, wp);
+                                }
+                        }
                     }
-                }
+        }
     }
 
     m_seed.phase = SeedPhase::Idle;

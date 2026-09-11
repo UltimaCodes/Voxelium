@@ -283,6 +283,76 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         drain();
     }
 
+    // Owner report, live: "nothing generates in the area i spawn in and i have to fly to
+    // the nearest chunk." m_seedQueue used to be consumed pure LIFO (pop_back, whatever
+    // pushed most recently) — under real load a coarse (no-cave) far column generates
+    // roughly 4x faster than a detailed near one, so far columns can keep completing and
+    // cutting in line ahead of a slower near column already waiting its turn, including the
+    // one the CAMERA is actually standing in. A real loading screen has a finite budget
+    // (main.cpp's settleBehindLoadingScreen caps at 4000 frames) and drops the player in
+    // once it runs out regardless of what is still queued — so the question is not "does the
+    // center eventually get lit" (given enough frames, everything does, LIFO or not, which
+    // is why an earlier version of this test that waited for the WHOLE gen queue to drain
+    // passed even with the fix deliberately disabled: by then the backlog had long since
+    // washed out). It is "how much OTHER work happens before the center's turn comes,"
+    // since that is what determines whether a bounded settle reaches it in time. Measured
+    // as a fraction of total expected meshing: the center is distance 0, dispatched
+    // essentially first by m_genQueue's own nearest-first order, so a fair queue lights it
+    // within a small fraction of total progress — not after most of a wide radius already
+    // finished.
+    {
+        // Radius set to 24 BEFORE the first update() at this spot, and the spot itself is
+        // fresh (never settled at any radius before) — center must start genuinely
+        // unresident, or its first update() here finds it already lit from an earlier phase
+        // and the whole measurement is trivially "instant" regardless of queue fairness.
+        // That is exactly what the first version of this test got wrong: it grew radius
+        // in place at an already-settled position, so the center was already lit before the
+        // interesting work even began, and passed even with the fix deliberately disabled.
+        world.radius = 24; // a wide coarse ring around a much smaller detailed core
+        const double sxz = 5000.0, szz = -9000.0;
+        const double ssurf = world.generator().surfaceHeight(int(sxz), int(szz));
+        camera.position = {sxz, ssurf + 3.0, szz};
+        const ChunkPos center{int(std::floor(sxz / double(kChunkSize))),
+                              int(std::floor((ssurf + 3.0) / double(kChunkSize))),
+                              int(std::floor(szz / double(kChunkSize)))};
+        const int target = std::max(1, world.expectedMeshedChunks());
+        int frames = 0;
+        double progressAtCenterLit = -1.0;
+        // 20000: drain()'s own established ceiling elsewhere in this file, not a tuned
+        // number — this loop breaks the moment the center lights up regardless (under 1000
+        // frames on Release/harden), so raising it costs fast builds nothing. It matters for
+        // Debug specifically: at this radius, Debug's own unoptimized cave-generation cost
+        // (measured elsewhere this session at up to ~70ms/chunk, vs ~2-15ms release-side)
+        // means the center's OWN voxels can still be mid-generation well past 5000 main-
+        // thread iterations, which is a real speed difference, not a queue-ordering one —
+        // the assertion below is about progress FRACTION at the moment it lights, not about
+        // how many iterations that took to reach.
+        for (; frames < 20000; ++frames) {
+            rc.renderer.beginFrame();
+            world.update(jobs, rc.renderer, light, camera.position);
+            rc.renderer.endFrame();
+            if (world.chunkMeshedAndLit(center)) {
+                world.refreshStats();
+                progressAtCenterLit = double(world.stats().meshed) / double(target);
+                break;
+            }
+        }
+        const bool centerLit = progressAtCenterLit >= 0.0;
+        // 15%: generous slack over "essentially first" — this is about catching gross
+        // starvation (the center landing at 50-90%+ of total progress), not chasing an exact
+        // number.
+        const bool prompt = centerLit && progressAtCenterLit < 0.15;
+        VX_INFO("spawn priority: center column lit+meshed after frame %d, at %.0f%% of total "
+                "expected progress (want lit, and < 15%%) -> %s",
+                frames, 100.0 * std::max(progressAtCenterLit, 0.0),
+                (centerLit && prompt) ? "PASS" : "FAIL");
+        if (!(centerLit && prompt))
+            return 1;
+        camera.position = {16.0, 110.0, 16.0};
+        world.radius = 10;
+        drain();
+    }
+
     // Switching worlds is what "new world" and "load world" both do, and it swaps the seed,
     // the save directory and every resident chunk at once. Assert it actually lands on
     // different terrain and comes back fully lit, because a half-swapped world would look
@@ -410,6 +480,7 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
     const auto restreamStart = std::chrono::steady_clock::now();
     const std::uint64_t allocsBefore = vx::heapAllocCount();
     const std::uint64_t forcedBefore = rc.shadows.forcedCount();
+    light.resetSeedPhaseNanos();
     double worstMs = 0.0;
     int frames = 0;
     for (; frames < 20000; ++frames) {
@@ -498,6 +569,22 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                 tot.seedMs + tot.propagateMs, wall,
                 100.0 * (tot.seedMs + tot.propagateMs) / std::max(wall, 1e-6),
                 (tot.seedMs + tot.propagateMs) / n);
+        // SPEC #3: is column-seeding's cost actually in descent (the docs' "5-10ms/column,
+        // needs an analytical fast path for coarse columns" claim), or somewhere the existing
+        // uniform-air bulk-skip + stop-at-first-blocker optimizations already made cheap?
+        // Spread is where a CAVE column's cost lives (every mouth/overhang is a boundary case
+        // pure heightmap terrain never hits) — if that dominates, an analytical sky-light
+        // shortcut for coarse columns targets the wrong phase, since detailed/cave columns
+        // can't use it at all.
+        const auto sp = light.seedPhaseNanos();
+        const double descentMs = double(sp.descent) / 1e6, spreadMs = double(sp.spread) / 1e6,
+                     emissiveMs = double(sp.emissive) / 1e6;
+        VX_INFO("stress: seed phase ms — descent %.1f, spread %.1f, emissive %.1f (%.0f%% / "
+                "%.0f%% / %.0f%% of seed total)",
+                descentMs, spreadMs, emissiveMs,
+                100.0 * descentMs / std::max(descentMs + spreadMs + emissiveMs, 1e-6),
+                100.0 * spreadMs / std::max(descentMs + spreadMs + emissiveMs, 1e-6),
+                100.0 * emissiveMs / std::max(descentMs + spreadMs + emissiveMs, 1e-6));
         // Worker-side cost and arena health after the worst churn the engine ever sees.
         // The arena line is the reason there is no defrag scheduler: if the biggest free
         // block still holds nearly all the free space after this, there is nothing to
