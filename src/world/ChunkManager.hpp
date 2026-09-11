@@ -212,6 +212,18 @@ public:
     // force the next stats() to do the full-chunk scan (used before logSummary)
     void refreshStats() const { m_scanAge = 999; }
 
+    // For --smoke, specifically a live radius change (SPEC #57): once busy() is false
+    // (settled — every queue drained, mesh scan clean), every resident chunk's LOD/detail
+    // state should agree with what its distance and the CURRENT radius call for. Any of
+    // these being nonzero after a full settle is a real bug, not a mid-stream snapshot —
+    // see auditLod()'s own comment for why each one specifically means that.
+    struct LodAudit {
+        int stranded = 0;          // resident past the eviction threshold — should be gone
+        int lodMismatch = 0;       // Meshed at an LOD other than what desired-now calls for
+        int coarseInDetailBand = 0; // wants detail (self-heal condition true) but never got it
+    };
+    LodAudit auditLod() const;
+
     int radius = 16; // render radius in chunks, horizontal
 
 private:

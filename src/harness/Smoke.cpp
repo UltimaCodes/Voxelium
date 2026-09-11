@@ -242,6 +242,47 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         drain();
     }
 
+    // Live radius change (owner report #57: "streaming breaks when render distance
+    // changes"). Not camera movement — a change to `radius` itself. lodForDist2()'s bands
+    // SCALE WITH radius, so every resident chunk's desired LOD shifts, not just the
+    // streaming ring at the edge; rescan() is supposed to catch this (its own comment:
+    // "moved: LOD bands shifted, new chunks incoming") by marking the mesh scan dirty, which
+    // re-evaluates every resident chunk fresh against the new radius next pass. Reading the
+    // code never turned up a bug in that path — this checks it directly instead of trusting
+    // the reasoning, per SPEC #57's own "not directly reproduced".
+    {
+        const double rxz = -3000.0;
+        const double rsurf = world.generator().surfaceHeight(int(rxz), int(rxz));
+        camera.position = {rxz, rsurf + 3.0, rxz};
+        world.radius = 10;
+        drain();
+        world.radius = 20; // grow: e.g. a Low -> Ultra preset switch mid-game
+        drain();
+        const auto grown = world.auditLod();
+        const bool growOk =
+            grown.stranded == 0 && grown.lodMismatch == 0 && grown.coarseInDetailBand == 0;
+        VX_INFO("radius change: grew 10 -> 20, stranded %d, LOD mismatch %d, coarse-in-detail "
+                "%d (want 0/0/0) -> %s",
+                grown.stranded, grown.lodMismatch, grown.coarseInDetailBand,
+                growOk ? "PASS" : "FAIL");
+        if (!growOk)
+            return 1;
+        world.radius = 8; // shrink past the original radius: stresses eviction hardest
+        drain();
+        const auto shrunk = world.auditLod();
+        const bool shrinkOk = shrunk.stranded == 0 && shrunk.lodMismatch == 0 &&
+                              shrunk.coarseInDetailBand == 0;
+        VX_INFO("radius change: shrank 20 -> 8, stranded %d, LOD mismatch %d, coarse-in-detail "
+                "%d (want 0/0/0) -> %s",
+                shrunk.stranded, shrunk.lodMismatch, shrunk.coarseInDetailBand,
+                shrinkOk ? "PASS" : "FAIL");
+        if (!shrinkOk)
+            return 1;
+        camera.position = {16.0, 110.0, 16.0};
+        world.radius = 10;
+        drain();
+    }
+
     // Switching worlds is what "new world" and "load world" both do, and it swaps the seed,
     // the save directory and every resident chunk at once. Assert it actually lands on
     // different terrain and comes back fully lit, because a half-swapped world would look

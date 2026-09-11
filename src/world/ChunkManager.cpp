@@ -174,6 +174,37 @@ void ChunkManager::rescan(ChunkPos center) {
     });
 }
 
+ChunkManager::LodAudit ChunkManager::auditLod() const {
+    LodAudit a;
+    for (const auto& item : m_chunks) {
+        const ChunkPos pos = item.first;
+        const Entry& e = item.second;
+        // Matches rescan()'s own eviction threshold (dataR + 1 where dataR = radius + 1)
+        // exactly — anything past this should have been on the evict list and gone by now.
+        if (std::abs(pos.x - m_center.x) > radius + 2 || std::abs(pos.z - m_center.z) > radius + 2 ||
+            std::abs(pos.y - m_center.y) > kVerticalRadius + 1) {
+            ++a.stranded;
+            continue;
+        }
+        // Beyond `radius` itself is the buffer band the scan loop deliberately skips too
+        // (rescan()'s evict threshold is radius+2, the scan's is radius) — nothing to check
+        // for a chunk sitting in that gap on purpose.
+        if (std::abs(pos.x - m_center.x) > radius || std::abs(pos.z - m_center.z) > radius)
+            continue;
+        if (e.state != ChunkState::Meshed)
+            continue; // still in flight isn't a bug on its own; busy() should have caught it
+        const int desired = lodForDist2(horizontalDist2(pos, m_center), radius);
+        if (e.lod != desired)
+            ++a.lodMismatch;
+        // Exactly the self-heal condition in update() that queues a coarse->detailed regen
+        // (dirty is excluded there on purpose too — see #64 — an unsaved edit keeps a chunk
+        // coarse until it's saved, which is correct, not stuck).
+        if (desired < kCoarseLod && !e.detailed && !e.voxels->uniform() && !e.dirty)
+            ++a.coarseInDetailBand;
+    }
+    return a;
+}
+
 void ChunkManager::processEvictions(Renderer& renderer, JobSystem& jobs) {
     for (std::size_t i = 0; i < m_evictList.size();) {
         const auto it = m_chunks.find(m_evictList[i]);
