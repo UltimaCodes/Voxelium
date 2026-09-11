@@ -133,8 +133,14 @@ void SoundBank::load(const std::filesystem::path& dir, JobSystem* jobs) {
         std::condition_variable cv;
         std::size_t done = 0;
         for (const Pending& p : pending) {
-            jobs->submit([&, p] {
-                decodeOne(p);
+            // A pointer, not a copy: `pending` is never resized after the loop above and
+            // this function blocks below until every job has run, so every element outlives
+            // its job. Capturing `p` by value used to copy a std::filesystem::path into the
+            // closure, which JobSystem::Job's inline storage can't hold at all (it owns a
+            // string and needs a real destructor) — this is what let that requirement go
+            // unnoticed until Job's static_assert would have caught it here.
+            jobs->submit([&, pp = &p] {
+                decodeOne(*pp);
                 {
                     std::lock_guard<std::mutex> lk(m);
                     ++done;

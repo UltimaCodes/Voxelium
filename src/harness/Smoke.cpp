@@ -3,6 +3,7 @@
 #include "audio/Ambience.hpp"
 #include "audio/AudioEngine.hpp"
 #include "audio/PlayerSounds.hpp"
+#include "core/AllocTracker.hpp"
 #include "core/Bmp.hpp"
 #include "core/Log.hpp"
 #include "core/Paths.hpp"
@@ -366,6 +367,8 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
     camera.position.x += 512.0;
     world.resetPhasePeak();
     const auto restreamStart = std::chrono::steady_clock::now();
+    const std::uint64_t allocsBefore = vx::heapAllocCount();
+    const std::uint64_t forcedBefore = rc.shadows.forcedCount();
     double worstMs = 0.0;
     int frames = 0;
     for (; frames < 20000; ++frames) {
@@ -376,6 +379,13 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
             worstMs,
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
                 .count());
+        // Mirrors main.cpp's real per-frame call exactly (consumeDirty-gated invalidate),
+        // which the rest of this loop otherwise never exercises — world.update() alone
+        // never touches ShadowMap. Without this line the throttle below would be measuring
+        // nothing: consumeDirty() is what actually FIRES during a burst; forcedCount() is
+        // what proves the throttle catches it.
+        if (world.consumeDirty())
+            rc.shadows.invalidate();
         rc.renderer.endFrame();
         if (frames > 0 && !world.busy())
             break;
@@ -387,9 +397,47 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
                                                   restreamStart)
             .count();
+    // Every job used to cost one malloc on submit (JobSystem::Job now stores the closure
+    // inline instead of relying on std::function's own heap-allocated storage), AND the job
+    // queue itself used to cost roughly one more every few submits regardless of what it
+    // held (std::deque grows in fixed-size blocks sized for a small element — Job at its
+    // real size meant a new block every third push; measured 250 allocs/1000 push+pop
+    // cycles at 128 bytes vs 62 at std::function's own 32, confirmed via a queue holding
+    // plain byte blobs so element size was the only variable). Both are fixed and can regress
+    // back silently, which is what this number is for.
+    //
+    // What is left is NOT a queue problem: the return leg below re-streams the SAME radius
+    // through already-explored, already-cached ground and costs almost exactly the same
+    // per update as this fresh leg (see its own log line) — if the remainder were queue or
+    // cache-miss churn, revisiting known ground would be far cheaper. It is not, because a
+    // mesh is never disk-cached, only the voxels are: MeshResult copies each job's quad and
+    // water buffers into fresh, long-lived storage (ChunkManager.cpp, the upload-drain loop)
+    // because that CPU copy has to outlive the job and survive for the chunk's whole
+    // residency (arena rebuilds read it back). That is once-per-meshed-chunk, not per-frame,
+    // and it is genuine work, not waste — fixing it for real means a pooled/reusable buffer
+    // allocator for mesh output, which is a bigger and riskier change than this pass, so it
+    // is not attempted here. No hard gate on this number for that reason: it is diagnostic,
+    // not a pass/fail, the same as the phase and arena lines around it.
+    const std::uint64_t allocsDuring = vx::heapAllocCount() - allocsBefore;
     VX_INFO("stress: re-streamed after teleport in %.0f ms / %d updates, worst main-thread "
-            "cost %.2f ms",
-            restreamMs, frames, worstMs);
+            "cost %.2f ms, %llu heap alloc(s) (%.2f/update)",
+            restreamMs, frames, worstMs, (unsigned long long)allocsDuring,
+            double(allocsDuring) / double(std::max(frames, 1)));
+    // ShadowMap::invalidate() used to force a full 3-cascade redraw on every one of those
+    // `frames` updates — cascade caching (shadow -89%, Tier 1's biggest single win) provided
+    // ~zero benefit for as long as a burst like this one lasted, because "geometry changed
+    // somewhere" fired on nearly every update. The throttle inside invalidate() means the
+    // forced count should track wall-clock time (one per ~100ms), not update count — this is
+    // the one number in this whole group that is actually asserted, because "far fewer
+    // forced redraws than updates, during a burst that mirrors main.cpp's real call site" is
+    // exactly the claim #66 makes and it is cheap to keep honest.
+    const std::uint64_t forcedDuring = rc.shadows.forcedCount() - forcedBefore;
+    const bool throttleOk = frames < 50 || forcedDuring < std::uint64_t(frames) / 4;
+    VX_INFO("stress: shadow invalidate throttle — %llu forced redraw(s) over %d updates "
+            "(want << updates) -> %s",
+            (unsigned long long)forcedDuring, frames, throttleOk ? "PASS" : "FAIL");
+    if (!throttleOk)
+        return 1;
     {
         const auto pk = world.phasePeak();
         VX_INFO("stress: worst phase ms — rescan %.2f, evict %.2f, seed %.2f, propagate "
@@ -429,6 +477,7 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
     camera.position.x -= 512.0;
     {
         const auto backStart = std::chrono::steady_clock::now();
+        const std::uint64_t backAllocsBefore = vx::heapAllocCount();
         int backFrames = 0;
         for (; backFrames < 20000; ++backFrames) {
             rc.renderer.beginFrame();
@@ -437,11 +486,22 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
             if (backFrames > 0 && !world.busy())
                 break;
         }
-        VX_INFO("stress: returned to origin in %.0f ms / %d updates",
+        // If the outbound leg's allocation rate is genuinely proportional to NEW content
+        // (fresh per-chunk mesh/gen output, which has to be allocated somewhere no matter
+        // how the job queue itself is built) rather than a queue-container leak, revisiting
+        // already-cached ground should cost far less per update — most of what streams back
+        // in here was resident a moment ago and takes the disk-cache path, not fresh
+        // generation. Not a hard PASS/FAIL: this is diagnostic, telling the outbound number
+        // apart from "still broken" vs "that's just what new content costs."
+        const std::uint64_t backAllocs = vx::heapAllocCount() - backAllocsBefore;
+        VX_INFO("stress: returned to origin in %.0f ms / %d updates, %llu heap alloc(s) "
+                "(%.2f/update vs %.2f/update outbound)",
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
                                                           backStart)
                     .count(),
-                backFrames);
+                backFrames, (unsigned long long)backAllocs,
+                double(backAllocs) / double(std::max(backFrames, 1)),
+                double(allocsDuring) / double(std::max(frames, 1)));
     }
     drain();
 

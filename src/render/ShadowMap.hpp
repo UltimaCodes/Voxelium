@@ -2,6 +2,9 @@
 
 #include <glm/glm.hpp>
 
+#include <chrono>
+#include <cstdint>
+
 namespace vx {
 
 class Renderer;
@@ -44,9 +47,21 @@ public:
     // chunks aren't drawn into the tight near cascades.
     void render(Renderer& renderer, const glm::ivec3& cameraChunk, const glm::vec3& cameraFrac);
 
-    // The world changed (block edit, chunks meshed/unloaded): cached cascades hold stale
-    // geometry, so force every one to redraw next frame.
-    void invalidate() { m_forceAll = true; }
+    // The world changed (block edit, chunks meshed/unloaded): cached cascades may hold stale
+    // geometry. Rate-limited internally to a floor of kMinForceInterval between forced
+    // redraws — see the .cpp for why a blanket "redraw everything, right now" here is exactly
+    // the wrong default while the world is streaming hard.
+    void invalidate();
+
+    // How many cascade redraws render() has actually issued, ever. Not per-frame — callers
+    // that want a rate sample it at two points and diff, the same pattern SoundBank's
+    // decodeCount() uses and for the same reason: a counter that resets itself is much
+    // easier to accidentally make unfalsifiable than one that only ever climbs.
+    std::uint64_t redrawCount() const { return m_redraws; }
+    // How many invalidate() calls actually set m_forceAll, as opposed to being throttled
+    // away. Exists so the throttle itself is directly testable without a GL context —
+    // invalidate() touches no GL state, only this and a clock.
+    std::uint64_t forcedCount() const { return m_forcedCount; }
 
     const glm::mat4* cascadeVp() const { return m_vp; }
     glm::vec3 cascadeTexelWorld() const { return m_texelWorld; }
@@ -82,6 +97,12 @@ private:
     float m_radius[kCascades] = {};
     bool m_dirty[kCascades] = {true, true, true};
     bool m_forceAll = true;
+
+    // invalidate()'s throttle. A point in the past so the very first call always fires.
+    static constexpr std::chrono::milliseconds kMinForceInterval{100};
+    std::chrono::steady_clock::time_point m_lastForcedRedraw{};
+    std::uint64_t m_redraws = 0;
+    std::uint64_t m_forcedCount = 0;
 };
 
 } // namespace vx

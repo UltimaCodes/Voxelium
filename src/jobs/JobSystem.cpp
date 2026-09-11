@@ -19,7 +19,7 @@ JobSystem::~JobSystem() {
     // jthread joins in its destructor
 }
 
-void JobSystem::submit(std::function<void()> job) {
+void JobSystem::submit(Job job) {
     {
         std::lock_guard lock(m_mutex);
         m_queue.push_back(std::move(job));
@@ -29,19 +29,26 @@ void JobSystem::submit(std::function<void()> job) {
 
 int JobSystem::queued() const {
     std::lock_guard lock(m_mutex);
-    return int(m_queue.size());
+    return int(m_queue.size() - m_head);
 }
 
 void JobSystem::workerLoop(std::stop_token stop) {
     while (true) {
-        std::function<void()> job;
-        {
-            std::unique_lock lock(m_mutex);
-            if (!m_cv.wait(lock, stop, [this] { return !m_queue.empty(); }))
-                return; // stop requested
-            job = std::move(m_queue.front());
-            m_queue.pop_front();
+        std::unique_lock lock(m_mutex);
+        if (!m_cv.wait(lock, stop, [this] { return m_head < m_queue.size(); }))
+            return; // stop requested
+        Job job = std::move(m_queue[m_head]);
+        ++m_head;
+        // Compact once consumed entries are past a floor AND the majority of the buffer —
+        // the floor keeps a small, bursty queue from compacting on nearly every pop; the
+        // ratio bounds how far m_head (and so m_queue) can grow over a long session. Erasing
+        // a trivially-copyable prefix is a memmove of whatever is left, not a reallocation,
+        // so this never costs the allocation it exists to avoid.
+        if (m_head > 64 && m_head * 2 > m_queue.size()) {
+            m_queue.erase(m_queue.begin(), m_queue.begin() + std::ptrdiff_t(m_head));
+            m_head = 0;
         }
+        lock.unlock(); // never hold the mutex while a worker actually runs the job
         job();
     }
 }

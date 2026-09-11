@@ -58,6 +58,38 @@ void ShadowMap::shutdown() {
     glDeleteSamplers(1, &m_rawSampler);
 }
 
+void ShadowMap::invalidate() {
+    // Cascades 1 and 2 only ever check their OWN anchor drift; nothing about "new geometry
+    // appeared under an anchor that hasn't moved" reaches them any other way, so something
+    // has to force a redraw when a chunk streams in or an edit lands, or a chunk that pops
+    // into an already-cached cascade would just never cast a shadow. That part is real and
+    // this still does it.
+    //
+    // What was wrong is firing it unconditionally on every call. Streaming submits a mesh
+    // upload most frames it's active, so a heavy burst called this every single frame for as
+    // long as it lasted — and cascade caching exists specifically to avoid redrawing
+    // cascades 1 and 2 every frame, which is 96% of all shadow draws (see the cache comment
+    // above). During exactly the frames where the main thread is already paying the
+    // heaviest cost this engine has (light seeding, see INFO.md #63), the GPU was ALSO
+    // paying full uncached shadow cost on top of it, because the one thing that should have
+    // stayed cheap kept invalidating itself.
+    //
+    // A shadow that lags the geometry it lights by up to one interval during active
+    // streaming is not something a player can see — the mesh itself is still arriving
+    // across those same frames — and the drift-slack mechanism above already spends exactly
+    // this trade (staleness for redraw count) for camera movement. This is the same trade,
+    // triggered by new geometry instead. Applies to edits too, not just streaming: a placed
+    // block's own colour and shape still update same-frame (that path does not go through
+    // this), only its cast shadow can lag by up to the interval, which reads as nothing at
+    // normal edit rates.
+    const auto now = std::chrono::steady_clock::now();
+    if (now - m_lastForcedRedraw < kMinForceInterval)
+        return;
+    m_lastForcedRedraw = now;
+    m_forceAll = true;
+    ++m_forcedCount;
+}
+
 void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& forward,
                        const glm::vec3& sunL, float fovYRad, float aspect) {
     // light basis: looking along -sunL
@@ -131,6 +163,7 @@ void ShadowMap::render(Renderer& renderer, const glm::ivec3& cameraChunk,
         if (!m_dirty[c])
             continue; // still anchored where it was drawn: the depth map is still valid
         m_dirty[c] = false;
+        ++m_redraws;
         // cull to this cascade's ortho box: the near cascade draws a handful of chunks
         // instead of the whole world. cave culling stays off here — a chunk hidden from
         // the camera can still cast a shadow the camera sees
