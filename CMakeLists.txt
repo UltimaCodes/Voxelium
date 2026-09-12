@@ -14,6 +14,7 @@ add_executable(voxelium
     src/main.cpp
     src/core/AllocTracker.cpp
     src/core/Bmp.cpp
+    src/core/CrashHandler.cpp
     src/core/Log.cpp
     src/core/Paths.cpp
     src/core/Settings.cpp
@@ -56,6 +57,11 @@ add_executable(voxelium
 
 target_include_directories(voxelium PRIVATE src)
 target_link_libraries(voxelium PRIVATE glad glfw glm::glm imgui unordered_dense::unordered_dense FastNoise stb miniaudio)
+if(WIN32)
+    # CrashHandler.cpp's MiniDumpWriteDump — part of the platform SDK on MSVC, a separate
+    # import lib to name explicitly on MinGW.
+    target_link_libraries(voxelium PRIVATE dbghelp)
+endif()
 
 # GLFW must not drag in the system GL headers; glad owns all GL declarations.
 # GLM depth range 0..1 to match glClipControl(GL_ZERO_TO_ONE) — we run reversed-Z.

@@ -2,6 +2,8 @@
 #include "audio/AudioEngine.hpp"
 #include "audio/PlayerSounds.hpp"
 #include "core/AllocTracker.hpp"
+#include "core/Bmp.hpp"
+#include "core/CrashHandler.hpp"
 #include "core/Log.hpp"
 #include "core/Paths.hpp"
 #include "core/Settings.hpp"
@@ -55,6 +57,7 @@ using vx::runSmokeTest;
 using vx::runTour;
 
 int main(int argc, char** argv) {
+    vx::installCrashHandler();
     bool smoke = false;
     bool bench = false;
     int benchRadius = 16;
@@ -78,6 +81,13 @@ int main(int argc, char** argv) {
             bench = true;
             if (i + 1 < argc && argv[i + 1][0] != '-')
                 benchRadius = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--crashtest") == 0) {
+            // Verifies the crash handler actually writes a dump, rather than trusting that a
+            // clean compile means a correct SetUnhandledExceptionFilter/MiniDumpWriteDump
+            // call — the whole point of this file existing is #0's own rule against exactly
+            // that kind of unverified claim.
+            volatile int* p = nullptr;
+            *p = 1;
         }
     }
 
@@ -115,6 +125,7 @@ int main(int argc, char** argv) {
         VX_ERROR("could not locate assets/ directory");
         return 1;
     }
+    window->setIcon(assets);
     // Settings are read BEFORE any shader is built. The quality tier is injected into the
     // shader source, so the compile depends on it — reading settings afterwards would mean
     // building the whole set at the default tier and then throwing it away.
@@ -460,6 +471,8 @@ int main(int argc, char** argv) {
     bool loadLogged = false;
     bool everBusy = false; // don't log the "loaded" summary before streaming even starts
     bool f4Held = false;
+    bool f6Held = false;
+    bool takeScreenshot = false;
     bool hotbarOpen = false;
     bool escHeld = false;
     bool settingsOpen = false;
@@ -528,6 +541,10 @@ int main(int argc, char** argv) {
             }
         }
         f5Held = f5;
+        const bool f6 = window->keyDown(GLFW_KEY_F6);
+        if (f6 && !f6Held)
+            takeScreenshot = true; // consumed after this frame renders, see below endFrame()
+        f6Held = f6;
         const bool f4 = window->keyDown(GLFW_KEY_F4);
         if (f4 && !f4Held)
             hotbarOpen = !hotbarOpen;
@@ -945,6 +962,37 @@ int main(int argc, char** argv) {
         if (quitRequested)
             window->requestClose();
         renderer.endFrame();
+
+        // Read back before the swap: the just-rendered frame is still the front-buffer
+        // target's contents at this point (single-buffered read of what endFrame() drew),
+        // and reading after the swap would capture whichever frame the driver happens to
+        // present next instead of this one.
+        if (takeScreenshot) {
+            takeScreenshot = false;
+            int fbw = 0, fbh = 0;
+            window->framebufferSize(fbw, fbh);
+            if (fbw > 0 && fbh > 0) {
+                std::error_code ec;
+                std::filesystem::create_directories("screenshots", ec);
+                std::vector<std::uint8_t> pixels(std::size_t(fbw) * std::size_t(fbh) * 3);
+                glReadPixels(0, 0, fbw, fbh, GL_BGR, GL_UNSIGNED_BYTE, pixels.data());
+                // Seconds-since-epoch, not a per-session counter: a counter restarting at 1
+                // every launch collides with an earlier session's screenshots the moment you
+                // play twice in one day. One screenshot per second is not a real limit for a
+                // manual keypress.
+                const auto epochSec =
+                    std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count();
+                char name[64];
+                std::snprintf(name, sizeof(name), "screenshots/screenshot_%lld.bmp",
+                              (long long)epochSec);
+                if (vx::writeBmp24(name, fbw, fbh, pixels))
+                    VX_INFO("screenshot saved: %s", name);
+                else
+                    VX_ERROR("screenshot failed to write: %s", name);
+            }
+        }
 
         window->swapBuffers();
     }

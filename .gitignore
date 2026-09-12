@@ -1,6 +1,9 @@
 build/
 out/
+dist/
 saves/
+screenshots/
+crashes/
 vxsave_smoke/
 .vs/
 .cache/

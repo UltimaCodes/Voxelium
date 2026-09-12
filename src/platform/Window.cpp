@@ -4,6 +4,9 @@
 
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
+#include <stb_image.h> // implementation compiled once in BlockTextures.cpp
+
+#include <array>
 
 namespace vx {
 
@@ -76,6 +79,30 @@ void Window::framebufferSize(int& width, int& height) const {
 void Window::setTitle(const char* title) { glfwSetWindowTitle(m_window, title); }
 
 void Window::setVsync(bool on) { glfwSwapInterval(on ? 1 : 0); }
+
+void Window::setIcon(const std::filesystem::path& assetsDir) {
+    static constexpr int kSizes[] = {16, 32, 48, 256};
+    std::array<GLFWimage, std::size(kSizes)> images{};
+    std::array<stbi_uc*, std::size(kSizes)> pixels{};
+    int loaded = 0;
+    for (std::size_t i = 0; i < std::size(kSizes); ++i) {
+        const auto path = assetsDir / ("icon_" + std::to_string(kSizes[i]) + ".png");
+        int w = 0, h = 0, comp = 0;
+        pixels[i] = stbi_load(path.string().c_str(), &w, &h, &comp, 4);
+        if (pixels[i]) {
+            images[loaded] = {w, h, pixels[i]};
+            ++loaded;
+        }
+    }
+    if (loaded > 0)
+        glfwSetWindowIcon(m_window, loaded, images.data());
+    else
+        VX_ERROR("window icon: no icon_*.png found under %s (cosmetic only, continuing)",
+                 assetsDir.string().c_str());
+    for (stbi_uc* p : pixels)
+        if (p)
+            stbi_image_free(p);
+}
 
 bool Window::focused() const {
     return m_window && glfwGetWindowAttrib(m_window, GLFW_FOCUSED) != 0;
