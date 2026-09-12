@@ -339,7 +339,7 @@ void main() {
     // time and cannot be separated here, so the corner term is softened for the ambient
     // path rather than removed: at worst it takes 45% instead of everything. `direct`
     // keeps the full term — a face the sun does not reach should still go dark.
-    float ambShade = mix(0.55, 1.0, vShade);
+    float ambShade = mix(0.75, 1.0, vShade);
     // direct's OWN occlusion question — is the sun blocked here — is already answered by
     // `shadow` above, from the actual cascade, not a 4-voxel corner guess. Multiplying by
     // the full vShade on top of that double-asks the same question with a much coarser
@@ -352,7 +352,7 @@ void main() {
     // shadow-map behaviour. Softened the same shape as ambShade, just less aggressively,
     // since `shadow` is already doing the real work here and this is only damping residual
     // corner noise, not the thing that makes a genuine notch look recessed.
-    float directShade = mix(0.5, 1.0, vShade);
+    float directShade = mix(0.7, 1.0, vShade);
     outColor = vec4(albedo * kShade[vDir] *
                             (direct * directShade + ambient * ambShade + torch * ownShade) +
                         emission + transmit,
