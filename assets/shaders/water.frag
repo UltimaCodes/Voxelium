@@ -144,15 +144,26 @@ float waterShadow(vec3 pos, vec3 N) {
     if (d >= uCascadeSplit.z)
         return 1.0;
     int c = d < uCascadeSplit.x ? 0 : (d < uCascadeSplit.y ? 1 : 2);
-    vec4 sc = uCascadeVp[c] * vec4(pos + N * uCascadeTexel[c] * 1.5, 1.0);
+    // Water's normal is near-vertical (up, plus a little wave perturbation), so a low,
+    // near-horizontal sun grazes it exactly the way it grazes a steep terrain riser -- this
+    // had zero compensation for that until now, unlike chunk.frag's sampleCascade() (#68),
+    // which is the other half of why the owner's "hard shadows" report showed up on water too.
+    float ndl = max(dot(N, uSunL), 0.0);
+    float slope = 1.0 / max(ndl, 0.2);
+    vec4 sc = uCascadeVp[c] * vec4(pos + N * uCascadeTexel[c] * 1.5 * min(slope, 3.0), 1.0);
     vec2 uv = sc.xy * 0.5 + 0.5;
-    float z = sc.z - 0.0016;
-    // 4 taps: water is a broad flat surface, so a single tap aliases along the cascade grid
+    float z = sc.z - 0.0016 * min(slope, 2.5);
+    // 4 taps, rotated per pixel for the same reason chunk.frag's sampleCascade() now rotates
+    // its 16: fixed corner taps sample identical offsets everywhere, which aliases against
+    // the shadow map's own voxel-scale depth edges into a hard, coherent patch instead of
+    // noise. Rotating breaks that spatial correlation.
+    float rotA = fract(sin(dot(gl_FragCoord.xy, vec2(35.17, 91.73))) * 27321.58) * 6.2831853;
+    mat2 rot = mat2(cos(rotA), sin(rotA), -sin(rotA), cos(rotA));
     float t = 1.5 / VX_SHADOW_RES;
-    float sh = 0.25 * (texture(uShadowMap, vec4(uv + vec2(t, t), float(c), z)) +
-                       texture(uShadowMap, vec4(uv + vec2(-t, t), float(c), z)) +
-                       texture(uShadowMap, vec4(uv + vec2(t, -t), float(c), z)) +
-                       texture(uShadowMap, vec4(uv + vec2(-t, -t), float(c), z)));
+    float sh = 0.25 * (texture(uShadowMap, vec4(uv + rot * vec2(t, t), float(c), z)) +
+                       texture(uShadowMap, vec4(uv + rot * vec2(-t, t), float(c), z)) +
+                       texture(uShadowMap, vec4(uv + rot * vec2(t, -t), float(c), z)) +
+                       texture(uShadowMap, vec4(uv + rot * vec2(-t, -t), float(c), z)));
     return mix(sh, 1.0, smoothstep(uCascadeSplit.z * 0.9, uCascadeSplit.z, d));
 }
 

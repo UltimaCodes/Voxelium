@@ -102,6 +102,27 @@ float sampleCascade(vec3 pos, vec3 N, int c) {
     float ndl = max(dot(N, uSunL), 0.0);
     float slope = 1.0 / max(ndl, 0.2);
 
+    // Owner report: hard black patches on terrain, water AND foliage, present only in the
+    // day -- i.e. it scales with the direct-light shadow term specifically, not ambient (that
+    // was #58, a different bug, already fixed). Root cause: every one of kPoisson's 16 offsets
+    // is IDENTICAL for every pixel on screen, both here and in the PCF loop below. Wherever
+    // that fixed pattern straddles a voxel-scale edge in the shadow depth map, a whole patch
+    // of neighbouring pixels gets the same wrong blocker-found/not-found answer together --
+    // that reads as a hard, blocky dark shape, not the soft penumbra PCSS is supposed to
+    // produce, and it is worst exactly where this session's tour capture found it: complex
+    // close-range self-shadowing (terraces, foliage interiors). Rotating the disk per pixel
+    // breaks the spatial correlation -- neighbouring pixels now sample different actual
+    // offsets for "the same" Poisson index, so the same misalignment cannot land on a whole
+    // patch at once, only scattered individual texels. That turns it into fine dither instead
+    // of a coherent shape, exactly the trick `ssgi.frag`'s kernel already uses (its own
+    // comment: "the kernel rotates per frame so TAA integrates the noise into a smooth
+    // result") -- this engine already has TAA (`taa.frag`, ~10 frames of accumulation), which
+    // is precisely the infrastructure that resolves per-pixel noise like this into something
+    // smooth over a couple of frames of real gameplay, even though a single static capture
+    // (as used to verify this) still shows it as fine dither rather than fully resolved.
+    float rotA = fract(sin(dot(gl_FragCoord.xy, vec2(35.17, 91.73))) * 27321.58) * 6.2831853;
+    mat2 rot = mat2(cos(rotA), sin(rotA), -sin(rotA), cos(rotA));
+
     // normal-offset bias, in cascade-texel units so it means the same thing at every
     // distance, now ALSO scaled by slope so a grazing face is pushed further along its own
     // normal. Clamped (3x, not unbounded) so this cannot peter-pan a shadow off a thin
@@ -124,7 +145,7 @@ float sampleCascade(vec3 pos, vec3 N, int c) {
     const int kBlockerTaps = 16;
 #endif
     for (int i = 0; i < kBlockerTaps; ++i) {
-        float d = texture(uShadowDepth, vec3(uv + kPoisson[i] * searchR, float(c))).r;
+        float d = texture(uShadowDepth, vec3(uv + rot * kPoisson[i] * searchR, float(c))).r;
         if (d < receiver - depthBias) {
             blockerSum += d;
             ++blockerN;
@@ -140,7 +161,7 @@ float sampleCascade(vec3 pos, vec3 N, int c) {
     float depth = receiver - depthBias;
     float sum = 0.0;
     for (int i = 0; i < 16; ++i)
-        sum += texture(uShadowMap, vec4(uv + kPoisson[i] * radius, float(c), depth));
+        sum += texture(uShadowMap, vec4(uv + rot * kPoisson[i] * radius, float(c), depth));
     return sum / 16.0;
 }
 
