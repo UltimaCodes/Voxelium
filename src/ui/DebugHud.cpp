@@ -237,6 +237,92 @@ void DebugHud::loadingScreen(float progress, const char* title, const char* phas
     ImGui::PopStyleColor();
 }
 
+void DebugHud::titleScreen(TitleUi& ui) {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->Pos);
+    ImGui::SetNextWindowSize(vp->Size);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0)); // the gradient below is the bg
+    // Unlike loadingScreen, no NoInputs — this screen exists to take clicks and typing.
+    ImGui::Begin("##title", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    // Same sky-gradient background as the loading screen it hands off to, so the title
+    // screen doesn't read as a different, bolted-on app in front of the game.
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    const ImVec2 p0 = vp->Pos;
+    const ImVec2 p1 = ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y);
+    dl->AddRectFilledMultiColor(p0, p1, IM_COL32(18, 24, 38, 255), IM_COL32(18, 24, 38, 255),
+                                IM_COL32(38, 46, 58, 255), IM_COL32(38, 46, 58, 255));
+
+    const float cx = vp->Pos.x + vp->Size.x * 0.5f;
+    {
+        const char* title = "VOXELIUM";
+        const float scale = 3.2f;
+        ImFont* font = ImGui::GetFont();
+        const float fs = ImGui::GetFontSize() * scale;
+        float w = 0.0f;
+        for (const char* c = title; *c; ++c)
+            w += font->CalcTextSizeA(fs, FLT_MAX, 0.0f, c, c + 1).x + 4.0f;
+        float x = cx - w * 0.5f;
+        const float titleY = vp->Pos.y + vp->Size.y * 0.22f;
+        for (const char* c = title; *c; ++c) {
+            dl->AddText(nullptr, fs, ImVec2(x, titleY), IM_COL32(226, 232, 240, 255), c, c + 1);
+            x += font->CalcTextSizeA(fs, FLT_MAX, 0.0f, c, c + 1).x + 4.0f;
+        }
+    }
+
+    // One panel, centred, holding both "start something new" and "open something existing" —
+    // a player picks one or the other, never both, so there is no reason to split them across
+    // separate screens the way a bigger menu system might.
+    const float panelW = std::min(420.0f, vp->Size.x * 0.5f);
+    ImGui::SetNextWindowPos(ImVec2(cx, vp->Pos.y + vp->Size.y * 0.42f), ImGuiCond_Always,
+                            ImVec2(0.5f, 0.0f));
+    ImGui::SetNextWindowSize(ImVec2(panelW, 0.0f));
+    ImGui::Begin("##titlepanel", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    ImGui::TextDisabled("new world");
+    ImGui::SetNextItemWidth(-96.0f);
+    ImGui::InputTextWithHint("##seed", "seed (blank = random)", ui.seedText,
+                             sizeof(ui.seedText), ImGuiInputTextFlags_CharsDecimal);
+    ImGui::SameLine();
+    if (ImGui::Button("play", ImVec2(88.0f, 0.0f)))
+        ui.newWorldRequested = true;
+
+    if (!ui.saved.empty()) {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::TextDisabled("continue a saved world");
+        if (ImGui::BeginListBox("##titleworlds", ImVec2(-1.0f, 140.0f))) {
+            for (const WorldStore::Entry& w : ui.saved) {
+                char label[128];
+                std::snprintf(label, sizeof(label), "%s   seed %d   %zu KB", w.name.c_str(),
+                              w.seed, w.bytes / 1024);
+                if (ImGui::Selectable(label, ui.selected == w.name))
+                    ui.selected = w.name;
+            }
+            ImGui::EndListBox();
+        }
+        ImGui::BeginDisabled(ui.selected.empty());
+        if (ImGui::Button("load", ImVec2(88.0f, 0.0f)))
+            ui.loadRequested = true;
+        ImGui::EndDisabled();
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    if (ImGui::Button("quit", ImVec2(88.0f, 0.0f)))
+        ui.quitRequested = true;
+
+    ImGui::End();
+    ImGui::End();
+    ImGui::PopStyleColor();
+}
+
 void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, float& fovDeg,
                         FxToggles& fx, bool& quit, WorldUi& worlds) {
     if (!open)

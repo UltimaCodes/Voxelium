@@ -79,6 +79,24 @@ public:
 
     void settings(bool& open, bool& vsync, bool& caveCull, int& radius, float& fovDeg,
                   FxToggles& fx, bool& quit, WorldUi& worlds);
+
+    // Shown before any world exists, once at launch. Separate from WorldUi/settings() above:
+    // that panel always assumes a live world already exists (it can save/replace it), where
+    // this one is choosing what to create or open in the first place, and it is the only
+    // place a SPECIFIC seed can be entered at all — the in-game "new world" button has never
+    // taken one, it only ever rolls a random one.
+    struct TitleUi {
+        char seedText[32] = ""; // blank = random, entered here or nowhere
+        bool newWorldRequested = false;
+        bool loadRequested = false;
+        bool quitRequested = false;
+        std::string selected;
+        std::vector<WorldStore::Entry> saved; // filled by the caller each frame
+    };
+    // Caller drives its own frame loop (poll/clear/swap) until one of the UI's *Requested
+    // flags comes back true; this only draws the ImGui content for one frame.
+    void titleScreen(TitleUi& ui);
+
     void render();
 
     void toggle() { m_visible = !m_visible; }

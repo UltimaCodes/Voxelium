@@ -223,27 +223,76 @@ int main(int argc, char** argv) {
     RenderContext rc{renderer,   shadowMap,    postfx,   overlay,  &particles,
                      &weather,   drawProgram,  waterProgram, blockTex};
 
+    vx::DebugHud hud;
+    if (!hud.init(window->handle()))
+        return 1;
+    window->hookScroll();
+
     // isolate the smoke test's save data so repeated runs start clean and can't touch a
     // real world save
     vx::WorldStore worldStore("saves");
     std::filesystem::path saveDir = worldStore.liveDir();
-    // Every launch is a new world. The live one is scratch — keeping it means saving it
-    // under a name from the ESC menu, which is what makes "new seed each time" safe.
+    // Every launch is a new world unless the title screen below loads one. The live one is
+    // scratch either way — keeping it means saving it under a name from the ESC menu, which
+    // is what makes "new seed each time" safe.
     int worldSeed = 20260721;
     if (smoke || bench || tour) {
         // The harnesses assert against specific terrain (cave counts, ore counts, the glow
-        // room, bench camera heights), so they pin the seed. Only the live game rolls one.
+        // room, bench camera heights), so they pin the seed and never see the title screen —
+        // a human has to be there to click it, which none of these runs have.
         saveDir = smoke ? smokeOut.parent_path() / "vxsave_smoke" : saveDir;
         if (smoke) {
             std::error_code ec;
             std::filesystem::remove_all(saveDir, ec);
         }
     } else {
-        worldSeed = int(std::chrono::steady_clock::now().time_since_epoch().count() ^
-                        std::chrono::system_clock::now().time_since_epoch().count()) &
-                    0x7FFFFFFF;
-        worldStore.clearLive();
-        VX_INFO("world seed %d (save it from the ESC menu to keep it)", worldSeed);
+        // Title screen: the only place a specific seed can be typed at all (the in-game
+        // "new world" button has never taken one, only ever rolled a random one) and the
+        // first thing shown, rather than always dropping straight into a fresh random world
+        // the way every earlier launch did.
+        vx::DebugHud::TitleUi title;
+        title.saved = worldStore.list();
+        bool loaded = false;
+        while (!window->shouldClose()) {
+            window->pollEvents();
+            hud.beginFrame();
+            hud.titleScreen(title);
+            int fbw = 0, fbh = 0;
+            window->framebufferSize(fbw, fbh);
+            if (fbw > 0 && fbh > 0) {
+                glViewport(0, 0, fbw, fbh);
+                glClearColor(0.07f, 0.09f, 0.14f, 1.0f);
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            }
+            hud.render();
+            window->swapBuffers();
+            if (title.quitRequested) {
+                hud.shutdown();
+                return 0;
+            }
+            if (title.newWorldRequested) {
+                worldSeed = title.seedText[0] ? std::atoi(title.seedText)
+                                              : int(std::chrono::steady_clock::now()
+                                                        .time_since_epoch()
+                                                        .count() ^
+                                                    std::chrono::system_clock::now()
+                                                        .time_since_epoch()
+                                                        .count()) &
+                                                    0x7FFFFFFF;
+                worldStore.clearLive();
+                break;
+            }
+            if (title.loadRequested && worldStore.load(title.selected, worldSeed)) {
+                loaded = true;
+                break;
+            }
+            title.loadRequested = false; // load() failed (deleted mid-screen?) — stay put
+        }
+        if (window->shouldClose())
+            return 0;
+        VX_INFO(loaded ? "world loaded, seed %d" : "world seed %d (save it from the ESC "
+                                                    "menu to keep it)",
+                worldSeed);
     }
 
     // declaration order matters: jobs is destroyed first, joining all workers, so no
@@ -280,11 +329,6 @@ int main(int argc, char** argv) {
         world->radius = savedRadius;
         camera.fovYDeg = savedFov;
     }
-
-    vx::DebugHud hud;
-    if (!hud.init(window->handle()))
-        return 1;
-    window->hookScroll();
 
     if (tour) {
         const int rcT = runTour(rc, *world, *jobs, *light, camera, *window, tourRadius,
