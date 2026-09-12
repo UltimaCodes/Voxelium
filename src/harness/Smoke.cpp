@@ -63,8 +63,8 @@ bool runMesherOracle() {
         benchBestMs(50, [&] { naive = vx::meshNaive(*chunk, naiveVerts); });
 
     auto mesher = std::make_unique<vx::GreedyMesher>();
-    std::vector<std::uint64_t> quads;
-    std::vector<std::uint64_t> water;
+    std::vector<vx::PackedQuad> quads;
+    std::vector<vx::PackedQuad> water;
     vx::GreedyStats greedy;
     const double greedyBest =
         benchBestMs(50, [&] { greedy = mesher->mesh(*chunk, nullptr, quads, water); });
@@ -410,9 +410,9 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         // must still be warm out at its falloff - red reaching further than blue. A
         // monochrome engine would report all three equal here.
         {
-            const std::uint16_t v = light.lightAt({16, 46, 16});
+            const std::uint32_t v = light.lightAt({16, 46, 16});
             const int r = vx::light::red(v), g = vx::light::green(v), b = vx::light::blue(v);
-            const std::uint16_t far = light.lightAt({16, 48, 19});
+            const std::uint32_t far = light.lightAt({16, 48, 19});
             const int fr = vx::light::red(far), fb = vx::light::blue(far);
             const bool tinted = r > g && g > b && fr > fb;
             VX_INFO("light: glow colour rgb %d/%d/%d, at falloff r%d b%d -> %s", r, g, b, fr,
@@ -428,23 +428,23 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
             const int lx = 40, lz = 40;
             const int ly = world.generator().surfaceHeight(lx, lz) + 3;
             world.setBlock(rc.renderer, light, {lx, ly, lz}, vx::BlockId(vx::blocks::LampFirst + 8));
-            const std::uint16_t bv = light.lightAt({lx, ly + 1, lz});
+            const std::uint32_t bv = light.lightAt({lx, ly + 1, lz});
             const int br = vx::light::red(bv), bb = vx::light::blue(bv);
             world.setBlock(rc.renderer, light, {lx, ly, lz}, vx::BlockId(vx::blocks::LampFirst + 4));
-            const std::uint16_t gv = light.lightAt({lx, ly + 1, lz});
+            const std::uint32_t gv = light.lightAt({lx, ly + 1, lz});
             const int gg = vx::light::green(gv), gbl = vx::light::blue(gv);
             // White is its own swatch, and it is the one that used to be unreachable: a
             // wheel of saturated hues cannot express it, so picking white gave you whatever
             // vivid colour happened to be nearest. All three channels must come out equal.
             world.setBlock(rc.renderer, light, {lx, ly, lz},
                            vx::BlockId(vx::blocks::LampFirst + vx::blocks::kLampCount - 1));
-            const std::uint16_t wv = light.lightAt({lx, ly + 1, lz});
+            const std::uint32_t wv = light.lightAt({lx, ly + 1, lz});
             const int wr = vx::light::red(wv), wg = vx::light::green(wv),
                       wb = vx::light::blue(wv);
             const bool whiteOk = wr >= 13 && wr == wg && wg == wb;
             // and removing it has to take the colour with it, through the removal BFS
             world.setBlock(rc.renderer, light, {lx, ly, lz}, vx::blocks::Air);
-            const std::uint16_t off = light.lightAt({lx, ly + 1, lz});
+            const std::uint32_t off = light.lightAt({lx, ly + 1, lz});
             const int rest = vx::light::red(off) + vx::light::green(off) + vx::light::blue(off);
             const bool lampOk =
                 bb > br && bb >= 13 && gg > gbl && gg >= 13 && whiteOk && rest == 0;

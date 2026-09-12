@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mesh/QuadFormat.hpp"
 #include "render/Frustum.hpp"
 
 #include <glm/glm.hpp>
@@ -54,7 +55,7 @@ public:
     // Before reporting failure it reclaims the deferred frees still sitting in the fence
     // ring, which is usually all it takes: a streaming burst frees plenty, it's just not
     // recyclable for 3 frames yet.
-    Range alloc(std::span<const std::uint64_t> quads);
+    Range alloc(std::span<const PackedQuad> quads);
     void free(Range range);
 
     // Emergency defrag: an allocation could not be satisfied. Same work as resetArena, but
@@ -98,11 +99,13 @@ public:
 
 private:
     void recycle(Range range);
-    Range tryAlloc(std::span<const std::uint64_t> quads, std::uint32_t need);
+    Range tryAlloc(std::span<const PackedQuad> quads, std::uint32_t need);
     bool reclaimPendingFrees(); // wait out the fence ring, recycle everything in it
 
-    // 48M quads = 384 MB. Sized for radius 32, which the render-distance slider offers and
-    // the settings clamp allows, so it is a supported setting and not an exotic one.
+    // 48M quads = 768 MB now that a quad is 16 bytes (uvec4, doubled from uvec2 to fit the
+    // wider per-channel light field — see mesh/QuadFormat.hpp). Sized for radius 32, which
+    // the render-distance slider offers and the settings clamp allows, so it is a supported
+    // setting and not an exotic one.
     // Measured settled (2026-08-07): radius 16 holds 5.29M quads, radius 32 holds 21.31M —
     // #27's vertical band roughly quadrupled the far case. At the old 24M that is 85% full
     // with the largest free block down to 1.38M, and a moving `--tour 32` failed to alloc
@@ -135,7 +138,7 @@ private:
     unsigned int m_readbackBuf = 0;
     unsigned int m_visBuf = 0;
 
-    std::uint64_t* m_arenaMap = nullptr;
+    PackedQuad* m_arenaMap = nullptr;
     void* m_metaMap = nullptr;
     void* m_waterMetaMap = nullptr;
     const std::uint32_t* m_readbackMap = nullptr;

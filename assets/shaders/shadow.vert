@@ -2,7 +2,7 @@
 
 // depth-only pass for the shadow cascades: same quad unpack as chunk.vert, nothing else.
 // keep the unpack in sync with mesh/QuadFormat.hpp.
-layout(std430, binding = 0) readonly buffer Quads { uvec2 quads[]; };
+layout(std430, binding = 0) readonly buffer Quads { uvec4 quads[]; };
 layout(std430, binding = 1) readonly buffer Offsets { vec4 uOffsets[]; };
 
 layout(location = 0) uniform mat4 uViewProj; // light view-proj, camera-relative space
@@ -27,7 +27,7 @@ const vec2 kCorner[6][4] = vec2[6][4](
 const float kBloat = 0.001;
 
 void main() {
-    uvec2 q = quads[gl_VertexID / 6];
+    uvec4 q = quads[gl_VertexID / 6];
     int corner = kTri[gl_VertexID % 6];
     vec3 origin = vec3(uvec3(q.x & 31u, (q.x >> 5) & 31u, (q.x >> 10) & 31u));
     float w = float(((q.x >> 15) & 31u) + 1u);

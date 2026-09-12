@@ -78,8 +78,12 @@ public:
         m_touchedSet.clear();
     }
 
-    // debug/verification
-    std::uint16_t lightAt(const glm::ivec3& wp) const;
+    // debug/verification. Packs getLevel()'s 0..15 step-count values (the BFS's own domain,
+    // unrelated to Chunk's wider stored representation - see Chunk.hpp's light namespace),
+    // so callers comparing against 0..15 (as every existing caller does) are unaffected by
+    // the storage widening. Returns uint32_t (Chunk's own light word type) purely because
+    // that's what light::pack now produces - the values packed are still 0..15 per channel.
+    std::uint32_t lightAt(const glm::ivec3& wp) const;
     int queueDepth() const {
         std::size_t n = 0;
         for (int c = 0; c < kChannels; ++c)

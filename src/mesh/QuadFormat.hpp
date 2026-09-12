@@ -7,41 +7,53 @@
 
 namespace vx {
 
-// One quad = one uint64 in the chunk quad SSBO. chunk.vert unpacks this exact layout —
-// keep the two in sync or enjoy the glitch art.
+// One quad = one uvec4 (128 bits, 4 uint32 words) in the chunk quad SSBO. chunk.vert /
+// water.vert unpack this exact layout — keep the three in sync or enjoy the glitch art.
 //
-//   lo 32: x:5 | y:5 | z:5 | (w-1):5 | (h-1):5 | dir:3 | shade high nibble:4
-//   hi 32: block:8 | shade low byte:8 | light:16 (r,g,b,sky nibbles)
+//   w0: x:5 | y:5 | z:5 | (w-1):5 | (h-1):5 | dir:3 | 4 spare bits
+//   w1: block:8 | shade:12 | 12 spare bits
+//   w2: light — the raw uint32 from namespace light in Chunk.hpp (r:8, g:8, b:8, sky:8),
+//       stored verbatim, no repacking
+//   w3: spare, reserved, always 0 for now
 //
-// The light field is the packed uint16 from namespace light in Chunk.hpp, unchanged.
-// Widening it from 8 to 16 bits cost nothing: block:12 addressed 4096 ids for the 12 that
-// exist, so 8 bits (256) pays for the other byte and the hi word is now exactly full.
+// This used to be a single uint64 with both words "exactly full" — no bit anywhere to
+// grow into. Chunk's light word widening from 4 to 8 bits/channel (16 -> 256 levels, the
+// real fix for visible light-falloff banding — see Chunk.hpp's light namespace) needed the
+// light field to grow from 16 to 32 bits, which nothing here had room for, so the quad
+// doubled from 64 to 128 bits instead of stealing bits from something else. Roughly
+// doubles per-quad GPU memory (the arena is now ~768 MB fully packed with the default
+// kArenaQuads budget); the alternative was moving the quad's own light copy to something
+// coarser than what BFS actually computes, which was rejected as fighting the point of the
+// widening rather than paying for it.
 //
-// SHADE is per-corner vertex brightness: 4 corners x 3 bits, 7 = full. It is the product
-// of ambient occlusion and the corner's own light relative to the quad's, which is how a
-// merged quad stops being one flat shade with a hard step to its neighbour. One combined
-// term rather than two because there is nowhere near enough room for two, and because
-// multiplying AO into vertex light is what the technique does anyway.
+// The extra room also means SHADE no longer spans a word boundary the way it used to (the
+// old layout's 4 spare bits weren't enough for 12, so it split 8/4 across the two 32-bit
+// halves and every shader had a two-instruction stitch to reassemble it). It fits whole in
+// w1 now — one clean unpack, no stitch, and the "no field crosses a word line" rule this
+// header always wanted holds again without an exception.
 //
-// It is the one field that spans both words: 12 bits do not fit the 8 the old ao field
-// had, and the lo word's 4 spare bits were the only ones going. That costs the shader a
-// two-instruction stitch and breaks the "no field crosses the 32-bit line" rule this
-// header used to keep — deliberately, and asserted below in the exact shifts the shaders
-// use, because a silent drift here is invisible until the lighting looks wrong.
+// x/y/z is the quad's origin voxel; dir is +X,-X,+Y,-Y,+Z,-Z (0..5); 6 and 7 are the two
+// diagonal planes of cross-plane foliage (grass tufts, flowers), which is what the 3-bit
+// dir field always had spare for. w runs along z for X faces and x otherwise; h runs along
+// y for X/Z faces and z for Y faces. Extents store value-1 so 1..32 fits 5 bits.
 //
-// x/y/z is the quad's origin voxel; dir is +X,-X,+Y,-Y,+Z,-Z (0..5). w runs along z for X
-// faces and x otherwise; h runs along y for X/Z faces and z for Y faces. Extents store
-// value-1 so 1..32 fits 5 bits.
+// SHADE is per-corner vertex brightness: 4 corners x 3 bits, 7 = full. It is the product of
+// ambient occlusion and the corner's own light relative to the quad's, which is how a
+// merged quad stops being one flat shade with a hard step to its neighbour.
+//
+// Water quads repurpose the light word's r/g/b bytes (24 bits) to carry per-corner surface
+// depth instead of colour — water only ever reads sky back out of it (see
+// GreedyMesher::waterCorners and water.vert), so those bytes are free for it. That
+// repurposing lives in GreedyMesher, not here; this header just carries whatever 32-bit
+// value it's given.
 
 inline constexpr int kQuadYShift = 5;
 inline constexpr int kQuadZShift = 10;
 inline constexpr int kQuadWShift = 15;
 inline constexpr int kQuadHShift = 20;
 inline constexpr int kQuadDirShift = 25;
-inline constexpr int kQuadShadeHiShift = 28; // lo word: shade bits 8..11
-inline constexpr int kQuadBlockShift = 32;
-inline constexpr int kQuadShadeLoShift = 40; // hi word: shade bits 0..7
-inline constexpr int kQuadLightShift = 48;
+inline constexpr int kQuadBlockShift = 0;  // within w1
+inline constexpr int kQuadShadeShift = 8;  // within w1
 inline constexpr int kQuadMaxBlockId = 256;
 
 inline constexpr int kQuadShadeBits = 3;              // per corner
@@ -50,32 +62,36 @@ inline constexpr std::uint32_t kQuadShadeMax = 7;     // fully lit, unoccluded c
 // a face only merges when it has no corner variation to lose
 inline constexpr std::uint32_t kQuadShadeFull = 0xFFFu;
 
-static_assert(kQuadDirShift + 3 <= kQuadShadeHiShift, "dir must not run into the shade nibble");
-static_assert(kQuadBlockShift >= 32 && kQuadLightShift + 16 <= 64, "hi-word overflow");
+static_assert(kQuadDirShift + 3 <= 32, "dir must not run into w1");
 static_assert(blocks::kBlockCount <= kQuadMaxBlockId, "block id no longer fits 8 bits");
 static_assert(kQuadShadeBits * 4 == 12, "shade is 4 corners x 3 bits");
+static_assert(kQuadShadeShift + 12 <= 32, "shade must fit entirely inside w1");
 
-// Split a 12-bit shade word into the two places it lives.
-inline constexpr std::uint64_t packShadeBits(std::uint32_t shade) {
-    return (std::uint64_t(shade & 0xFFu) << kQuadShadeLoShift) |
-           (std::uint64_t((shade >> 8) & 0xFu) << kQuadShadeHiShift);
-}
+// 128-bit quad: plain 4x uint32, zero padding, matching uvec4's std430 layout exactly so a
+// vector of these can be memcpy'd straight into the SSBO.
+struct PackedQuad {
+    std::uint32_t w0 = 0, w1 = 0, w2 = 0, w3 = 0;
+
+    friend bool operator==(const PackedQuad&, const PackedQuad&) = default;
+};
+static_assert(sizeof(PackedQuad) == 16, "PackedQuad must match uvec4 with no padding");
 
 // Pure bit layout, no validation, so it stays usable in a constant expression (MinGW's
 // assert is not constexpr in a debug build). packQuad is this plus the range checks.
-inline constexpr std::uint64_t packQuadBits(int x, int y, int z, int w, int h, int dir,
-                                            std::uint16_t block, std::uint32_t shade,
-                                            std::uint32_t light) {
-    return std::uint64_t(x) | (std::uint64_t(y) << kQuadYShift) |
-           (std::uint64_t(z) << kQuadZShift) | (std::uint64_t(w - 1) << kQuadWShift) |
-           (std::uint64_t(h - 1) << kQuadHShift) | (std::uint64_t(dir) << kQuadDirShift) |
-           (std::uint64_t(block) << kQuadBlockShift) | packShadeBits(shade) |
-           (std::uint64_t(light) << kQuadLightShift);
+inline constexpr PackedQuad packQuadBits(int x, int y, int z, int w, int h, int dir,
+                                         std::uint16_t block, std::uint32_t shade,
+                                         std::uint32_t light) {
+    PackedQuad q{};
+    q.w0 = std::uint32_t(x) | (std::uint32_t(y) << kQuadYShift) |
+          (std::uint32_t(z) << kQuadZShift) | (std::uint32_t(w - 1) << kQuadWShift) |
+          (std::uint32_t(h - 1) << kQuadHShift) | (std::uint32_t(dir) << kQuadDirShift);
+    q.w1 = (std::uint32_t(block) << kQuadBlockShift) | (shade << kQuadShadeShift);
+    q.w2 = light;
+    return q;
 }
 
-inline std::uint64_t packQuad(int x, int y, int z, int w, int h, int dir,
-                              std::uint16_t block, std::uint32_t shade = kQuadShadeFull,
-                              std::uint32_t light = 0) {
+inline PackedQuad packQuad(int x, int y, int z, int w, int h, int dir, std::uint16_t block,
+                           std::uint32_t shade = kQuadShadeFull, std::uint32_t light = 0) {
     assert(x >= 0 && x < 32 && y >= 0 && y < 32 && z >= 0 && z < 32);
     assert(w >= 1 && w <= 32 && h >= 1 && h <= 32);
     // 0..5 are the six face directions; 6 and 7 are the cross-plane foliage quads, which
@@ -86,43 +102,39 @@ inline std::uint64_t packQuad(int x, int y, int z, int w, int h, int dir,
     return packQuadBits(x, y, z, w, h, dir, block, shade, light);
 }
 
-// Field placement is duplicated in chunk.vert (block, AO, light), water.vert (sky) and
-// nowhere else — the hi word is exactly full, so a shift that drifts silently corrupts a
-// neighbouring field instead of overflowing. Pin every boundary.
+// Field placement is duplicated in chunk.vert (block, shade, light) and water.vert (shade,
+// sky) and nowhere else. Pin every boundary here so a shift that drifts breaks the build
+// instead of silently corrupting a neighbouring field.
 namespace detail {
-// corners 7, 2, 5, 1 — deliberately all different, and spanning the byte/nibble split at
-// corner 2 (bits 6..8) so a mistake in the stitch cannot pass
+// corners 7, 2, 5, 1 — deliberately all different, so a mistake in the per-corner unpack
+// cannot pass by accident
 inline constexpr std::uint32_t kProbeShade = 7u | (2u << 3) | (5u << 6) | (1u << 9);
 static_assert(kProbeShade == 0x357u, "probe shade word");
-inline constexpr std::uint64_t kProbe =
-    packQuadBits(1, 2, 3, 4, 5, 5, 200, kProbeShade, light::pack(1, 2, 3, 4));
-inline constexpr std::uint32_t kProbeLo = std::uint32_t(kProbe);
-inline constexpr std::uint32_t kProbeHi = std::uint32_t(kProbe >> 32);
+inline constexpr PackedQuad kProbe =
+    packQuadBits(1, 2, 3, 4, 5, 5, 200, kProbeShade, light::pack(11, 22, 33, 44));
 
-static_assert(((kProbe >> kQuadBlockShift) & 255u) == 200u, "block occupies hi bits 0..7");
-static_assert(((kProbe >> kQuadLightShift) & 0xFFFFu) == light::pack(1, 2, 3, 4),
-              "light occupies hi bits 16..31");
-static_assert(((kProbeLo >> kQuadDirShift) & 7u) == 5u, "dir survives beside the shade nibble");
+static_assert((kProbe.w1 >> kQuadBlockShift & 0xFFu) == 200u, "block occupies w1 bits 0..7");
+static_assert((kProbe.w1 >> kQuadShadeShift & 0xFFFu) == kProbeShade,
+              "shade occupies w1 bits 8..19, whole, no stitch");
+static_assert((kProbe.w0 >> kQuadDirShift & 7u) == 5u, "dir survives beside the block/shade word");
+static_assert(kProbe.w2 == light::pack(11, 22, 33, 44), "light word rides in w2 verbatim");
 
-// exactly the stitch chunk.vert and water.vert perform, in the shifts they use
-inline constexpr std::uint32_t kProbeShade12 =
-    ((kProbeHi >> 8) & 0xFFu) | (((kProbeLo >> 28) & 0xFu) << 8);
-static_assert(kProbeShade12 == kProbeShade, "shader stitch must rebuild the shade word");
-static_assert(((kProbeShade12 >> 0) & 7u) == 7u, "shader reads corner 0 at shade>>0");
-static_assert(((kProbeShade12 >> 3) & 7u) == 2u, "shader reads corner 1 at shade>>3");
-static_assert(((kProbeShade12 >> 6) & 7u) == 5u, "shader reads corner 2 at shade>>6");
-static_assert(((kProbeShade12 >> 9) & 7u) == 1u, "shader reads corner 3 at shade>>9");
+// exactly the per-corner unpack chunk.vert and water.vert perform
+static_assert(((kProbeShade >> 0) & 7u) == 7u, "shader reads corner 0 at shade>>0");
+static_assert(((kProbeShade >> 3) & 7u) == 2u, "shader reads corner 1 at shade>>3");
+static_assert(((kProbeShade >> 6) & 7u) == 5u, "shader reads corner 2 at shade>>6");
+static_assert(((kProbeShade >> 9) & 7u) == 1u, "shader reads corner 3 at shade>>9");
 
 // what chunk.vert actually does for light, spelled out in the same shifts it uses
-static_assert((kProbeHi >> 16 & 15u) == 1u, "shader reads red at hi>>16");
-static_assert((kProbeHi >> 20 & 15u) == 2u, "shader reads green at hi>>20");
-static_assert((kProbeHi >> 24 & 15u) == 3u, "shader reads blue at hi>>24");
-static_assert((kProbeHi >> 28 & 15u) == 4u, "shader reads sky at hi>>28");
+static_assert((kProbe.w2 >> 0 & 0xFFu) == 11u, "shader reads red at w2 bits 0..7");
+static_assert((kProbe.w2 >> 8 & 0xFFu) == 22u, "shader reads green at w2 bits 8..15");
+static_assert((kProbe.w2 >> 16 & 0xFFu) == 33u, "shader reads blue at w2 bits 16..23");
+static_assert((kProbe.w2 >> 24 & 0xFFu) == 44u, "shader reads sky at w2 bits 24..31");
 
 // a merged quad is always fully bright at every corner
-static_assert(((packQuadBits(0, 0, 0, 1, 1, 0, 1, kQuadShadeFull, 0) >> 32) >> 8 & 0xFFu) ==
-                  0xFFu,
-              "full shade fills the hi byte");
+static_assert(((packQuadBits(0, 0, 0, 1, 1, 0, 1, kQuadShadeFull, 0).w1 >> kQuadShadeShift) &
+              0xFFFu) == 0xFFFu,
+              "full shade fills all 12 bits");
 } // namespace detail
 
 } // namespace vx

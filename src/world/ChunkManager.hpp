@@ -269,14 +269,14 @@ private:
         // Opaque/transparent quads, kept for the chunk's whole residency (arena rebuilds
         // re-upload from them). Borrowed from m_quadPool/m_waterPool, not owned directly —
         // see MeshBufferPool.hpp. null = no geometry of that kind, or nothing meshed yet.
-        std::vector<std::uint64_t>* quadBuf = nullptr;
-        std::vector<std::uint64_t>* waterBuf = nullptr;
+        std::vector<PackedQuad>* quadBuf = nullptr;
+        std::vector<PackedQuad>* waterBuf = nullptr;
     };
 
     struct MeshResult {
         ChunkPos pos;
-        std::vector<std::uint64_t>* quadBuf = nullptr;
-        std::vector<std::uint64_t>* waterBuf = nullptr;
+        std::vector<PackedQuad>* quadBuf = nullptr;
+        std::vector<PackedQuad>* waterBuf = nullptr;
         GreedyStats stats;
         std::uint16_t connectivity = 0;
         std::int8_t lod = 0;

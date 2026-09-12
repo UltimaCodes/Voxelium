@@ -2,7 +2,7 @@
 
 // transparent water surface: same packed-quad unpack as chunk.vert, but the top faces
 // ripple and sit slightly below the block top so the surface reads as liquid.
-layout(std430, binding = 0) readonly buffer Quads { uvec2 quads[]; };
+layout(std430, binding = 0) readonly buffer Quads { uvec4 quads[]; };
 layout(std430, binding = 1) readonly buffer Offsets { vec4 uOffsets[]; };
 
 layout(location = 0) uniform mat4 uViewProj; // occupies locations 0..3
@@ -23,7 +23,7 @@ const vec2 kCorner[6][4] = vec2[6][4](
 );
 
 void main() {
-    uvec2 q = quads[gl_VertexID / 6];
+    uvec4 q = quads[gl_VertexID / 6];
     int corner = kTri[gl_VertexID % 6];
     vec3 origin = vec3(uvec3(q.x & 31u, (q.x >> 5) & 31u, (q.x >> 10) & 31u));
     float w = float(((q.x >> 15) & 31u) + 1u);
@@ -43,12 +43,12 @@ void main() {
     // Flowing water carries its depth in the block id (Water = 8 = full source, 14..20 are
     // L7..L1). A shallower cell sits lower in its voxel, so a spreading sheet visibly
     // thins out toward its edge instead of every cell being a full block of water.
-    // Per-corner surface level, packed 4 x 3 bits into the r/g/b nibbles of the light word
-    // by GreedyMesher::waterCorners — water only ever reads sky out of that word, so those
-    // twelve bits were free. Each corner is the average depth of the columns meeting there,
-    // which is what makes a thinning sheet RAMP; using the cell's own level gave every
-    // depth change a hard step, and that was the jagged water.
-    uint corners = q.y >> 16;
+    // Per-corner surface level, packed 4 x 3 bits into the r/g/b bytes of the light word
+    // (w2) by GreedyMesher::waterCorners — water only ever reads sky out of that word, so
+    // those twelve bits were free. Each corner is the average depth of the columns meeting
+    // there, which is what makes a thinning sheet RAMP; using the cell's own level gave
+    // every depth change a hard step, and that was the jagged water.
+    uint corners = q.z & 0xFFFu;
     float level = float(((corners >> (uint(corner) * 3u)) & 7u) + 1u);
     // How far this cell's surface sits below the top of its voxel.
     float drop = 0.10 + (8.0 - level) * 0.105;
@@ -79,11 +79,11 @@ void main() {
 
     vWorldRel = world;
     vDir = dir;
-    // sky is the top nibble of the light word, scaled by this corner's shade (4 corners x
-    // 3 bits, low byte in hi 8..15 + high nibble in lo 28..31 — see mesh/QuadFormat.hpp).
-    // Water never merged across differing light either, so this costs it nothing.
-    uint shade12 = ((q.y >> 8u) & 255u) | (((q.x >> 28u) & 15u) << 8u);
+    // sky is the top byte of the light word (w2), scaled by this corner's shade (4 corners
+    // x 3 bits, whole inside w1 bits 8..19 — see mesh/QuadFormat.hpp). Water never merged
+    // across differing light either, so this costs it nothing.
+    uint shade12 = (q.y >> 8u) & 0xFFFu;
     float shade = float((shade12 >> (uint(corner) * 3u)) & 7u) / 7.0;
-    vSky = (float((q.y >> 28) & 15u) / 15.0) * shade;
+    vSky = (float((q.z >> 24) & 255u) / 255.0) * shade;
     gl_Position = uViewProj * vec4(world, 1.0);
 }

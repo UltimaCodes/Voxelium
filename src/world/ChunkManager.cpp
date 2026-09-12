@@ -736,8 +736,8 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         // copy — `{scratch.begin(), scratch.end()}`, a fresh heap allocation once per
         // meshed chunk — was the ~11 heap-allocs/update left over after JobSystem stopped
         // allocating on submit (SPEC.md #67).
-        std::vector<std::uint64_t>* quadBuf = m_quadPool.checkout();
-        std::vector<std::uint64_t>* waterBuf = m_waterPool.checkout();
+        std::vector<PackedQuad>* quadBuf = m_quadPool.checkout();
+        std::vector<PackedQuad>* waterBuf = m_waterPool.checkout();
         jobs.submit([this, voxels, nb, pos, lod, skirt, quadBuf, waterBuf] {
             thread_local GreedyMesher mesher; // one per worker thread, reused across jobs
             const auto t0 = Clock::now();
@@ -1152,8 +1152,8 @@ void ChunkManager::remeshNow(Renderer& renderer, ChunkPos pos) {
     // stay valid through a possible rebuildArena() retry below, same as the async path in
     // update(), so the same checkout-fresh/defer-checkin-old pattern applies even without a
     // thread hop.
-    std::vector<std::uint64_t>* quadBuf = m_quadPool.checkout();
-    std::vector<std::uint64_t>* waterBuf = m_waterPool.checkout();
+    std::vector<PackedQuad>* quadBuf = m_quadPool.checkout();
+    std::vector<PackedQuad>* waterBuf = m_waterPool.checkout();
     // edits are always on full-detail chunks, but one can still border a coarser ring
     const GreedyStats stats = m_mesher.mesh(*e.voxels, neighbors, *quadBuf, *waterBuf, 0,
                                             coarseNeighborMask(pos, 0, m_center, radius));
@@ -1464,7 +1464,7 @@ ChunkManager::Stats ChunkManager::stats() const {
                 ++sc.uniformChunks;
             sc.totalQuads += e.quads;
             sc.voxelBytes += e.voxels->storageBytes();
-            sc.quadBytes += std::size_t(e.quads) * sizeof(std::uint64_t);
+            sc.quadBytes += std::size_t(e.quads) * sizeof(PackedQuad);
         }
         m_scanCache = sc;
     }

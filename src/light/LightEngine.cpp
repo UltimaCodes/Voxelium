@@ -23,6 +23,18 @@ ChunkPos chunkOf(const glm::ivec3& wp) {
     return {wp.x >> 5, wp.y >> 5, wp.z >> 5};
 }
 
+// Chunk stores light at 8 bits/channel (0..255, see Chunk.hpp's light namespace) but BFS
+// below reasons in 16 discrete steps (0..15) throughout, unchanged - propagation distance,
+// neighbour comparisons, queue behaviour, all exactly as before this widening. *17 is exact
+// (15*17=255) so the round trip is lossless with no rounding ambiguity. The widened range's
+// real benefit shows up at MESH time, not here: GreedyMesher averages up to 4 neighbouring
+// voxels per face corner, and can now land on genuine intermediate values (e.g. a corner
+// between step 5 [85] and step 6 [102] can read ~94) instead of being truncated straight
+// back to one of only 16 integers the instant the average is computed.
+constexpr int kLevelScale = 17;
+int storedFromLevel(int level) { return level * kLevelScale; }
+int levelFromStored(int stored) { return stored / kLevelScale; }
+
 // Accumulates wall time into `target` on scope exit, early return included — a seed phase's
 // while loop can bail out mid-column via its own budget check, so the only exit that is
 // guaranteed to run is a destructor, not a line manually placed after the loop.
@@ -74,12 +86,12 @@ int LightEngine::getLevel(const glm::ivec3& wp, int channel) const {
     const Chunk* c = lookupChunk(chunkOf(wp));
     if (!c)
         return (channel == Sky && wp.y >= kSkyAbove) ? 15 : 0;
-    const std::uint16_t v = c->lightAt(wp.x & 31, wp.y & 31, wp.z & 31);
+    const std::uint32_t v = c->lightAt(wp.x & 31, wp.y & 31, wp.z & 31);
     switch (channel) {
-        case R: return light::red(v);
-        case G: return light::green(v);
-        case B: return light::blue(v);
-        default: return light::sky(v);
+        case R: return levelFromStored(light::red(v));
+        case G: return levelFromStored(light::green(v));
+        case B: return levelFromStored(light::blue(v));
+        default: return levelFromStored(light::sky(v));
     }
 }
 
@@ -91,12 +103,13 @@ void LightEngine::setLevel(const glm::ivec3& wp, int channel, int level) {
     const int x = wp.x & 31;
     const int y = wp.y & 31;
     const int z = wp.z & 31;
-    const std::uint16_t old = c->lightAt(x, y, z);
-    const std::uint16_t next =
-        channel == R   ? light::pack(level, light::green(old), light::blue(old), light::sky(old))
-        : channel == G ? light::pack(light::red(old), level, light::blue(old), light::sky(old))
-        : channel == B ? light::pack(light::red(old), light::green(old), level, light::sky(old))
-                       : light::withSky(old, level);
+    const std::uint32_t old = c->lightAt(x, y, z);
+    const int stored = storedFromLevel(level);
+    const std::uint32_t next =
+        channel == R   ? light::pack(stored, light::green(old), light::blue(old), light::sky(old))
+        : channel == G ? light::pack(light::red(old), stored, light::blue(old), light::sky(old))
+        : channel == B ? light::pack(light::red(old), light::green(old), stored, light::sky(old))
+                       : light::withSky(old, stored);
     if (next == old)
         return;
     c->setLight(x, y, z, next);
@@ -230,7 +243,7 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
                 if (blocks::blocksLight(b) || blocks::lightCost(b) > 1)
                     break;
                 c->setLight(dx, y & 31, dz,
-                            light::withSky(c->lightAt(dx, y & 31, dz), 15));
+                            light::withSky(c->lightAt(dx, y & 31, dz), 255));
             }
             m_seed.heights[dz][dx] = y;
             ++m_seed.cursor;
@@ -331,7 +344,7 @@ void LightEngine::seedNewChunk(ChunkPos pos, bool skyAbove) {
                 for (int x = 0; x < kChunkSize; ++x) {
                     if (blocks::blocksLight(c->get(x, y, z)))
                         continue;
-                    c->setLight(x, y, z, light::withSky(c->lightAt(x, y, z), 15));
+                    c->setLight(x, y, z, light::withSky(c->lightAt(x, y, z), 255));
                     enqueue(Sky, {baseX + x, baseY + y, baseZ + z});
                 }
     }
@@ -497,7 +510,7 @@ void LightEngine::process(double budgetMs) {
     }
 }
 
-std::uint16_t LightEngine::lightAt(const glm::ivec3& wp) const {
+std::uint32_t LightEngine::lightAt(const glm::ivec3& wp) const {
     // debug/verification only, and callers reach it at arbitrary times — never trust a
     // cache filled by whatever ran last
     const_cast<LightEngine*>(this)->resetChunkCache();

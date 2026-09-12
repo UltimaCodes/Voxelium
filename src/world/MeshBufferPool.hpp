@@ -1,5 +1,7 @@
 #pragma once
 
+#include "mesh/QuadFormat.hpp"
+
 #include <cstdint>
 #include <deque>
 #include <vector>
@@ -36,19 +38,19 @@ public:
     // Returns a pointer to an empty, ready-to-write vector. Valid until checkin() is called
     // on it — capture it into a job and dereference from a worker thread freely; nothing
     // about growing or reusing OTHER slots can move or invalidate this one.
-    std::vector<std::uint64_t>* checkout();
+    std::vector<PackedQuad>* checkout();
 
     // Clears the vector (capacity survives — that is the entire point) and returns it to
     // the free list. Main thread only, and only once nothing will dereference `buf` again.
-    void checkin(std::vector<std::uint64_t>* buf);
+    void checkin(std::vector<PackedQuad>* buf);
 
     // For --smoke: proves growth stops once the pool has warmed up to a session's actual
     // working set, the same claim JobSystem::m_queue makes about itself.
     std::size_t slotCount() const { return m_slots.size(); }
 
 private:
-    std::deque<std::vector<std::uint64_t>> m_slots; // element addresses never move; see above
-    std::vector<std::vector<std::uint64_t>*> m_freeList;
+    std::deque<std::vector<PackedQuad>> m_slots; // element addresses never move; see above
+    std::vector<std::vector<PackedQuad>*> m_freeList;
 };
 
 } // namespace vx

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mesh/QuadFormat.hpp"
 #include "world/Chunk.hpp"
 
 #include <cstdint>
@@ -37,15 +38,15 @@ public:
     // voxels (it isn't drawing them — it's drawing a downsampled surface), so the border
     // faces are emitted as a skirt that plugs the step between the two resolutions.
     GreedyStats mesh(const Chunk& chunk, const Chunk* const* neighbors,
-                     std::vector<std::uint64_t>& outOpaque,
-                     std::vector<std::uint64_t>& outWater, int lod = 0,
+                     std::vector<PackedQuad>& outOpaque,
+                     std::vector<PackedQuad>& outWater, int lod = 0,
                      std::uint8_t coarseNeighbors = 0);
 
 private:
     struct Plane {
         std::uint32_t rows[kChunkSize];
         BlockId block;
-        std::uint16_t light; // packed r,g,b,sky (see namespace light), part of the merge key
+        std::uint32_t light; // packed r,g,b,sky (see namespace light), part of the merge key
         std::uint8_t dir;
         std::uint8_t slice;
         std::int16_t next;
@@ -59,13 +60,13 @@ private:
     void fillGrid(const Chunk& chunk, const Chunk* const* neighbors, int lod);
     void buildColumns();
     // two diagonal quads per cross-plane foliage voxel, into the opaque list
-    void emitCross(std::vector<std::uint64_t>& out, GreedyStats& stats);
-    void meshLayer(bool water, std::vector<std::uint64_t>& out, GreedyStats& stats);
-    void addFace(int dir, int slice, int u, int v, BlockId block, std::uint16_t light);
+    void emitCross(std::vector<PackedQuad>& out, GreedyStats& stats);
+    void meshLayer(bool water, std::vector<PackedQuad>& out, GreedyStats& stats);
+    void addFace(int dir, int slice, int u, int v, BlockId block, std::uint32_t light);
     // Per-corner water surface level for the face of water voxel (x,y,z) in direction dir,
     // packed 4 corners x 3 bits. Averages the depth of the columns meeting at each corner,
     // so a sheet that thins out ramps instead of stepping once per cell. Water quads never
-    // read the r/g/b nibbles of their light word, so this rides there for free.
+    // read the r/g/b bytes of their light word, so this rides there for free.
     std::uint32_t waterCorners(int x, int y, int z, int dir) const;
     // Per-corner vertex brightness (4 corners x 3 bits, 7 = full) for a face whose outer
     // (air) voxel is (ax,ay,az): ambient occlusion times the corner's own light relative
@@ -75,10 +76,10 @@ private:
     // outLight receives the per-channel brightest corner light — the value the quad
     // stores, so every corner's 0..7 only ever scales it down. kQuadShadeFull means the
     // face has no corner variation to lose and can still greedy-merge.
-    std::uint32_t cornerShade(int ax, int ay, int az, int dir, std::uint16_t& outLight) const;
+    std::uint32_t cornerShade(int ax, int ay, int az, int dir, std::uint32_t& outLight) const;
 
     BlockId m_grid[kPad * kPad * kPad];
-    std::uint16_t m_gridLight[kPad * kPad * kPad];
+    std::uint32_t m_gridLight[kPad * kPad * kPad];
 
     // Two masks, because a voxel HAVING geometry and a voxel HIDING its neighbour stopped
     // being the same question once leaves became a cutout. m_solid* is presence (leaves

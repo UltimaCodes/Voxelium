@@ -25,7 +25,7 @@ constexpr int kCornerCY[6][4] = {{0, 1, 1, 0}, {0, 1, 1, 0}, {0, 1, 1, 0},
 } // namespace
 
 std::uint32_t GreedyMesher::cornerShade(int ax, int ay, int az, int dir,
-                                        std::uint16_t& outLight) const {
+                                        std::uint32_t& outLight) const {
     outLight = m_gridLight[gi(ax, ay, az)];
     // skirt faces sit against a coarser neighbour — mostly buried in it, and where they
     // do show they're plugging a hole. shading them per-corner would only cost quads
@@ -68,7 +68,7 @@ std::uint32_t GreedyMesher::cornerShade(int ax, int ay, int az, int dir,
         const auto take = [&](int gx, int gy, int gz, int solid) {
             if (solid)
                 return;
-            const std::uint16_t l = m_gridLight[gi(gx, gy, gz)];
+            const std::uint32_t l = m_gridLight[gi(gx, gy, gz)];
             r += light::red(l);
             g += light::green(l);
             b += light::blue(l);
@@ -151,7 +151,7 @@ std::uint32_t GreedyMesher::waterCorners(int x, int y, int z, int dir) const {
 }
 
 void GreedyMesher::addFace(int dir, int slice, int u, int v, BlockId block,
-                           std::uint16_t light) {
+                           std::uint32_t light) {
     std::int16_t idx = m_heads[dir][slice];
     while (idx >= 0) {
         Plane& p = m_planes[std::size_t(idx)];
@@ -257,7 +257,7 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
                             const BlockId b = blocks::isCross(raw) ? blocks::Air : raw;
                             if (b < blocks::kBlockCount)
                                 ++counts[b];
-                            const std::uint16_t l = chunk.lightAt(sx * f + dx, sy * f + dy,
+                            const std::uint32_t l = chunk.lightAt(sx * f + dx, sy * f + dy,
                                                                   sz * f + dz);
                             maxSky = std::max(maxSky, light::sky(l));
                             maxBlk = std::max(maxBlk, light::block(l));
@@ -274,7 +274,7 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
                 }
                 if (blocks::isWater(dom))
                     m_hasWater = true;
-                const std::uint16_t lv = light::pack(maxBlk, maxBlk, maxBlk, maxSky);
+                const std::uint32_t lv = light::pack(maxBlk, maxBlk, maxBlk, maxSky);
                 for (int dz = 0; dz < f; ++dz)
                     for (int dy = 0; dy < f; ++dy)
                         for (int dx = 0; dx < f; ++dx) {
@@ -328,7 +328,7 @@ void GreedyMesher::buildColumns() {
 // in stats.quads but deliberately NOT in stats.areaPerDir: that array is the mesher oracle,
 // indexed 0..5 by real face direction, and adding to it would both overrun it and break the
 // naive-vs-greedy comparison it exists to make.
-void GreedyMesher::emitCross(std::vector<std::uint64_t>& out, GreedyStats& stats) {
+void GreedyMesher::emitCross(std::vector<PackedQuad>& out, GreedyStats& stats) {
     for (int z = 0; z < kChunkSize; ++z)
         for (int y = 0; y < kChunkSize; ++y)
             for (int x = 0; x < kChunkSize; ++x) {
@@ -336,7 +336,7 @@ void GreedyMesher::emitCross(std::vector<std::uint64_t>& out, GreedyStats& stats
                 if (!blocks::isCross(b))
                     continue;
                 // lit by its own cell: foliage occupies the air it grows in
-                const std::uint16_t lv = m_gridLight[gi(x, y, z)];
+                const std::uint32_t lv = m_gridLight[gi(x, y, z)];
                 if (light::sky(lv) != 0)
                     stats.sunlit = true;
                 for (int d = 6; d <= 7; ++d) {
@@ -346,7 +346,7 @@ void GreedyMesher::emitCross(std::vector<std::uint64_t>& out, GreedyStats& stats
             }
 }
 
-void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, GreedyStats& stats) {
+void GreedyMesher::meshLayer(bool water, std::vector<PackedQuad>& out, GreedyStats& stats) {
     m_planes.clear();
     std::memset(m_heads, 0xFF, sizeof(m_heads));
 
@@ -382,15 +382,15 @@ void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, Greedy
                     const int ay = y + kStep[dir][1];
                     const int az = z + kStep[dir][2];
                     const BlockId block = m_grid[gi(x, y, z)];
-                    std::uint16_t lv = m_gridLight[gi(ax, ay, az)];
+                    std::uint32_t lv = m_gridLight[gi(ax, ay, az)];
                     if (!water && light::sky(lv) != 0)
                         stats.sunlit = true; // some sky reaches this face
                     // A face whose corners differ — in occlusion or in light — carries
                     // per-corner shade and can't be merged (interpolating across a merged
                     // span would smear it), so emit it 1x1. Uniform faces stay mergeable,
                     // which is why open terrain and solid rock cost the same as before.
-                    // Water carries its per-corner SURFACE LEVEL in the r/g/b nibbles it
-                    // never reads, leaving sky in the top nibble. Two cells only merge when
+                    // Water carries its per-corner SURFACE LEVEL in the r/g/b bytes it
+                    // never reads, leaving sky in the top byte. Two cells only merge when
                     // their corners agree, which is precisely when the surface between them
                     // is flat — so a merged quad is safe to draw with one height and a
                     // sloping sheet drops to 1x1 and ramps.
@@ -398,7 +398,7 @@ void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, Greedy
                     if (m_smoothAO) {
                         const std::uint32_t shade = cornerShade(ax, ay, az, dir, lv);
                         if (water)
-                            lv = std::uint16_t(wc | (std::uint32_t(light::sky(lv)) << 12));
+                            lv = wc | (std::uint32_t(light::sky(lv)) << 24);
                         if (shade != kQuadShadeFull) {
                             out.push_back(packQuad(x, y, z, 1, 1, dir, block, shade, lv));
                             if (water)
@@ -413,7 +413,7 @@ void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, Greedy
                     // LOD > 0 skips cornerShade entirely, so fold the corners in here too
                     // or a distant water quad would read its own light as a height
                     if (water && !m_smoothAO)
-                        lv = std::uint16_t(wc | (std::uint32_t(light::sky(lv)) << 12));
+                        lv = wc | (std::uint32_t(light::sky(lv)) << 24);
                     // merge on the light the quad will actually store
                     addFace(dir, s, b, a, block, lv);
                 }
@@ -461,8 +461,8 @@ void GreedyMesher::meshLayer(bool water, std::vector<std::uint64_t>& out, Greedy
 }
 
 GreedyStats GreedyMesher::mesh(const Chunk& chunk, const Chunk* const* neighbors,
-                               std::vector<std::uint64_t>& outOpaque,
-                               std::vector<std::uint64_t>& outWater, int lod,
+                               std::vector<PackedQuad>& outOpaque,
+                               std::vector<PackedQuad>& outWater, int lod,
                                std::uint8_t coarseNeighbors) {
     outOpaque.clear();
     outWater.clear();

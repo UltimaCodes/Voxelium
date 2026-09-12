@@ -33,9 +33,11 @@ bool Renderer::init(unsigned int drawProgram, unsigned int cullProgram) {
     glCreateVertexArrays(1, &m_vao);
 
     glCreateBuffers(1, &m_arenaBuf);
-    glNamedBufferStorage(m_arenaBuf, GLsizeiptr(kArenaQuads) * 8, nullptr, kWriteMapFlags);
-    m_arenaMap = static_cast<std::uint64_t*>(
-        glMapNamedBufferRange(m_arenaBuf, 0, GLsizeiptr(kArenaQuads) * 8, kWriteMapFlags));
+    glNamedBufferStorage(m_arenaBuf, GLsizeiptr(kArenaQuads) * GLsizeiptr(sizeof(PackedQuad)),
+                         nullptr, kWriteMapFlags);
+    m_arenaMap = static_cast<PackedQuad*>(glMapNamedBufferRange(
+        m_arenaBuf, 0, GLsizeiptr(kArenaQuads) * GLsizeiptr(sizeof(PackedQuad)),
+        kWriteMapFlags));
 
     glCreateBuffers(1, &m_metaBuf);
     glNamedBufferStorage(m_metaBuf, GLsizeiptr(kMaxChunks) * sizeof(GpuChunkMeta), nullptr,
@@ -90,7 +92,7 @@ void Renderer::shutdown() {
     glDeleteVertexArrays(1, &m_vao);
 }
 
-Renderer::Range Renderer::alloc(std::span<const std::uint64_t> quads) {
+Renderer::Range Renderer::alloc(std::span<const PackedQuad> quads) {
     const std::uint32_t need = std::uint32_t(quads.size());
     if (need == 0)
         return {};
@@ -146,7 +148,7 @@ bool Renderer::reclaimPendingFrees() {
     return any;
 }
 
-Renderer::Range Renderer::tryAlloc(std::span<const std::uint64_t> quads, std::uint32_t need) {
+Renderer::Range Renderer::tryAlloc(std::span<const PackedQuad> quads, std::uint32_t need) {
     for (std::size_t i = 0; i < m_freeList.size(); ++i) {
         Range& block = m_freeList[i];
         if (block.count < need)
@@ -156,7 +158,7 @@ Renderer::Range Renderer::tryAlloc(std::span<const std::uint64_t> quads, std::ui
         block.count -= need;
         if (block.count == 0)
             m_freeList.erase(m_freeList.begin() + std::ptrdiff_t(i));
-        std::memcpy(m_arenaMap + r.first, quads.data(), std::size_t(need) * 8);
+        std::memcpy(m_arenaMap + r.first, quads.data(), std::size_t(need) * sizeof(PackedQuad));
         m_usedQuads += need;
         return r;
     }

@@ -3,7 +3,7 @@
 // Vertex pulling: no vertex attributes at all. gl_VertexID / 6 picks the quad out of
 // the SSBO, gl_VertexID % 6 picks the corner. Bit layout must match
 // src/mesh/QuadFormat.hpp — that header is the source of truth.
-layout(std430, binding = 0) readonly buffer Quads { uvec2 quads[]; };
+layout(std430, binding = 0) readonly buffer Quads { uvec4 quads[]; };
 layout(std430, binding = 1) readonly buffer Offsets { vec4 uOffsets[]; };
 
 layout(location = 0) uniform mat4 uViewProj; // camera-relative: view is at the origin
@@ -35,7 +35,7 @@ const vec2 kQuadCorner[4] = vec2[4](vec2(0, 0), vec2(0, 1), vec2(1, 1), vec2(1, 
 const float kBloat = 0.001; // greedy T-junction pinhole fix (docs/M4)
 
 void main() {
-    uvec2 q = quads[gl_VertexID / 6];
+    uvec4 q = quads[gl_VertexID / 6];
     int corner = kTri[gl_VertexID % 6];
 
     vec3 origin = vec3(uvec3(q.x & 31u, (q.x >> 5) & 31u, (q.x >> 10) & 31u));
@@ -72,10 +72,10 @@ void main() {
         vUv = vec2(cc.x, 1.0 - cc.y);
         vLayer = texLayer(block, dir);
         vDir = dir;
-        uint sh12 = ((q.y >> 8u) & 255u) | (((q.x >> 28u) & 15u) << 8u);
+        uint sh12 = (q.y >> 8u) & 0xFFFu;
         vShade = float((sh12 >> (uint(corner) * 3u)) & 7u) / 7.0;
-        vLight = vec4(float((q.y >> 16) & 15u), float((q.y >> 20) & 15u),
-                      float((q.y >> 24) & 15u), float((q.y >> 28) & 15u)) / 15.0;
+        vLight = vec4(float(q.z & 255u), float((q.z >> 8) & 255u), float((q.z >> 16) & 255u),
+                      float((q.z >> 24) & 255u)) / 255.0;
         gl_Position = uViewProj * vec4(wpos, 1.0);
         return;
     }
@@ -100,18 +100,17 @@ void main() {
         world.y += 0.03 * sin(uTime * 2.2 + ph * 0.7);
     }
 
-    // Per-corner vertex brightness: 4 corners x 3 bits, 7 = full. The only field that
-    // spans both words — low byte in hi bits 8..15, high nibble in lo bits 28..31 — so it
-    // has to be stitched before indexing. mesh/QuadFormat.hpp asserts these exact shifts.
-    uint shade12 = ((q.y >> 8u) & 255u) | (((q.x >> 28u) & 15u) << 8u);
+    // Per-corner vertex brightness: 4 corners x 3 bits, 7 = full. Lives entirely inside w1
+    // (bits 8..19) — mesh/QuadFormat.hpp asserts the exact shift.
+    uint shade12 = (q.y >> 8u) & 0xFFFu;
     vShade = float((shade12 >> (uint(corner) * 3u)) & 7u) / 7.0;
 
     vWorldRel = world;
     vUv = c * vec2(w, h); // tile once per block, GL_REPEAT wraps it
     vLayer = texLayer(block, dir);
     vDir = dir;
-    // hi word bits 16..31 are the packed light word: r, g, b, sky nibbles in that order
-    vLight = vec4(float((q.y >> 16) & 15u), float((q.y >> 20) & 15u),
-                  float((q.y >> 24) & 15u), float((q.y >> 28) & 15u)) / 15.0;
+    // w2 is the packed light word verbatim: r, g, b, sky bytes in that order
+    vLight = vec4(float(q.z & 255u), float((q.z >> 8) & 255u), float((q.z >> 16) & 255u),
+                  float((q.z >> 24) & 255u)) / 255.0;
     gl_Position = uViewProj * vec4(world, 1.0);
 }
