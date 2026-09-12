@@ -10,6 +10,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <thread>
 #include <utility>
 
 namespace vx {
@@ -1241,9 +1242,34 @@ int ChunkManager::setBlocks(Renderer& renderer, LightEngine& light,
             continue;
 
         // palette writes are not safe under a concurrent worker read; in-flight mesh jobs
-        // finish in well under a millisecond, so a bounded spin here beats copy-on-write
-        while (c->hasJobRefs()) {
-        }
+        // finish in well under a millisecond WHEN THE JOB SYSTEM IS IDLE, so a bounded spin
+        // beats copy-on-write in the common case. Owner report, live, reproduced by
+        // reasoning through this exact loop rather than by testing it: a hot spin with no
+        // yield can starve the very worker thread it is waiting on once the job system is
+        // saturated - right after launch, while the initial world-settle backlog (still
+        // draining for the ~30s the owner measured) keeps every worker busy, and
+        // hasJobRefs() can be held not just by this chunk's own mesh job but by any
+        // NEIGHBOUR's job still reading across a shared border (see the identical check at
+        // processEvictions above). A spin that never yields does not just wait for that
+        // ref to clear - on an oversubscribed machine it can actively delay the worker
+        // that would clear it, turning an assumed sub-millisecond wait into the owner's
+        // reported multi-second freeze. It also explains the OTHER half of the report
+        // ("random chunks disappear until updated"): nothing else runs on the main thread
+        // while this spins - no upload drain, no eviction, no visibility update - so
+        // whatever the world was mid-transition on when the freeze started stays visibly
+        // wrong until the spin finally releases it. Yielding fixes the CPU-starvation half
+        // directly; the elapsed-time log below is new visibility into the other half (how
+        // saturated the job system actually was), so this cannot silently regress again
+        // unnoticed the way it evidently already did once.
+        const auto waitStart = Clock::now();
+        while (c->hasJobRefs())
+            std::this_thread::yield();
+        if (const double waitMs =
+                std::chrono::duration<double, std::milli>(Clock::now() - waitStart).count();
+            waitMs > 5.0)
+            VX_ERROR("setBlocks: waited %.1f ms for an in-flight job on an edited chunk "
+                     "(want <1 ms) - the job system was saturated",
+                     waitMs);
         c->set(lx, ly, lz, e.id);
         it->second.dirty = true; // content changed: this chunk now needs persisting
         // if a save job already ran for this chunk it captured the pre-edit voxels, so
