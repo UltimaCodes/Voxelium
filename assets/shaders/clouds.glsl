@@ -118,6 +118,78 @@ float cloudSunlight(vec3 worldPos, vec3 sunDir, float time) {
     if (worldPos.y >= kCloudBase)
         return 1.0; // inside or above the layer already
 
+    // Owner report, 2026-09-12: hard, regular diagonal checkering on terrain AND water,
+    // sweeping/moving as time of day changes. Confirmed by direct A/B
+    // (VX_TOUR_CLOUDSHADOW=0.0 vs 0.6, identical camera) to be this term, not the AO gating
+    // (#58, already fixed this session — always-on day or night, so it could not be this) and
+    // not shadow-map acne (#68-followup, already fixed — a real, separate bug, but that fix
+    // barely moved this symptom, see SPEC). The multi-tap averaging added for #58b measurably
+    // made banding WORSE, not better (SPEC #58b-followup: 0.1521 -> 0.1795 band-hardness),
+    // and now we know why: every tap lands on the SAME LINE (the sun azimuth through
+    // worldPos, offset only by height fraction f) through a quasi-periodic fbm field, at a
+    // FIXED relative spacing that is a direct function of sun elevation (see the
+    // lateral-spread comment above) — that is exactly "moves with time of day". Averaging
+    // colinear samples of a periodic-ish signal at fixed spacing is a comb filter, not a
+    // blur: at the wrong spacing relative to the field's own octave wavelengths it beats
+    // instead of smoothing. A first attempt jittering each tap's height fraction by a few
+    // percent measured as barely doing anything (SPEC): the dominant octave here has a
+    // ~625-block wavelength, so a jitter small enough not to swap tap order never moved any
+    // sample more than a few percent of that wavelength either.
+    //
+    // Fixed properly: each tap gets an independent 2D offset PERPENDICULAR to the sun azimuth
+    // (30-70 blocks, comparable to the finest surviving octave's own ~150-block wavelength —
+    // see cloudCoverageShadow), not just jittered along the ray. That turns "N colinear points"
+    // into "N points scattered over a real 2D neighbourhood", which is an actual area low-pass
+    // on the noise field and cannot resonate the way a comb can, regardless of sun angle. The
+    // per-pixel hash still means a single static frame shows fine dither rather than fully
+    // smoothed — TAA resolves that the same way it does for #68-followup and ssgi.frag's
+    // kernel. The coverage->shadow toe is also widened well past #58b's 0.38..0.88, so a
+    // threshold crossing is a long, gentle ramp instead of a stencil edge no matter how well
+    // blurred the input is.
+    vec2 sunAz = normalize(sunDir.xz + vec2(1e-6)); // avoid NaN when the sun is straight up
+    vec2 perp = vec2(-sunAz.y, sunAz.x);
+
+    // The 2D jitter above still wasn't the full story: even a 70-block scatter barely dents
+    // the DOMINANT octave (~625-block wavelength, by far the largest-amplitude term in the
+    // 3-octave sum), and the checkering in the owner's screenshot is visibly only a few
+    // blocks across -- far finer than even the finest surviving shadow octave (~150 blocks,
+    // see cloudCoverageShadow's own comment). A pattern finer than the noise field's own
+    // detail cannot BE the noise field's detail; it's aliasing. On a grazing or receding
+    // surface (a distant terrace riser, water running out to the horizon), one screen pixel's
+    // footprint in worldPos.xz grows large from ordinary perspective compression, so a
+    // fixed-frequency field gets undersampled into fine fake structure -- the same reason an
+    // unmipped distant checkerboard floor shimmers in any renderer. No amount of
+    // same-frequency point-sampling fixes that; the fix is the same one texture mipmapping
+    // uses: fade toward a flat, untextured answer once the sample footprint approaches the
+    // field's own feature size, rather than confidently aliasing. Measured with fwidth() at
+    // the slab's own mid-height (one derivative pair, not per-tap -- cheap, and terrain
+    // fragments never reach the divergent early-return above since kCloudBase is already
+    // above kTerrainTop, so this derivative is always taken in uniform control flow for the
+    // caller that actually matters here).
+    vec2 midHit = worldPos.xz + sunDir.xz * ((kCloudMid - worldPos.y) / sunDir.y);
+    float aliasFade = smoothstep(40.0, 160.0, length(fwidth(midHit)));
+    if (aliasFade >= 0.999)
+        return 1.0;
+
+    // The actual dominant cause, found after the fixes above measured as barely moving this
+    // view (SPEC): a stepped/terraced receiver's worldPos.y jumps by whole blocks between
+    // adjacent, visually near-identical steps, and t = (h - worldPos.y) / sunDir.y divides
+    // that jump by sunDir.y — at a low sun this turns one block of ordinary stair-step height
+    // into a large lateral jump in `hit`, so neighbouring steps sample noticeably different
+    // points of the field even though nothing about the CLOUD changed between them. That is a
+    // real geometric effect, not a screen-space one, which is why neither the area jitter
+    // above nor the fwidth-based alias fade (both keyed on how `hit` varies per PIXEL) touched
+    // it: the jump happens between adjacent geometry, not within a pixel's own footprint, and
+    // it reproduces exactly the reported behaviour — worse at a lower sun (bigger 1/sunDir.y),
+    // hence "moves as time of day changes" is really "gets worse or better", not literal
+    // motion of a fixed pattern. Fixed by rounding the height used for this lookup to a coarse
+    // 24-block grid: a run of stair steps within the same bracket now shares one lateral
+    // sample instead of jittering block to block, and the field's own large wavelength (>=150
+    // blocks, see cloudCoverageShadow) means a shadow does not need per-block height
+    // resolution to look right. The 24-block bracket boundaries this introduces are rare
+    // compared to per-block steps and get the same per-pixel jitter as everything else below.
+    float shadowY = round(worldPos.y / 24.0) * 24.0;
+
     float shade = 0.0;
     float weight = 0.0;
     for (int i = 0; i < VX_CLOUD_SHADOW_TAPS; ++i) {
@@ -127,16 +199,24 @@ float cloudSunlight(vec3 worldPos, vec3 sunDir, float time) {
                       ? 0.5
                       : mix(0.15, 0.85, float(i) / float(VX_CLOUD_SHADOW_TAPS - 1));
         float h = mix(kCloudBase, kCloudTop, f);
-        float t = (h - worldPos.y) / sunDir.y;
+        float t = (h - shadowY) / sunDir.y;
         vec2 hit = worldPos.xz + sunDir.xz * t;
+
+        vec2 seed = gl_FragCoord.xy + vec2(float(i) * 23.0, float(i) * 59.0);
+        float jAngle = fract(sin(dot(seed, vec2(19.81, 74.23))) * 31415.9) * 6.2831853;
+        float jDist = 30.0 + 40.0 * fract(sin(dot(seed, vec2(41.7, 8.23))) * 27183.1);
+        hit += perp * (cos(jAngle) * jDist) + sunAz * (sin(jAngle) * jDist * 0.3);
+
         // The same height profile cloudDensity uses, as the tap weight — otherwise the thin
         // feathered base and top count as much as the solid middle and the shadow reads
         // heavier than the cloud looks.
         float w = smoothstep(0.0, 0.22, f) * (1.0 - smoothstep(0.55, 1.0, f)) + 0.08;
-        // A wider toe than the sky's own 0.46..0.70. A shadow edge as crisp as the cloud
-        // edge reads as a stencil, and a cloud this far up has an enormous penumbra.
-        shade += w * smoothstep(0.38, 0.88, cloudCoverageShadow(hit, time));
+        // Toe widened from #58b's 0.38..0.88 to most of the field's own range. Upper end past
+        // 1.0: the 3-octave rescale (see cloudCoverageShadow) can overshoot the true
+        // 5-octave range slightly.
+        shade += w * smoothstep(0.15, 1.05, cloudCoverageShadow(hit, time));
         weight += w;
     }
-    return 1.0 - 0.65 * (shade / weight);
+    float lit = 1.0 - 0.6 * (shade / weight);
+    return mix(lit, 1.0, aliasFade);
 }
