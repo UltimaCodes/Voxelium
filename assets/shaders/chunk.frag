@@ -340,8 +340,21 @@ void main() {
     // path rather than removed: at worst it takes 45% instead of everything. `direct`
     // keeps the full term — a face the sun does not reach should still go dark.
     float ambShade = mix(0.55, 1.0, vShade);
+    // direct's OWN occlusion question — is the sun blocked here — is already answered by
+    // `shadow` above, from the actual cascade, not a 4-voxel corner guess. Multiplying by
+    // the full vShade on top of that double-asks the same question with a much coarser
+    // answer: a terrace made of small steps has a real (correct) AO dip at every riser for
+    // AMBIENT purposes, but none of those steps actually block the sun, which comes from
+    // one direction high in the sky and does not care about a neighbour one block over. On
+    // a long, gently terraced slope that showed up as a fine, regular hatch of dark/light
+    // patches across ground the shadow map says is fully lit — confirmed by rendering with
+    // shadows forced off entirely and finding the same pattern still there, unrelated to any
+    // shadow-map behaviour. Softened the same shape as ambShade, just less aggressively,
+    // since `shadow` is already doing the real work here and this is only damping residual
+    // corner noise, not the thing that makes a genuine notch look recessed.
+    float directShade = mix(0.5, 1.0, vShade);
     outColor = vec4(albedo * kShade[vDir] *
-                            (direct * vShade + ambient * ambShade + torch * ownShade) +
+                            (direct * directShade + ambient * ambShade + torch * ownShade) +
                         emission + transmit,
                     1.0);
 }
