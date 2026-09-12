@@ -229,10 +229,38 @@ void main() {
     if (uRelief > 0.0 && vDir < 6u && reliefFade > 0.01) {
         vec2 ts = 1.0 / vec2(textureSize(uBlockTex, 0).xy);
         const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
-        float hl = dot(texture(uBlockTex, vec3(vUv - vec2(ts.x, 0.0), float(vLayer))).rgb, kLuma);
-        float hr = dot(texture(uBlockTex, vec3(vUv + vec2(ts.x, 0.0), float(vLayer))).rgb, kLuma);
-        float hd = dot(texture(uBlockTex, vec3(vUv - vec2(0.0, ts.y), float(vLayer))).rgb, kLuma);
-        float hu = dot(texture(uBlockTex, vec3(vUv + vec2(0.0, ts.y), float(vLayer))).rgb, kLuma);
+        // Owner report: a hard dark line at every block border on stepped/terraced ground,
+        // with the interior of the same face reading normally lit - the opposite of what a
+        // real per-step cast shadow would look like. Cause: vUv tiles once per BLOCK, and
+        // uBlockTex is GL_REPEAT, so sampling past vUv's own [0,1] span here does not read
+        // the actual neighbouring quad - each greedy-meshed quad is its own texture lookup
+        // with no knowledge of what is drawn next to it, so a wrapped sample just re-reads
+        // THIS quad's own opposite edge. On a large flat run of one uniform texture that is
+        // invisible (every block repeats the same tile, so wrapping to "your own start" and
+        // wrapping to "the real neighbour" look identical) - which is exactly why this went
+        // unnoticed generally. It becomes very visible on terraced/stepped ground, because
+        // AO forces a fresh, UNMERGED quad at nearly every step (greedy meshing cannot merge
+        // across differing per-corner AO), so almost every step edge IS a real quad boundary,
+        // and the wrapped sample there reads a fabricated gradient with no relation to the
+        // real neighbour's texture or shading - a fake dark line baked into the lighting
+        // normal at exactly the border chunk.frag's own geometric AO already shades
+        // correctly. Clamped to this quad's own UV span instead: at the very edge this falls
+        // back to a one-sided difference (re-reading the centre texel) rather than a
+        // fabricated wrap, which is far less wrong than reading an unrelated tile.
+        // Clamped to THIS texel's own block cell, not a flat [0,1] - a merged quad spanning
+        // several blocks of the same material legitimately carries vUv past 1.0, tiling via
+        // the same GL_REPEAT, and a flat clamp would wrongly flatten relief across all of it
+        // past the first block.
+        vec2 cellMin = floor(vUv);
+        vec2 cellMax = cellMin + 1.0;
+        vec2 uvL = vec2(max(vUv.x - ts.x, cellMin.x), vUv.y);
+        vec2 uvR = vec2(min(vUv.x + ts.x, cellMax.x), vUv.y);
+        vec2 uvD = vec2(vUv.x, max(vUv.y - ts.y, cellMin.y));
+        vec2 uvU = vec2(vUv.x, min(vUv.y + ts.y, cellMax.y));
+        float hl = dot(texture(uBlockTex, vec3(uvL, float(vLayer))).rgb, kLuma);
+        float hr = dot(texture(uBlockTex, vec3(uvR, float(vLayer))).rgb, kLuma);
+        float hd = dot(texture(uBlockTex, vec3(uvD, float(vLayer))).rgb, kLuma);
+        float hu = dot(texture(uBlockTex, vec3(uvU, float(vLayer))).rgb, kLuma);
         // Scaled by the texture size so the slope is resolution independent, and clamped so
         // a high-contrast tile cannot flip the normal through the surface.
         vec2 slope = clamp(vec2(hl - hr, hd - hu) * uRelief * 2.5 * reliefFade, -0.9, 0.9);
@@ -286,12 +314,25 @@ void main() {
     // don't work together." Settled roughly halfway between the two extremes rather than
     // either raw failure mode.
     float gateFloor = mix(0.20, 0.24, uDaylight);
+    // Owner report: caves are way too bright, AND visibly change with time of day, when
+    // nothing outside should reach them at all. Root cause: uSkyAmbient itself already
+    // carries the FULL day/night swing (bright blue at noon, near-black at midnight), and
+    // the old formula multiplied gateFloor straight against it — so a fully sky-occluded
+    // surface (skyL=0, a real cave, not a shallow notch) tracked the sky's OWN cycle no
+    // matter what constant gateFloor held, since it is a fraction of an already
+    // time-varying quantity. No floor VALUE could have fixed this; the multiplication
+    // itself was the bug. Damped the floor's own reference brightness specifically for
+    // daylight — night's uSkyAmbient is already dim and needs no damping — so a deep,
+    // fully-enclosed space now stays close to its NIGHT brightness through the day instead
+    // of visibly lighting up at noon. The skyL=1 (full sky exposure) case is untouched: it
+    // still resolves to the true, undamped uSkyAmbient, so open-air lighting does not move.
+    vec3 floorAmbient = uSkyAmbient * mix(1.0, 0.3, uDaylight);
     // The flat term used to be an ungated constant, which reads as harmless next to a
     // daylight ambient of 0.26-0.55 but was 40-64% of the night ambient — a day-neutral
     // number that was, in practice, a night-only brightener. Faded out with daylight so it
     // still stops fully-enclosed faces (interior leaf pockets, deep cave walls) crushing to
     // pure black in daylight, without lifting the whole night off the floor.
-    vec3 ambient = uSkyAmbient * (gateFloor + (1.0 - gateFloor) * skyL) +
+    vec3 ambient = mix(floorAmbient * gateFloor, uSkyAmbient, skyL) +
                    vec3(0.035, 0.04, 0.05) * mix(0.25, 1.0, uDaylight);
     // The emitter's own colour drives the tint now (M18), so the fixed warm multiplier
     // that used to supply it would double-tint. Keep a slight warm bias for the ember
