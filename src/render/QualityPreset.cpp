@@ -21,11 +21,15 @@ constexpr PresetValues kPresets[4] = {
     // Medium: render scale 0.85 is only sensible because the upscale is sharpened now — as a
     // plain bilinear stretch it was soft enough that no preset should have chosen it.
     {16, 0.85f, 1, 1536, true, false, true, true, true, false, 0.0f, 0.0f, 0.8f, 0.6f},
-    // High: the pre-preset build, unchanged. Do not "improve" this row without re-measuring
-    // everything else against it, because it is the reference.
-    {24, 1.0f, 2, 1536, true, true, true, true, true, true, 0.6f, 0.7f, 0.8f, 0.6f},
+    // High: the pre-preset build, unchanged except contactShadow (0.7 -> 0.25, owner report -
+    // "hard black", fixed by turning the slider down; a pure blend-strength constant, so this
+    // does not touch the step counts/resolution the bench numbers below were measured against.
+    // Do not "improve" anything ELSE in this row without re-measuring, it is still the
+    // reference for those.
+    {24, 1.0f, 2, 1536, true, true, true, true, true, true, 0.6f, 0.25f, 0.8f, 0.6f},
     // Ultra: spends on the things that resolve detail rather than on more effects.
-    {32, 1.0f, 3, 2560, true, true, true, true, true, true, 0.7f, 0.85f, 1.0f, 0.8f},
+    // contactShadow 0.85 -> 0.3, same reason and same fix as High above.
+    {32, 1.0f, 3, 2560, true, true, true, true, true, true, 0.7f, 0.3f, 1.0f, 0.8f},
 };
 
 bool near(float a, float b) { return std::fabs(a - b) < 1e-4f; }

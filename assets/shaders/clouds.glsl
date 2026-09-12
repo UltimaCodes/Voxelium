@@ -70,7 +70,11 @@ float cloudDensity(vec3 worldPos, float time) {
     if (worldPos.y < kCloudBase || worldPos.y > kCloudTop)
         return 0.0;
     float cov = cloudCoverage(worldPos.xz, time);
-    float d = smoothstep(0.46, 0.70, cov);
+    // Lower threshold nudged from 0.46 (#79): reference "hazy mountain" shots read as more
+    // cloud-present overall, not clear sky with occasional puffs - widening the low end
+    // means more of the coverage field's own range counts as cloud, without touching the
+    // 0.70 upper end that already governs how solid a fully-covered patch reads.
+    float d = smoothstep(0.40, 0.70, cov);
     if (d <= 0.0)
         return 0.0;
     float h = (worldPos.y - kCloudBase) / (kCloudTop - kCloudBase); // 0..1 up the slab

@@ -413,7 +413,8 @@ float contactShadow(vec3 worldRel, float rawD) {
     // Dither the start so the fixed step count does not band along surfaces.
     float t0 = (0.15 + 0.85 * ign(gl_FragCoord.xy)) * (kReach / float(kSteps));
     for (int i = 0; i < kSteps; ++i) {
-        vec3 p = worldRel + uLightL * (t0 + kReach * float(i) / float(kSteps));
+        float t = t0 + kReach * float(i) / float(kSteps);
+        vec3 p = worldRel + uLightL * t;
         // project back to the screen: world -> view -> ndc, the inverse of the
         // reconstruction above
         vec3 v = transpose(uInvViewRot) * p;
@@ -432,8 +433,14 @@ float contactShadow(vec3 worldRel, float rawD) {
         float diff = sceneViewZ - sampleViewZ; // >0 means the scene is in front
         // The thickness window stops a distant surface far behind the ray from counting as
         // a blocker, which is what makes naive versions shadow the whole background.
-        if (diff > 0.02 && diff < 0.9)
-            occl = max(occl, 1.0 - float(i) / float(kSteps)); // nearer hits count for more
+        if (diff > 0.02 && diff < 0.9) {
+            // Falloff keyed to the actual marched distance t, not the step INDEX - with only
+            // a handful of steps, 1.0 - i/kSteps quantises into a handful of discrete jumps
+            // (coarser at low VX_QUALITY, where kSteps drops to 4), which read as banding on
+            // top of an already-strong effect. t/kReach is continuous regardless of step
+            // count, so lowering quality costs sample density, not smoothness.
+            occl = max(occl, 1.0 - clamp(t / kReach, 0.0, 1.0));
+        }
     }
     return 1.0 - uContact * occl;
 }
@@ -461,7 +468,7 @@ void main() {
     // window (an emitter totals ~3.2 pre-tonemap, the brightest sunlit terrain ~1.7 - a
     // threshold of 1.0 leaked onto 2.4% of a daylight frame, 2.0 leaves 0).
     if (uSsgiOn > 0.5)
-        color += texture(uSsgi, vUv).rgb * 0.9; // one-bounce indirect fill
+        color += texture(uSsgi, vUv).rgb * 1.6; // one-bounce indirect fill (#75: was 0.9)
 
     // reconstruct the camera-relative world position once, for volumetrics + fog
     float viewZ = -uNear / max(rawD, 1e-7);
@@ -505,8 +512,10 @@ void main() {
         // stronger forward lobe + a touch more intensity so the god-ray shafts read
         // clearly when looking toward the sun, without bringing the aliased grid back
         float phase = 0.10 + 0.90 * pow(max(dot(rd, uLightL), 0.0), 5.0);
-        // uSunColor carries the day/night intensity, so the shafts fade out at night
-        color += uLightColor * (scatter * phase * len * 0.00018);
+        // uSunColor carries the day/night intensity, so the shafts fade out at night.
+        // Raised from 0.00018 (#76): reference shader-pack screenshots show god rays as a
+        // dominant compositional element through gaps in foliage/terrain, not a faint haze.
+        color += uLightColor * (scatter * phase * len * 0.00032);
     }
 
     if (uUnderwater > 0.5) {

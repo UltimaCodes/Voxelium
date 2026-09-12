@@ -29,12 +29,16 @@ struct FxToggles {
     // them clearly over the bloom threshold (1.15) while the pale ones still bloom softly
     // rather than blowing out. 0 turns emitters back into ordinary lit blocks.
     float emissive = 2.0f;
-    // Grade. Neutral defaults on purpose: these are a look control, and the reference
-    // images the harnesses compare against should not move because someone shipped a
-    // fashionable teal-and-orange default.
+    // Grade. Was fully neutral on purpose, to keep the harnesses' reference images stable
+    // against nobody having opinions about a "fashionable" default. That's still the reason
+    // saturation stays untouched, but the owner's own reference images (shader-pack style:
+    // warm highlights, a touch more contrast) are now an explicit ask, not a drive-by
+    // preference (#78) - a SUBTLE lift, not a stylised grade, and --smoke/--bench/--tour all
+    // inherit it same as a fresh player would, which is the point: the default look, not a
+    // slider someone has to find first.
     float saturation = 1.0f;   // 0 = greyscale, 1 = untouched
-    float contrast = 1.0f;     // 1 = untouched
-    float temperature = 0.0f;  // -1 cool .. +1 warm
+    float contrast = 1.06f;    // 1 = untouched
+    float temperature = 0.05f; // -1 cool .. +1 warm
     float vignette = 0.22f;    // 0 = off; subtle by default, it frames the shot
     // Animated, so it is the one effect that makes consecutive frames differ. Off by
     // default and left off by --smoke/--bench/--tour, for the same reason TAA is.
@@ -53,8 +57,16 @@ struct FxToggles {
     // with clouds on; gated separately because it costs a per-fragment fbm.
     float cloudShadow = 0.6f;
     // Screen-space contact shadows: the small-scale sun occlusion the cascades cannot
-    // resolve, marched over ~1.6 world units.
-    float contactShadow = 0.7f;
+    // resolve, marched over ~1.6 world units. Owner report, direct and decisive: this was
+    // "hard black" — turning the slider down fixed it immediately. 0.7 was far too strong
+    // for what is meant to be a subtle fine-detail effect (block edges, small crevices), and
+    // it multiplies straight onto the composited colour on top of everything else (AO,
+    // cloud shadow, direct light) — several "individually reasonable" darkening terms
+    // compounding multiplicatively is exactly the failure mode #58's AO floor hit earlier
+    // this session. Dropped hard, not nudged, same lesson: 0.25 (was 0.7 at High, 0.85 at
+    // Ultra — see QualityPreset.cpp). See contactShadow() in composite.frag for the other
+    // half of the fix (a smoother, continuous falloff instead of a coarse step-count one).
+    float contactShadow = 0.25f;
     // Leaf translucency: light coming THROUGH a backlit canopy rather than off it.
     float leafSss = 0.8f;
     // Surface relief derived from the albedo's luminance — no authored normal maps, and no

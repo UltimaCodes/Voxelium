@@ -156,7 +156,12 @@ float sampleCascade(vec3 pos, vec3 N, int c) {
 
     float avgBlocker = blockerSum / float(blockerN);
     float penumbra = (receiver - avgBlocker) / max(avgBlocker, 1e-4);
-    float radius = clamp(penumbra * 45.0, 1.0, 7.0) / VX_SHADOW_RES;
+    // Upper bound raised from 7.0 (#77): reference shadows read as very soft, almost diffuse
+    // at distance from the caster, and 7 texels capped softness well short of that even for
+    // a caster far above the receiver. Contact shadows are unaffected - a small penumbra
+    // value still maps to a small radius, this only raises the ceiling for genuinely distant
+    // casters.
+    float radius = clamp(penumbra * 45.0, 1.0, 11.0) / VX_SHADOW_RES;
 
     float depth = receiver - depthBias;
     float sum = 0.0;

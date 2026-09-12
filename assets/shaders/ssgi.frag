@@ -65,7 +65,13 @@ void main() {
     vec3 T = normalize(rot - N * dot(rot, N));
     vec3 B = cross(N, T);
 
-    const float kRadius = 2.2;
+    // Widened from 2.2 and the composite weight raised from 0.9 to 1.6 (#75) - reference
+    // shader-pack screenshots show much more pronounced coloured bounce (green under
+    // canopies, warm off lit stone) than the original radius/weight produced; a bigger
+    // gather radius pulls bounce light from more of a scene's surroundings (a whole nearby
+    // wall or canopy, not just the closest texel), which is what makes bounce read as
+    // atmospheric rather than a faint tint.
+    const float kRadius = 4.0;
     vec3 gi = vec3(0.0);
 #if   VX_QUALITY <= 1
     const int kSamples = 8;
