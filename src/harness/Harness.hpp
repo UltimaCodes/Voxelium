@@ -51,8 +51,10 @@ int runSmokeTest(RenderContext& rc, ChunkManager& world, JobSystem& jobs, LightE
 int runTour(RenderContext& rc, ChunkManager& world, JobSystem& jobs, LightEngine& light,
             FlyCamera& camera, Window& window, int radius, bool settle);
 
-// GPU frame timing only: settled world, fixed cameras, TAA off.
+// GPU frame timing only: settled world, fixed cameras, TAA off. `saveBaseline` writes this
+// run's numbers to bench_baseline.txt for future runs to compare against; otherwise, if that
+// file already exists, this run compares against it and flags regressions in the log.
 int runBenchmark(RenderContext& rc, ChunkManager& world, JobSystem& jobs, LightEngine& light,
-                 FlyCamera& camera, Window& window, int radius);
+                 FlyCamera& camera, Window& window, int radius, bool saveBaseline = false);
 
 } // namespace vx

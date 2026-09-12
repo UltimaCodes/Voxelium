@@ -1,0 +1,4 @@
+frame_mean_ms 5.39887
+moving_frame_median_ms 4.3473
+moving_frame_worst_ms 7.5011
+scaled_0_7x_frame_ms 3.9623

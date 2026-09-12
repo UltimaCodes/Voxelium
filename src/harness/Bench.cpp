@@ -54,9 +54,51 @@ namespace vx {
 //
 // TAA is off on purpose: its history makes consecutive frames cost different amounts,
 // which is exactly the variance we're trying to measure through.
+namespace {
+
+// key=value, one per line: simple enough to eyeball in a diff, which a JSON regression
+// baseline checked into (or attached to) a PR arguably wants to be.
+constexpr const char* kBaselinePath = "bench_baseline.txt";
+
+void loadBaseline(std::vector<std::pair<std::string, double>>& out) {
+    std::ifstream in(kBaselinePath);
+    std::string key;
+    double val = 0.0;
+    while (in >> key >> val)
+        out.push_back({key, val});
+}
+
+double findBaseline(const std::vector<std::pair<std::string, double>>& base, const char* key) {
+    for (const auto& [k, v] : base)
+        if (k == key)
+            return v;
+    return -1.0;
+}
+
+// >8%: real GPU/scheduling noise on this rig is a couple percent run-to-run (the same
+// reason the rest of the harness uses medians, not means); a regression worth flagging
+// should clear that noise by a wide margin, not just tip over a hair-trigger threshold.
+constexpr double kRegressionRatio = 1.08;
+
+void reportAgainstBaseline(const std::vector<std::pair<std::string, double>>& base,
+                           const char* key, double value) {
+    const double baseline = findBaseline(base, key);
+    if (baseline < 0.0)
+        return; // no prior baseline for this metric — nothing to compare
+    const double ratio = value / std::max(baseline, 1e-6);
+    if (ratio > kRegressionRatio)
+        VX_ERROR("bench REGRESSION: %s %.2f ms vs baseline %.2f ms (%.0f%% slower)", key, value,
+                 baseline, 100.0 * (ratio - 1.0));
+    else
+        VX_INFO("bench baseline: %s %.2f ms vs %.2f ms (%.0f%% change)", key, value, baseline,
+                100.0 * (ratio - 1.0));
+}
+
+} // namespace
+
 int runBenchmark(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
-                 vx::LightEngine& light, vx::FlyCamera& camera, vx::Window& window,
-                 int radius) {
+                 vx::LightEngine& light, vx::FlyCamera& camera, vx::Window& window, int radius,
+                 bool saveBaseline) {
     struct View {
         const char* name;
         glm::dvec3 pos;
@@ -253,6 +295,27 @@ int runBenchmark(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
             totMoveShadow / n, totMoveFrame / n, totMovePeak);
     VX_INFO("bench TOTAL   | render scale 0.70x -> frame %6.2f ms (%.0f%% of native)",
             totScaledFrame / n, 100.0 * (totScaledFrame / n) / std::max(totFrame / n, 1e-6));
+
+    const std::vector<std::pair<std::string, double>> current = {
+        {"frame_mean_ms", totFrame / n},
+        {"moving_frame_median_ms", totMoveFrame / n},
+        {"moving_frame_worst_ms", totMovePeak},
+        {"scaled_0_7x_frame_ms", totScaledFrame / n},
+    };
+    if (saveBaseline) {
+        std::ofstream out(kBaselinePath, std::ios::trunc);
+        for (const auto& [key, value] : current)
+            out << key << ' ' << value << '\n';
+        VX_INFO("bench: saved baseline to %s", kBaselinePath);
+    } else {
+        std::vector<std::pair<std::string, double>> base;
+        loadBaseline(base);
+        if (base.empty())
+            VX_INFO("bench: no %s yet — run with --savebaseline to create one", kBaselinePath);
+        else
+            for (const auto& [key, value] : current)
+                reportAgainstBaseline(base, key.c_str(), value);
+    }
 
     glDeleteFramebuffers(1, &fbo);
     glDeleteRenderbuffers(1, &color);

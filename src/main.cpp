@@ -61,6 +61,7 @@ int main(int argc, char** argv) {
     bool smoke = false;
     bool bench = false;
     int benchRadius = 16;
+    bool benchSaveBaseline = false;
     bool tour = false;
     int tourRadius = 16;
     bool tourSettle = true;
@@ -81,6 +82,8 @@ int main(int argc, char** argv) {
             bench = true;
             if (i + 1 < argc && argv[i + 1][0] != '-')
                 benchRadius = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--savebaseline") == 0) {
+            benchSaveBaseline = true;
         } else if (std::strcmp(argv[i], "--crashtest") == 0) {
             // Verifies the crash handler actually writes a dump, rather than trusting that a
             // clean compile means a correct SetUnhandledExceptionFilter/MiniDumpWriteDump
@@ -290,7 +293,8 @@ int main(int argc, char** argv) {
         return rcT;
     }
     if (bench) {
-        const int rcB = runBenchmark(rc, *world, *jobs, *light, camera, *window, benchRadius);
+        const int rcB = runBenchmark(rc, *world, *jobs, *light, camera, *window, benchRadius,
+                                     benchSaveBaseline);
         hud.shutdown();
         particles.shutdown();
         overlay.shutdown();
