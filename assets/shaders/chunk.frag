@@ -213,8 +213,20 @@ void main() {
         Nl = normalize(N + kTangent[vDir] * slope.x + kBitangent[vDir] * slope.y);
     }
 
-    vec3 blockRGB = vLight.rgb; // per-channel so a coloured emitter tints its own light
-    float skyL = vLight.a;
+    // Owner report: light visibly steps as it falls off, in hard bands rather than a smooth
+    // gradient. Real cause is storage, not this shader — sky/block light is 4 bits per
+    // channel (16 levels) in Chunk's packed word, and BFS propagation drops exactly 1 level
+    // per block, so a falloff is a stack of 16 flat shells with a genuine value jump at each
+    // boundary, not a quantized-from-continuous signal. Widening that storage (and re-tuning
+    // the whole propagation/falloff to match) is a real, separate, much bigger change than a
+    // shader edit — this is the standard, immediate mitigation for visible banding from
+    // coarse source data: dither the value spatially before it is used, so a hard shell
+    // boundary becomes a noisy transition band instead of a crisp line. It does not create
+    // information the light data does not have, so it will not look truly continuous
+    // up close — it makes the existing steps read as texture instead of a contour.
+    float dither = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+    vec3 blockRGB = clamp(vLight.rgb + dither * (1.0 / 15.0), 0.0, 1.0);
+    float skyL = clamp(vLight.a + dither * (1.0 / 15.0), 0.0, 1.0);
 
     float ndl = max(dot(Nl, uSunL), 0.0);
     float shadow = ndl > 0.0 ? sunShadow(vWorldRel, N) : 0.0;
@@ -237,16 +249,12 @@ void main() {
 
     vec3 direct = uSunColor * (ndl * shadow * skyAccess * clouded);
 
-    // How hard sky access gates the ambient fill. In daylight the sun dominates and a tight
-    // gate (0.10 floor, a 10x range) is what gives caves and overhangs their depth.
-    //
-    // The floor used to rise to 0.45 after dark, because night had no directional light at
-    // all and ambient WAS the entire image — every hollow went hard black with nothing to
-    // fill it. The moon now carries that shape (see computeSky), so the fill no longer has
-    // to, and 0.45 was flattening and brightening every night surface to buy something it
-    // is no longer buying. 0.20 keeps night light more omnidirectional than the sun, which
-    // is honest for scattered skylight, without erasing the relief.
-    float gateFloor = mix(0.20, 0.10, uDaylight);
+    // How hard sky access gates the ambient fill. This used to be a tight 0.10 daytime floor
+    // deliberately, for "depth" in caves/overhangs/notches — owner report, repeatedly, with
+    // screenshots, across several rounds of trying to soften this instead of remove it: that
+    // depth is hard black alcoves and terrace notches, and it is not wanted, full stop.
+    // Raised well off the floor rather than nudged incrementally again.
+    float gateFloor = mix(0.20, 0.4, uDaylight);
     // The flat term used to be an ungated constant, which reads as harmless next to a
     // daylight ambient of 0.26-0.55 but was 40-64% of the night ambient — a day-neutral
     // number that was, in practice, a night-only brightener. Faded out with daylight so it
@@ -353,8 +361,13 @@ void main() {
     // since `shadow` is already doing the real work here and this is only damping residual
     // corner noise, not the thing that makes a genuine notch look recessed.
     float directShade = mix(0.7, 1.0, vShade);
-    outColor = vec4(albedo * kShade[vDir] *
-                            (direct * directShade + ambient * ambShade + torch * ownShade) +
-                        emission + transmit,
-                    1.0);
+    vec3 shading = direct * directShade + ambient * ambShade + torch * ownShade;
+    // Hard backstop, not another adjustment to one contributing term: owner report, several
+    // rounds running, is that ANY hard black reads as broken, regardless of which path
+    // produced it (AO, the sky-access gate, a genuinely enclosed notch with no sun and
+    // almost no sky). Rather than keep chasing individual cases, nothing lit at all is
+    // allowed to render darker than this, full stop — dim and blue-tinted like the existing
+    // flat ambient term above, so it reads as "in shadow" rather than as a flat grey floor.
+    shading = max(shading, vec3(0.05, 0.055, 0.065));
+    outColor = vec4(albedo * kShade[vDir] * shading + emission + transmit, 1.0);
 }
