@@ -65,13 +65,13 @@ void main() {
     vec3 T = normalize(rot - N * dot(rot, N));
     vec3 B = cross(N, T);
 
-    // Widened from 2.2 and the composite weight raised from 0.9 to 1.6 (#75) - reference
-    // shader-pack screenshots show much more pronounced coloured bounce (green under
-    // canopies, warm off lit stone) than the original radius/weight produced; a bigger
-    // gather radius pulls bounce light from more of a scene's surroundings (a whole nearby
-    // wall or canopy, not just the closest texel), which is what makes bounce read as
-    // atmospheric rather than a faint tint.
-    const float kRadius = 4.0;
+    // #75 widened this to 4.0 (composite weight 0.9 -> 1.6) for more pronounced bounce -
+    // owner report afterward: "everything is too bright, darks and lights don't work
+    // together." SSGI's entire job is injecting fill light into shadowed areas, so pushing
+    // both radius AND weight up at once, on top of this session's other floor-raising fixes,
+    // overshot straight into flattening the image's dark end. Settled on a smaller, more
+    // measured increase over the ORIGINAL 2.2 - real, but not double.
+    const float kRadius = 2.6;
     vec3 gi = vec3(0.0);
 #if   VX_QUALITY <= 1
     const int kSamples = 8;

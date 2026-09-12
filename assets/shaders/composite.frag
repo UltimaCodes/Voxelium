@@ -468,7 +468,8 @@ void main() {
     // window (an emitter totals ~3.2 pre-tonemap, the brightest sunlit terrain ~1.7 - a
     // threshold of 1.0 leaked onto 2.4% of a daylight frame, 2.0 leaves 0).
     if (uSsgiOn > 0.5)
-        color += texture(uSsgi, vUv).rgb * 1.6; // one-bounce indirect fill (#75: was 0.9)
+        color += texture(uSsgi, vUv).rgb * 1.15; // one-bounce indirect fill (#75 raised to 1.6,
+        // walked back after "too bright, no contrast" - see ssgi.frag's kRadius comment)
 
     // reconstruct the camera-relative world position once, for volumetrics + fog
     float viewZ = -uNear / max(rawD, 1e-7);

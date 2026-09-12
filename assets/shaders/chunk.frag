@@ -275,12 +275,17 @@ void main() {
 
     vec3 direct = uSunColor * (ndl * shadow * skyAccess * clouded);
 
-    // How hard sky access gates the ambient fill. This used to be a tight 0.10 daytime floor
-    // deliberately, for "depth" in caves/overhangs/notches — owner report, repeatedly, with
-    // screenshots, across several rounds of trying to soften this instead of remove it: that
-    // depth is hard black alcoves and terrace notches, and it is not wanted, full stop.
-    // Raised well off the floor rather than nudged incrementally again.
-    float gateFloor = mix(0.20, 0.4, uDaylight);
+    // How hard sky access gates the ambient fill. Was a tight 0.10 daytime floor, raised to
+    // 0.4 in response to repeated "hard black" reports — but that turned out to be
+    // misattributed: the actual causes were contact shadows at 3x their sane strength,
+    // cloud shadow's comb-filter aliasing, and SSAO reading through water, all separately
+    // root-caused and fixed since. With those gone, 0.4 is no longer buying real bug
+    // avoidance, only flattening legitimate shadow depth — and stacked with this session's
+    // SSGI increase (both inject fill light into the same shadowed areas), the owner's own
+    // report is exactly what that predicts: "everything is too bright, darks and lights
+    // don't work together." Settled roughly halfway between the two extremes rather than
+    // either raw failure mode.
+    float gateFloor = mix(0.20, 0.24, uDaylight);
     // The flat term used to be an ungated constant, which reads as harmless next to a
     // daylight ambient of 0.26-0.55 but was 40-64% of the night ambient — a day-neutral
     // number that was, in practice, a night-only brightener. Faded out with daylight so it
