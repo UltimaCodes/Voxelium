@@ -216,12 +216,25 @@ vec3 reflection(vec3 P, vec3 R, float jitter) {
 void main() {
     vec3 N = kNormal[vDir];
     vec2 g = vec2(0.0);
+    // Separate, much gentler normal for the REFLECTION ray only (see reflection() call
+    // below). Shading wants the full-strength ripple normal — that's what makes the glint
+    // and fresnel read as choppy water. But an SSR ray-marcher is only as stable as the
+    // direction it's given: two neighbouring pixels with noticeably different wave-perturbed
+    // normals can point at completely different march targets, one landing a hit and the
+    // other missing and falling back to sky — and since the miss/hit boundary is then driven
+    // by the same noise field as the waves, it comes out as the same cellular/blobby shape,
+    // not uniform noise. Reported live as "black spots at some angles" (measured: not
+    // literal black, dark blue-gray sky-fallback tone, ~RGB 30-45). Damping the normal fed
+    // to the reflection ray specifically — not the shading normal — keeps neighbouring rays
+    // coherent enough to agree on hit/miss while leaving the actual water surface look alone.
+    vec3 Nrefl = kNormal[vDir];
     if (vDir == 2u) { // organic ripple on the top surface
         // Detail falls off with distance; see waveGrad. Squared so it holds up close and
         // then drops away quickly rather than lingering as a shimmer band.
         float fade = exp(-length(vWorldRel) * 0.016);
         g = waveGrad(vWorldRel.xz, fade * fade);
         N = normalize(vec3(-g.x * 6.0, 1.0, -g.y * 6.0));
+        Nrefl = normalize(vec3(-g.x * 6.0 * 0.25, 1.0, -g.y * 6.0 * 0.25));
     }
     vec3 V = normalize(-vWorldRel); // camera at the origin
     // Schlick off water's real F0 (0.02) is physically right and looks like jelly: from
@@ -278,7 +291,7 @@ void main() {
     float jitter = hash21(gl_FragCoord.xy + fract(uTime) * 17.0);
     // The reflection carries its own light (it is a picture of the lit world / the sky), so
     // it only wants the occlusion term, not a second helping of daylight.
-    vec3 refl = reflection(vWorldRel, reflect(-V, N), jitter) * occl;
+    vec3 refl = reflection(vWorldRel, reflect(-V, Nrefl), jitter) * occl;
 
     // two-lobe glint: a tight hot core plus a broad sheen, which is what separates a wet
     // mirror from a plastic-looking one under a single narrow highlight
