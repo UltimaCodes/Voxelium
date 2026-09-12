@@ -145,7 +145,14 @@ const Chunk* ChunkManager::voxelsAt(ChunkPos pos) const {
 
 void ChunkManager::rescan(ChunkPos center) {
     m_meshScanDirty = true; // moved: LOD bands shifted, new chunks incoming
-    const int dataR = radius + 1;
+    // +2, not +1: owner report, live — chunks visibly popping in/unrendering when moving
+    // fast (fly speed is user-scrollable well past what generation can keep pace with, by
+    // design — there's no fix for that end of the range, only more runway before you reach
+    // it). One extra ring of pre-generated buffer ahead of the camera is real runway: it
+    // does not make generation faster, but it means outrunning it takes one more ring of
+    // travel at any given speed, which is where "how far can I go before I see it" actually
+    // lives for a streaming world.
+    const int dataR = radius + 2;
 
     // rebuilt from scratch so chunks that came back into range drop off the evict list
     m_evictList.clear();
@@ -179,15 +186,15 @@ ChunkManager::LodAudit ChunkManager::auditLod() const {
     for (const auto& item : m_chunks) {
         const ChunkPos pos = item.first;
         const Entry& e = item.second;
-        // Matches rescan()'s own eviction threshold (dataR + 1 where dataR = radius + 1)
+        // Matches rescan()'s own eviction threshold (dataR + 1 where dataR = radius + 2)
         // exactly — anything past this should have been on the evict list and gone by now.
-        if (std::abs(pos.x - m_center.x) > radius + 2 || std::abs(pos.z - m_center.z) > radius + 2 ||
+        if (std::abs(pos.x - m_center.x) > radius + 3 || std::abs(pos.z - m_center.z) > radius + 3 ||
             std::abs(pos.y - m_center.y) > kVerticalRadius + 1) {
             ++a.stranded;
             continue;
         }
         // Beyond `radius` itself is the buffer band the scan loop deliberately skips too
-        // (rescan()'s evict threshold is radius+2, the scan's is radius) — nothing to check
+        // (rescan()'s evict threshold is radius+3, the scan's is radius) — nothing to check
         // for a chunk sitting in that gap on purpose.
         if (std::abs(pos.x - m_center.x) > radius || std::abs(pos.z - m_center.z) > radius)
             continue;
