@@ -14,11 +14,80 @@
 
 namespace vx {
 
+namespace {
+// Stock ImGui dark is a flat, undifferentiated grey that reads as a debug overlay rather
+// than part of the game — every window, button and slider the same colour regardless of
+// what it does. This reuses the same palette the loading/title screens already paint by
+// hand (the sky-gradient darks, the blue progress-bar accent, the off-white title text),
+// so the menus read as this game's own UI instead of ImGui's defaults with the game
+// rendered behind them.
+void applyTheme() {
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowRounding = 6.0f;
+    style.ChildRounding = 6.0f;
+    style.FrameRounding = 4.0f;
+    style.PopupRounding = 6.0f;
+    style.ScrollbarRounding = 6.0f;
+    style.GrabRounding = 4.0f;
+    style.TabRounding = 4.0f;
+    style.WindowPadding = ImVec2(12.0f, 12.0f);
+    style.FramePadding = ImVec2(8.0f, 5.0f);
+    style.ItemSpacing = ImVec2(8.0f, 6.0f);
+    style.ScrollbarSize = 14.0f;
+    style.WindowBorderSize = 1.0f;
+    style.FrameBorderSize = 0.0f;
+
+    ImVec4* c = style.Colors;
+    const ImVec4 bgDark(0.070f, 0.094f, 0.149f, 1.00f);   // 18,24,38 — the sky gradient's top
+    const ImVec4 bgMid(0.114f, 0.133f, 0.176f, 1.00f);    // between bgDark and the panel fields
+    const ImVec4 bgLight(0.149f, 0.180f, 0.227f, 1.00f);  // 38,46,58 — the gradient's bottom
+    const ImVec4 accent(0.494f, 0.769f, 1.00f, 1.00f);    // 126,196,255 — the progress-bar blue
+    const ImVec4 accentDim(0.494f, 0.769f, 1.00f, 0.55f);
+    const ImVec4 text(0.886f, 0.910f, 0.941f, 1.00f);     // 226,232,240 — the title text
+    const ImVec4 textDim(0.627f, 0.682f, 0.753f, 1.00f);  // 160,174,192 — the phase label
+
+    c[ImGuiCol_Text] = text;
+    c[ImGuiCol_TextDisabled] = textDim;
+    c[ImGuiCol_WindowBg] = ImVec4(bgDark.x, bgDark.y, bgDark.z, 0.96f);
+    c[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_PopupBg] = ImVec4(bgDark.x, bgDark.y, bgDark.z, 0.98f);
+    c[ImGuiCol_Border] = ImVec4(accent.x, accent.y, accent.z, 0.18f);
+    c[ImGuiCol_FrameBg] = bgMid;
+    c[ImGuiCol_FrameBgHovered] = bgLight;
+    c[ImGuiCol_FrameBgActive] = bgLight;
+    c[ImGuiCol_TitleBg] = bgDark;
+    c[ImGuiCol_TitleBgActive] = bgDark;
+    c[ImGuiCol_MenuBarBg] = bgDark;
+    c[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_ScrollbarGrab] = bgLight;
+    c[ImGuiCol_ScrollbarGrabHovered] = accentDim;
+    c[ImGuiCol_ScrollbarGrabActive] = accent;
+    c[ImGuiCol_CheckMark] = accent;
+    c[ImGuiCol_SliderGrab] = accentDim;
+    c[ImGuiCol_SliderGrabActive] = accent;
+    c[ImGuiCol_Button] = bgLight;
+    c[ImGuiCol_ButtonHovered] = accentDim;
+    c[ImGuiCol_ButtonActive] = accent;
+    c[ImGuiCol_Header] = accentDim;
+    c[ImGuiCol_HeaderHovered] = ImVec4(accent.x, accent.y, accent.z, 0.35f);
+    c[ImGuiCol_HeaderActive] = accent;
+    c[ImGuiCol_Separator] = ImVec4(accent.x, accent.y, accent.z, 0.18f);
+    c[ImGuiCol_Tab] = bgMid;
+    c[ImGuiCol_TabHovered] = accentDim;
+    c[ImGuiCol_TabActive] = ImVec4(accent.x, accent.y, accent.z, 0.45f);
+    c[ImGuiCol_TabUnfocused] = bgMid;
+    c[ImGuiCol_TabUnfocusedActive] = bgLight;
+    c[ImGuiCol_PlotLines] = accent;
+    c[ImGuiCol_PlotHistogram] = accent;
+}
+} // namespace
+
 bool DebugHud::init(GLFWwindow* window) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::GetIO().IniFilename = nullptr; // don't scatter imgui.ini files around
     ImGui::StyleColorsDark();
+    applyTheme();
 
     if (!ImGui_ImplGlfw_InitForOpenGL(window, true)) {
         VX_ERROR("ImGui GLFW backend init failed");
@@ -242,10 +311,14 @@ void DebugHud::titleScreen(TitleUi& ui) {
     ImGui::SetNextWindowPos(vp->Pos);
     ImGui::SetNextWindowSize(vp->Size);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0)); // the gradient below is the bg
-    // Unlike loadingScreen, no NoInputs — this screen exists to take clicks and typing.
+    // NoInputs, same as loadingScreen's background window: this one only ever draws the
+    // gradient and the tracked-out title text, both via the background draw list, never an
+    // actual widget. Without NoInputs it is still a real, full-viewport interactive window
+    // sitting UNDER ##titlepanel below, and it was silently eating every click meant for
+    // that panel's buttons — nothing in this window to click, but ImGui didn't know that.
     ImGui::Begin("##title", nullptr,
-                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
-                     ImGuiWindowFlags_NoBringToFrontOnFocus);
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
     // Same sky-gradient background as the loading screen it hands off to, so the title
     // screen doesn't read as a different, bolted-on app in front of the game.
