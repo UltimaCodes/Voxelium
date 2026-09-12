@@ -26,7 +26,6 @@ in vec2 vUv;
 layout(location = 0) out vec4 outColor;
 
 layout(binding = 0) uniform sampler2D uScene;
-layout(binding = 2) uniform sampler2D uAo;
 layout(binding = 3) uniform sampler2D uDepth;
 layout(binding = 4) uniform sampler2D uSsgi;
 layout(binding = 1) uniform sampler2DArrayShadow uShadowMap;
@@ -44,7 +43,7 @@ layout(location = 19) uniform float uUnderwater; // 1 when the camera eye is sub
 layout(location = 20) uniform float uCloudsOn;
 layout(location = 21) uniform float uTime;
 layout(location = 22) uniform float uSsgiOn;
-layout(location = 23) uniform float uAoOn;         // moved off 3 (was aliased by the mat3)
+// location 23 (uAoOn) retired - AO moved to apply_ao.frag, run before water is drawn
 layout(location = 24) uniform float uVolumetricOn; // moved off 4
 layout(location = 25) uniform vec3 uSunColor;      // day/night sun radiance
 layout(location = 26) uniform vec2 uFog;           // (start, end) distance; huge = off
@@ -453,26 +452,14 @@ void main() {
     }
 
     vec3 color = texture(uScene, vUv).rgb;
-    if (uAoOn > 0.5) {
-        // Ambient occlusion darkens a surface by how little AMBIENT light reaches it. A
-        // surface producing its own light is not receiving that light, so occluding it is
-        // meaningless — and it is what put a dark band along the bottom edge of every lamp
-        // sitting on the ground, exactly where the crease is deepest. That reads as the
-        // block being shadowed at its base while it lights everything around it (#49).
-        //
-        // Composite is screen-space and has no block ids, but it does not need them: what
-        // matters is whether the pixel's radiance is its own. Emitters come out of the scene
-        // pass far above 1.0 (a lamp's own light alone is ~1.8 before the tonemap), while
-        // ordinary lit terrain sits below it, so the HDR luminance already separates them.
-        // The window is set from what the two actually produce, not by taste. An emitter
-        // face totals roughly 3.2 before the tonemap (emission ~1.8 plus its own torch term
-        // ~1.45); the brightest fully sunlit terrain reaches about 1.7. Starting at 2.0
-        // leaves ordinary ground fully occluded — measured: a threshold of 1.0 leaked onto
-        // 2.4% of a daylight frame, this leaves 0.
-        float lum = dot(color, vec3(0.2126, 0.7152, 0.0722));
-        float emitting = smoothstep(2.0, 3.2, lum);
-        color *= mix(texture(uAo, vUv).r, 1.0, emitting);
-    }
+    // AO used to be applied right here, to the whole finished frame including water - moved
+    // to apply_ao.frag, run on the opaque scene BEFORE water is drawn on top of it. See that
+    // file for why: water never writes depth, so AO computed from the lake bed underneath it
+    // was tracing the bed's own terrain contours onto the water surface above. The emitter
+    // exception (a lamp's own light is not RECEIVED ambient light, so occluding it at its
+    // base was a dark band under every lamp, #49) moved there too, using the same luminance
+    // window (an emitter totals ~3.2 pre-tonemap, the brightest sunlit terrain ~1.7 - a
+    // threshold of 1.0 leaked onto 2.4% of a daylight frame, 2.0 leaves 0).
     if (uSsgiOn > 0.5)
         color += texture(uSsgi, vUv).rgb * 0.9; // one-bounce indirect fill
 

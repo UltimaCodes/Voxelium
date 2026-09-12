@@ -134,6 +134,50 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
         VX_INFO("tour underwater: (448,50,0), %d blocks below sea level -> tour_underwater.bmp",
                 int(62.0 - 50.0));
     }
+    // VX_TOUR_CUSTOM="x,y,z" - every fixed stop above uses the SAME yaw/pitch (-35/-12), so
+    // an artifact that only shows at a steeper look-down angle or a grazing look-across angle
+    // (owner report: water contour streaks, worse at some angles than others) can go
+    // unreproduced indefinitely no matter how many of the fixed stops get checked. This
+    // settles once at an exact owner-chosen position, then sweeps 8 yaws x 3 pitches (24
+    // shots) from that one settle - "look around in every direction" as an actual repeatable
+    // test rather than one more guessed angle.
+    if (const char* cp = std::getenv("VX_TOUR_CUSTOM")) {
+        double cx = 0.0, cy = 0.0, cz = 0.0;
+        std::sscanf(cp, "%lf,%lf,%lf", &cx, &cy, &cz);
+        camera.position = {cx, cy, cz};
+        camera.yawDeg = 0.0f;
+        camera.pitchDeg = -20.0f;
+        for (int f = 0; f < 40000; ++f) {
+            window.pollEvents();
+            rc.renderer.beginFrame();
+            world.update(jobs, rc.renderer, light, camera.position);
+            rc.renderer.endFrame();
+            if (f > 200 && !world.busy() && light.idle())
+                break;
+        }
+        std::vector<vx::ChunkDrawInfo> di, wi;
+        world.collectDrawInfo(di, wi);
+        rc.renderer.updateChunkMeta(di);
+        rc.renderer.updateWaterMeta(wi);
+        const float pitches[] = {-55.0f, -20.0f, 10.0f};
+        int shot = 0;
+        for (float pitch : pitches) {
+            camera.pitchDeg = pitch;
+            for (int yaw = 0; yaw < 360; yaw += 45) {
+                camera.yawDeg = float(yaw);
+                world.updateVisibilityIfNeeded(rc.renderer, camera.position, true);
+                rc.renderer.beginFrame();
+                renderFrame(rc, camera, fx, true, w, h, fbo, 0.6f, nullptr);
+                rc.renderer.endFrame();
+                glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, pixels.data());
+                char name[64];
+                std::snprintf(name, sizeof(name), "tour_custom_%d.bmp", shot++);
+                vx::writeBmp24(name, w, h, pixels);
+            }
+        }
+        VX_INFO("tour custom: %d shots (8 yaw x 3 pitch) from (%.0f,%.0f,%.0f)", shot, cx, cy,
+                cz);
+    }
     for (int i = 0; i < int(std::size(stops)); ++i) {
         camera.position = stops[i];
         camera.yawDeg = -35.0f;

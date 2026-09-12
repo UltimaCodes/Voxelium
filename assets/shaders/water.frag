@@ -279,7 +279,24 @@ void main() {
     // This is a deliberate art choice, not a physical one - the grazing end still goes to
     // 1.0, so the Fresnel falloff is intact, the floor is just lifted.
     const float kBaseReflect = 0.34;
-    float fres = mix(kBaseReflect, 1.0, pow(1.0 - max(dot(N, V), 0.0), 5.0));
+    // Owner report, screenshots from directly overhead: fine dark contour-line tracery
+    // covering the WHOLE water surface at every distance and angle, not worse far away -
+    // ruled out the swell/chop antialiasing fix above (which only matters at distance) and
+    // pointed somewhere that depends on the per-pixel wave normal directly, at any range.
+    // Found it: #72 damped the REFLECTION RAY direction (Nrefl, 25% strength) to stop SSR
+    // hit/miss noise, but this fresnel weight - which decides how much of that reflection
+    // shows through at all - was left reading the FULL-strength, undamped wave normal N.
+    // Reflection content is often darker than refraction (a distant tree line, a dim patch
+    // of sky, a miss falling back to whatever's there), so with fresnel flickering between
+    // "mostly clear refraction" and "mostly whatever SSR happened to hit" on every fine
+    // ripple, the wave's own contour gets traced out in alternating light/dark - present at
+    // any distance because it depends on the local normal, not on how well the noise field
+    // is resolved. Same fix as #72, applied to the piece #72 left untouched: use the damped
+    // Nrefl here too, so the BLEND WEIGHT is stable even though Nrefl already makes the ray
+    // DIRECTION stable. N itself is untouched for ndl/specular, which is what actually gives
+    // water its choppy sparkle - this only stops the reflection blend from chasing every
+    // ripple.
+    float fres = mix(kBaseReflect, 1.0, pow(1.0 - max(dot(Nrefl, V), 0.0), 5.0));
 
     vec2 res = vec2(textureSize(uSceneDepth, 0));
     vec2 suv = gl_FragCoord.xy / res;

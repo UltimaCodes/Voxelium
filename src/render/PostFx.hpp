@@ -100,7 +100,8 @@ struct FxToggles {
 };
 
 // The HDR post stack: scene renders into an RGBA16F target with a depth texture, then
-// SSAO (half res) -> composite (AO apply + volumetric scattering) -> bloom
+// SSAO (half res) -> AO applied to the opaque scene (applyOpaqueSsao, before water exists in
+// the buffer) -> water -> composite (volumetric scattering, SSGI) -> bloom
 // downsample/upsample chain -> ACES + sRGB into whatever framebuffer is bound.
 class PostFx {
 public:
@@ -119,6 +120,14 @@ public:
     // Snapshot the opaque HDR color so the water pass can read it for screen-space
     // reflections/refraction, then rebind the HDR framebuffer to draw water into.
     void captureOpaqueForWater();
+    // Computes SSAO from the current (opaque-only) depth buffer and multiplies it onto the
+    // opaque scene right now - call this AFTER captureOpaqueForWater() and BEFORE water is
+    // drawn. Water never writes depth, so SSAO computed later (the old approach, once part
+    // of the end-of-frame composite step) would be reading the LAKE BED's geometry under any
+    // water on screen and darkening the water surface by however occluded the bed is - see
+    // apply_ao.frag. Uses the snapshot captureOpaqueForWater() just took as the emitter-check
+    // input, so it must run after that call, not before.
+    void applyOpaqueSsao(bool enabled, const glm::vec2& projScale, float nearPlane);
     unsigned int sceneCopyTex() const { return m_sceneCopy; }
     unsigned int depthTex() const { return m_depth; }
     int width() const { return m_width; }
@@ -159,7 +168,7 @@ private:
     void createTargets(int width, int height);
     void destroyTargets();
 
-    unsigned int m_progSsao = 0, m_progBlur = 0, m_progComposite = 0;
+    unsigned int m_progSsao = 0, m_progBlur = 0, m_progComposite = 0, m_progApplyAo = 0;
     unsigned int m_progBloomDown = 0, m_progBloomUp = 0, m_progFinal = 0;
     unsigned int m_progTaa = 0, m_progSsgi = 0, m_progMotion = 0;
     unsigned int m_progLumDown = 0, m_progExpose = 0;

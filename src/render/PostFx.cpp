@@ -60,9 +60,10 @@ bool PostFx::reloadPrograms(std::string_view defines) {
         submitProgram(fs, shaderDir / "motionblur.frag", defines),
         submitProgram(fs, shaderDir / "lumdown.frag", defines),
         submitProgram(fs, shaderDir / "expose.frag", defines),
+        submitProgram(fs, shaderDir / "apply_ao.frag", defines),
     };
-    unsigned int built[11];
-    for (int i = 0; i < 11; ++i)
+    unsigned int built[12];
+    for (int i = 0; i < 12; ++i)
         built[i] = resolveProgram(jobs[i]);
     for (const unsigned int p : built) {
         if (p == 0) { // leave the working set alone rather than half-swapping it
@@ -75,7 +76,7 @@ bool PostFx::reloadPrograms(std::string_view defines) {
     // Only now is it safe to drop the old set.
     const unsigned int old[] = {m_progSsao,    m_progBlur,  m_progComposite, m_progBloomDown,
                                 m_progBloomUp, m_progFinal, m_progTaa,       m_progSsgi,
-                                m_progMotion,  m_progLumDown, m_progExpose};
+                                m_progMotion,  m_progLumDown, m_progExpose,  m_progApplyAo};
     for (const unsigned int p : old)
         if (p)
             glDeleteProgram(p);
@@ -91,6 +92,7 @@ bool PostFx::reloadPrograms(std::string_view defines) {
     m_progMotion = built[8];
     m_progLumDown = built[9];
     m_progExpose = built[10];
+    m_progApplyAo = built[11];
     if (m_vao == 0)
         glCreateVertexArrays(1, &m_vao);
     return true;
@@ -100,7 +102,7 @@ void PostFx::shutdown() {
     destroyTargets();
     const GLuint progs[] = {m_progSsao,  m_progBlur,    m_progComposite, m_progBloomDown,
                             m_progBloomUp, m_progFinal, m_progTaa,       m_progSsgi,
-                            m_progMotion, m_progLumDown, m_progExpose};
+                            m_progMotion, m_progLumDown, m_progExpose,   m_progApplyAo};
     for (const GLuint p : progs)
         glDeleteProgram(p);
     glDeleteVertexArrays(1, &m_vao);
@@ -203,26 +205,60 @@ void PostFx::captureOpaqueForWater() {
     glViewport(0, 0, m_width, m_height);
 }
 
+void PostFx::applyOpaqueSsao(bool enabled, const glm::vec2& projScale, float nearPlane) {
+    if (!enabled)
+        return;
+    // Unlike run() (called at the very end of the frame, nothing after it needs depth
+    // test/culling), this runs BETWEEN the opaque pass and drawWater() - water's own draw
+    // never re-enables depth test itself (it only toggles the depth MASK, expecting the test
+    // to already be on from the opaque pass), so it must be restored before returning here.
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glBindVertexArray(m_vao);
+
+    // ssao at half res, then a box blur over the rotation noise. m_depth at this point holds
+    // only the opaque scene (this runs before drawWater), which is exactly the geometry SSAO
+    // should be reading.
+    glBindFramebuffer(GL_FRAMEBUFFER, m_ssaoFbo);
+    glViewport(0, 0, std::max(m_width / 2, 1), std::max(m_height / 2, 1));
+    glUseProgram(m_progSsao);
+    glProgramUniform2fv(m_progSsao, 0, 1, &projScale.x);
+    glProgramUniform1f(m_progSsao, 1, nearPlane);
+    glBindTextureUnit(0, m_depth);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, m_ssaoBlurFbo);
+    glUseProgram(m_progBlur);
+    glBindTextureUnit(0, m_ssaoTex);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    // Multiply the blurred AO onto the opaque scene now, before water gets drawn on top of
+    // it. Blended (GL_DST_COLOR, GL_ZERO) rather than sampled-and-multiplied in the shader,
+    // so apply_ao.frag never has to read m_hdrColor while it is also this draw's target -
+    // it only needs m_sceneCopy (just captured above, by the caller) for the emitter check.
+    glBindFramebuffer(GL_FRAMEBUFFER, m_hdrFbo);
+    glViewport(0, 0, m_width, m_height);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_DST_COLOR, GL_ZERO);
+    glUseProgram(m_progApplyAo);
+    glBindTextureUnit(0, m_sceneCopy);
+    glBindTextureUnit(1, m_ssaoBlurTex);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glDisable(GL_BLEND);
+
+    // Restore state for whatever draws next (drawWater(), which assumes both are already on
+    // the way the opaque pass left them).
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_CULL_FACE);
+}
+
 void PostFx::run(const RunParams& p) {
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
     glBindVertexArray(m_vao);
 
-    // ssao at half res, then a box blur over the rotation noise
-    if (p.toggles.ssao) {
-        glBindFramebuffer(GL_FRAMEBUFFER, m_ssaoFbo);
-        glViewport(0, 0, std::max(m_width / 2, 1), std::max(m_height / 2, 1));
-        glUseProgram(m_progSsao);
-        glProgramUniform2fv(m_progSsao, 0, 1, &p.projScale.x);
-        glProgramUniform1f(m_progSsao, 1, p.nearPlane);
-        glBindTextureUnit(0, m_depth);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-
-        glBindFramebuffer(GL_FRAMEBUFFER, m_ssaoBlurFbo);
-        glUseProgram(m_progBlur);
-        glBindTextureUnit(0, m_ssaoTex);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-    }
+    // SSAO itself now runs in applyOpaqueSsao(), BEFORE water is drawn - see that method and
+    // apply_ao.frag for why. By this point in the frame water is already in m_hdrColor.
 
     // screen-space GI: gather one bounce of coloured light at half res from the lit scene
     if (p.toggles.ssgi) {
@@ -244,7 +280,7 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform2fv(m_progComposite, 0, 1, &p.projScale.x);
     glProgramUniform1f(m_progComposite, 1, p.nearPlane);
     glProgramUniformMatrix3fv(m_progComposite, 2, 1, GL_FALSE, &p.invViewRot[0][0]);
-    glProgramUniform1f(m_progComposite, 23, p.toggles.ssao ? 1.0f : 0.0f);
+    // location 23 (uAoOn) retired - AO now applied in applyOpaqueSsao(), before water draws
     glProgramUniform1f(m_progComposite, 24,
                        p.toggles.volumetric && p.toggles.shadows ? 1.0f : 0.0f);
     glProgramUniform3fv(m_progComposite, 5, 1, &p.sunL.x);
@@ -268,7 +304,6 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform1f(m_progComposite, 22, p.toggles.ssgi ? 1.0f : 0.0f);
     glBindTextureUnit(0, m_hdrColor);
     glBindTextureUnit(1, p.shadows->texture());
-    glBindTextureUnit(2, m_ssaoBlurTex);
     glBindTextureUnit(3, m_depth);
     glBindTextureUnit(4, m_ssgiTex);
     glDrawArrays(GL_TRIANGLES, 0, 3);

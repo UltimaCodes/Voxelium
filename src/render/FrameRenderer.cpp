@@ -168,6 +168,12 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     rc.postfx.captureOpaqueForWater();
     const float wf = 1.0f / std::tan(glm::radians(camera.fovYDeg) * 0.5f);
     const glm::vec2 projScale{aspect / wf, 1.0f / wf};
+    // AO applied HERE, to the opaque scene only, before water exists in the colour buffer -
+    // see PostFx::applyOpaqueSsao and apply_ao.frag. Water never writes depth (see the
+    // drawWater call below), so computing/applying AO any later would read the LAKE BED's
+    // geometry under any water on screen and darken the water surface by however occluded
+    // the bed is - the owner-reported dark contour tracery on wide lake views.
+    rc.postfx.applyOpaqueSsao(fx.ssao, projScale, camera.nearPlane);
     glProgramUniform1f(rc.waterProgram, 4, time);
     glProgramUniform3fv(rc.waterProgram, 5, 1, &sunL.x);
     glProgramUniform3fv(rc.waterProgram, 8, 1, &sky.color.x);
