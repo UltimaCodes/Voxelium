@@ -288,8 +288,7 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform2fv(m_progComposite, 26, 1, &p.fog.x);
     glProgramUniform1f(m_progComposite, 27, p.toggles.lensFlare);
     glProgramUniform3fv(m_progComposite, 28, 1, &p.camPos.x);
-    glProgramUniform1f(m_progComposite, 29,
-                       p.toggles.shadows ? p.toggles.contactShadow : 0.0f);
+    // location 29 (uContact) retired - contact shadows removed, see composite.frag
     glProgramUniform3fv(m_progComposite, 30, 1, &p.lightL.x);
     glProgramUniform3fv(m_progComposite, 31, 1, &p.lightColor.x);
     glProgramUniform1f(m_progComposite, 32, p.daylight);

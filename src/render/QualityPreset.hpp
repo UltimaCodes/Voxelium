@@ -35,7 +35,6 @@ struct PresetValues {
     bool taa;
     bool motionBlur;
     float cloudShadow;
-    float contactShadow;
     float leafSss;
     float relief;
 };

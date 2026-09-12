@@ -24,7 +24,8 @@ namespace {
 // lensFlare, cloudShadow, contactShadow, leafSss, relief and lampSwatch were read on startup
 // and never written: every one of them reset to its default on the next launch, and seven
 // were Tier 3 features that had been built and tuned. It happened AGAIN while adding the
-// audio buses, in the same sitting as the fix.
+// audio buses, in the same sitting as the fix. (contactShadow itself was later removed
+// entirely — screen-space contact shadows never earned their compounding-darkness cost.)
 //
 // A key cannot now exist in one place and not another, because there is only one place. The
 // cost of a new setting is one row.
@@ -36,7 +37,7 @@ struct Bound {
 };
 
 // Every setting the engine persists. Adding one is a row here and nothing else.
-constexpr std::size_t kSettingCount = 47;
+constexpr std::size_t kSettingCount = 46;
 
 // Binds the schema to a live set of values. Non-const because load writes through it; save
 // binds a local copy for the same reason, which is cheaper than a second const walk and
@@ -64,7 +65,6 @@ std::array<Bound, kSettingCount> bind(FxToggles& fx, bool& vsync, bool& caveCull
         {"lensFlare", T::Float, &fx.lensFlare, 0.0f, 2.0f},
         {"scotopic", T::Float, &fx.scotopic, 0.0f, 1.0f},
         {"cloudShadow", T::Float, &fx.cloudShadow, 0.0f, 1.0f},
-        {"contactShadow", T::Float, &fx.contactShadow, 0.0f, 1.0f},
         {"leafSss", T::Float, &fx.leafSss, 0.0f, 2.0f},
         {"relief", T::Float, &fx.relief, 0.0f, 2.0f},
         {"saturation", T::Float, &fx.saturation, 0.0f, 2.0f},

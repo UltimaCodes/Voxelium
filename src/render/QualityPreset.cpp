@@ -11,25 +11,21 @@ namespace {
 // other three are judged against.
 constexpr PresetValues kPresets[4] = {
     // Low: the goal is a playable frame on weak hardware, so the two things that actually
-    // dominate cost go first — render distance and resolution. SSGI and contact shadows are
-    // off entirely rather than reduced; both are subtle effects whose cheap versions read as
-    // noise rather than as a softer version of themselves.
+    // dominate cost go first — render distance and resolution. SSGI is off entirely rather
+    // than reduced; it is a subtle effect whose cheap version reads as noise rather than as
+    // a softer version of itself.
     {/*radius*/ 8, /*renderScale*/ 0.65f, /*quality*/ 0, /*shadowRes*/ 1024,
      /*ssao*/ true, /*ssgi*/ false, /*volumetric*/ false, /*clouds*/ false,
-     /*taa*/ false, /*motionBlur*/ false, /*cloudShadow*/ 0.0f, /*contactShadow*/ 0.0f,
+     /*taa*/ false, /*motionBlur*/ false, /*cloudShadow*/ 0.0f,
      /*leafSss*/ 0.0f, /*relief*/ 0.0f},
     // Medium: render scale 0.85 is only sensible because the upscale is sharpened now — as a
     // plain bilinear stretch it was soft enough that no preset should have chosen it.
-    {16, 0.85f, 1, 1536, true, false, true, true, true, false, 0.0f, 0.0f, 0.8f, 0.6f},
-    // High: the pre-preset build, unchanged except contactShadow (0.7 -> 0.25, owner report -
-    // "hard black", fixed by turning the slider down; a pure blend-strength constant, so this
-    // does not touch the step counts/resolution the bench numbers below were measured against.
-    // Do not "improve" anything ELSE in this row without re-measuring, it is still the
-    // reference for those.
-    {24, 1.0f, 2, 1536, true, true, true, true, true, true, 0.6f, 0.25f, 0.8f, 0.6f},
+    {16, 0.85f, 1, 1536, true, false, true, true, true, false, 0.0f, 0.8f, 0.6f},
+    // High: the pre-preset build. Do not "improve" anything in this row without
+    // re-measuring, it is still the reference the bench numbers below were measured against.
+    {24, 1.0f, 2, 1536, true, true, true, true, true, true, 0.6f, 0.8f, 0.6f},
     // Ultra: spends on the things that resolve detail rather than on more effects.
-    // contactShadow 0.85 -> 0.3, same reason and same fix as High above.
-    {32, 1.0f, 3, 2560, true, true, true, true, true, true, 0.7f, 0.3f, 1.0f, 0.8f},
+    {32, 1.0f, 3, 2560, true, true, true, true, true, true, 0.7f, 1.0f, 0.8f},
 };
 
 bool near(float a, float b) { return std::fabs(a - b) < 1e-4f; }
@@ -66,7 +62,6 @@ void applyPreset(Preset p, FxToggles& fx, int& radius) {
     fx.taa = v.taa;
     fx.motionBlur = v.motionBlur;
     fx.cloudShadow = v.cloudShadow;
-    fx.contactShadow = v.contactShadow;
     fx.leafSss = v.leafSss;
     fx.relief = v.relief;
 }
@@ -78,7 +73,7 @@ Preset detectPreset(const FxToggles& fx, int radius) {
             fx.quality == v.quality && fx.shadowRes == v.shadowRes && fx.ssao == v.ssao &&
             fx.ssgi == v.ssgi && fx.volumetric == v.volumetric && fx.clouds == v.clouds &&
             fx.taa == v.taa && fx.motionBlur == v.motionBlur &&
-            near(fx.cloudShadow, v.cloudShadow) && near(fx.contactShadow, v.contactShadow) &&
+            near(fx.cloudShadow, v.cloudShadow) &&
             near(fx.leafSss, v.leafSss) && near(fx.relief, v.relief))
             return Preset(i);
     }

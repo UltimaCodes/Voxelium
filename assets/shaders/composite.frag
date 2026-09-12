@@ -52,7 +52,10 @@ layout(location = 31) uniform vec3 uLightColor;    // radiance of uLightL
 layout(location = 32) uniform float uDaylight;     // 1 full day, 0 after dusk
 layout(location = 27) uniform float uFlare;        // lens flare strength, 0 = off
 layout(location = 28) uniform vec3 uCamPos;        // camera world position (clouds are world-anchored)
-layout(location = 29) uniform float uContact;      // screen-space contact shadow, 0 = off
+// location 29 (uContact) retired - screen-space contact shadows removed entirely (owner
+// call: subtle at best, and every previous tuning pass on this effect - #58's darkening
+// stack, #84's "hard black" fix - was fighting it compounding with AO/cloud shadow/direct
+// light on the same pixel rather than adding anything the cascades didn't already give)
 
 #include "clouds.glsl"
 
@@ -390,60 +393,11 @@ vec3 lensFlare() {
     return sum * uSunColor * vis * edge * uFlare;
 }
 
-// Screen-space contact shadows. The cascades cannot resolve the small stuff — a tuft
-// against the ground, a block's own lip, the join where a trunk meets the dirt — because
-// one shadow texel spans several blocks out at the far split. This marches the depth buffer
-// a short way toward the sun and darkens what it finds occluded.
-//
-// It has to live HERE rather than in chunk.frag: during the opaque pass the depth buffer is
-// the thing being written, and sampling it there is a feedback loop. Composite is the first
-// point where a complete depth buffer exists.
-float contactShadow(vec3 worldRel, float rawD) {
-    if (uContact <= 0.0)
-        return 1.0;
-#if   VX_QUALITY <= 1
-    const int kSteps = 4;
-#elif VX_QUALITY == 3
-    const int kSteps = 12;
-#else
-    const int kSteps = 8;
-#endif
-    const float kReach = 1.6; // world units; beyond this the cascades already have it
-    float occl = 0.0;
-    // Dither the start so the fixed step count does not band along surfaces.
-    float t0 = (0.15 + 0.85 * ign(gl_FragCoord.xy)) * (kReach / float(kSteps));
-    for (int i = 0; i < kSteps; ++i) {
-        float t = t0 + kReach * float(i) / float(kSteps);
-        vec3 p = worldRel + uLightL * t;
-        // project back to the screen: world -> view -> ndc, the inverse of the
-        // reconstruction above
-        vec3 v = transpose(uInvViewRot) * p;
-        if (v.z >= -1e-4)
-            continue;
-        vec2 uv = vec2((v.x / -v.z) / uProjScale.x, (v.y / -v.z) / uProjScale.y) * 0.5 + 0.5;
-        if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0))))
-            continue;
-        float sceneRaw = texture(uDepth, uv).r;
-        if (sceneRaw <= 0.0)
-            continue; // sky: nothing to be occluded by
-        // reversed-z: bigger raw depth = nearer. The sample is behind geometry when the
-        // scene there is nearer than the marched point.
-        float sampleViewZ = v.z;
-        float sceneViewZ = -uNear / max(sceneRaw, 1e-7);
-        float diff = sceneViewZ - sampleViewZ; // >0 means the scene is in front
-        // The thickness window stops a distant surface far behind the ray from counting as
-        // a blocker, which is what makes naive versions shadow the whole background.
-        if (diff > 0.02 && diff < 0.9) {
-            // Falloff keyed to the actual marched distance t, not the step INDEX - with only
-            // a handful of steps, 1.0 - i/kSteps quantises into a handful of discrete jumps
-            // (coarser at low VX_QUALITY, where kSteps drops to 4), which read as banding on
-            // top of an already-strong effect. t/kReach is continuous regardless of step
-            // count, so lowering quality costs sample density, not smoothness.
-            occl = max(occl, 1.0 - clamp(t / kReach, 0.0, 1.0));
-        }
-    }
-    return 1.0 - uContact * occl;
-}
+// Screen-space contact shadows used to live here (removed — owner call: not worth what it
+// cost. It was one more darkening term multiplying onto the same pixel as AO, cloud shadow
+// and the direct term, and every tuning pass on it since #58 was chasing that same
+// compounding-darkness failure mode rather than adding anything the shadow cascades didn't
+// already resolve). See location 29's retirement comment above for uContact.
 
 void main() {
     float rawD = texture(uDepth, vUv).r;
@@ -477,17 +431,6 @@ void main() {
     vec3 worldRel = uInvViewRot *
                     vec3(ndc.x * uProjScale.x * -viewZ, ndc.y * uProjScale.y * -viewZ, viewZ);
     float dist = length(worldRel);
-
-    // Only where the cascade says the sun reaches: darkening a pixel the sun never lit is
-    // just AO, and SSAO has already had its turn.
-    //
-    // Scaled by how much sun there actually is. A contact shadow is a SUN shadow, but this
-    // multiplies the composited colour rather than the direct term alone — so after dark,
-    // when ambient is the only light left, it was darkening light the sun never cast. That
-    // is what made night shadows read as far too heavy.
-    float sunAmt = clamp(max(uLightColor.r, max(uLightColor.g, uLightColor.b)), 0.0, 1.0);
-    if (uContact > 0.0 && sunAmt > 0.01 && shadowSingle(worldRel) > 0.5)
-        color *= mix(1.0, contactShadow(worldRel, rawD), sunAmt);
 
     if (uVolumetricOn > 0.5) {
         float len = min(dist, 150.0);

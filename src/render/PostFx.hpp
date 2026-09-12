@@ -56,17 +56,6 @@ struct FxToggles {
     // Cloud shadows on terrain. Shares the sky's density field, so it only means anything
     // with clouds on; gated separately because it costs a per-fragment fbm.
     float cloudShadow = 0.6f;
-    // Screen-space contact shadows: the small-scale sun occlusion the cascades cannot
-    // resolve, marched over ~1.6 world units. Owner report, direct and decisive: this was
-    // "hard black" — turning the slider down fixed it immediately. 0.7 was far too strong
-    // for what is meant to be a subtle fine-detail effect (block edges, small crevices), and
-    // it multiplies straight onto the composited colour on top of everything else (AO,
-    // cloud shadow, direct light) — several "individually reasonable" darkening terms
-    // compounding multiplicatively is exactly the failure mode #58's AO floor hit earlier
-    // this session. Dropped hard, not nudged, same lesson: 0.25 (was 0.7 at High, 0.85 at
-    // Ultra — see QualityPreset.cpp). See contactShadow() in composite.frag for the other
-    // half of the fix (a smoother, continuous falloff instead of a coarse step-count one).
-    float contactShadow = 0.25f;
     // Leaf translucency: light coming THROUGH a backlit canopy rather than off it.
     float leafSss = 0.8f;
     // Surface relief derived from the albedo's luminance — no authored normal maps, and no

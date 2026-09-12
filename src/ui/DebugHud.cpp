@@ -480,10 +480,6 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
             ImGui::Checkbox("taa", &fx.taa);
             ImGui::SameLine();
             ImGui::Checkbox("motion blur", &fx.motionBlur);
-            ImGui::BeginDisabled(!fx.shadows);
-            ImGui::SetNextItemWidth(-125.0f);
-            ImGui::SliderFloat("contact shadow", &fx.contactShadow, 0.0f, 1.0f, "%.2f");
-            ImGui::EndDisabled();
             ImGui::BeginDisabled(!fx.clouds);
             ImGui::SetNextItemWidth(-125.0f);
             ImGui::SliderFloat("cloud shadow", &fx.cloudShadow, 0.0f, 1.0f, "%.2f");
