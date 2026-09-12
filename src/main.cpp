@@ -52,6 +52,7 @@ using vx::RenderContext;
 using vx::TaaState;
 using vx::renderFrame;
 using vx::runBenchmark;
+using vx::runFlythrough;
 using vx::runMesherOracle;
 using vx::runSmokeTest;
 using vx::runTour;
@@ -65,6 +66,8 @@ int main(int argc, char** argv) {
     bool tour = false;
     int tourRadius = 16;
     bool tourSettle = true;
+    bool flythrough = false;
+    int flythroughFrames = 90;
     std::filesystem::path smokeOut = "smoke.bmp";
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--smoke") == 0) {
@@ -78,6 +81,10 @@ int main(int argc, char** argv) {
         } else if (std::strcmp(argv[i], "--tourmoving") == 0) {
             tour = true;
             tourSettle = false;
+        } else if (std::strcmp(argv[i], "--flythrough") == 0) {
+            flythrough = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-')
+                flythroughFrames = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--bench") == 0) {
             bench = true;
             if (i + 1 < argc && argv[i + 1][0] != '-')
@@ -104,7 +111,7 @@ int main(int argc, char** argv) {
         .width = 1280,
         .height = 720,
         .title = "Voxelium",
-        .visible = !smoke && !bench && !tour,
+        .visible = !smoke && !bench && !tour && !flythrough,
         .debugContext = debugContext,
     });
     if (!window)
@@ -142,9 +149,9 @@ int main(int argc, char** argv) {
     int savedRadius = 16;
     float savedFov = 70.0f;
     const std::filesystem::path settingsFile = "saves/settings.cfg";
-    // A smoke/bench/tour run renders from fixed defaults, never a machine's saved settings,
-    // or the reference images would move under whoever happened to run it.
-    const bool liveApp = !smoke && !bench && !tour;
+    // A smoke/bench/tour/flythrough run renders from fixed defaults, never a machine's saved
+    // settings, or the reference images would move under whoever happened to run it.
+    const bool liveApp = !smoke && !bench && !tour && !flythrough;
     if (liveApp && vx::Settings::load(settingsFile, fx, vsync, caveCull, savedRadius, savedFov))
         VX_INFO("settings: loaded %s", settingsFile.string().c_str());
 
@@ -236,7 +243,7 @@ int main(int argc, char** argv) {
     // scratch either way — keeping it means saving it under a name from the ESC menu, which
     // is what makes "new seed each time" safe.
     int worldSeed = 20260721;
-    if (smoke || bench || tour) {
+    if (smoke || bench || tour || flythrough) {
         // The harnesses assert against specific terrain (cave counts, ore counts, the glow
         // room, bench camera heights), so they pin the seed and never see the title screen —
         // a human has to be there to click it, which none of these runs have.
@@ -335,6 +342,12 @@ int main(int argc, char** argv) {
                                 tourSettle);
         world->saveDirty();
         return rcT;
+    }
+    if (flythrough) {
+        const int rcF = runFlythrough(rc, *world, *jobs, *light, camera, *window,
+                                      flythroughFrames);
+        world->saveDirty();
+        return rcF;
     }
     if (bench) {
         const int rcB = runBenchmark(rc, *world, *jobs, *light, camera, *window, benchRadius,

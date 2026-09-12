@@ -305,4 +305,98 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
     return 0;
 }
 
+int runFlythrough(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
+                  vx::LightEngine& light, vx::FlyCamera& camera, vx::Window& window,
+                  int frames) {
+    world.radius = 16;
+    int w = 0, h = 0;
+    window.framebufferSize(w, h);
+
+    GLuint color = 0, depth = 0, fbo = 0;
+    glCreateRenderbuffers(1, &color);
+    glNamedRenderbufferStorage(color, GL_RGB8, w, h);
+    glCreateRenderbuffers(1, &depth);
+    glNamedRenderbufferStorage(depth, GL_DEPTH_COMPONENT32F, w, h);
+    glCreateFramebuffers(1, &fbo);
+    glNamedFramebufferRenderbuffer(fbo, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, color);
+    glNamedFramebufferRenderbuffer(fbo, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+
+    vx::FxToggles fx;
+    fx.timeOfDay = 0.4f;
+    fx.dayCycle = false;
+
+    // Three waypoints close enough together that a modest, pre-settled radius covers the
+    // whole path — a promotional clip has no business showing the pop-in the rest of this
+    // harness exists to catch. Heights come from the generator, never hardcoded, for the
+    // same reason runTour's do: a fixed y buries the camera in a hill wherever the terrain
+    // happens to rise above it.
+    struct Waypoint {
+        glm::dvec2 xz;
+        float aboveSurface;
+        float yaw, pitch;
+    };
+    const Waypoint wps[] = {
+        {{16.0, 16.0}, 14.0f, -35.0f, -12.0f},
+        {{16.0, 16.0}, 14.0f, -5.0f, -10.0f},
+        {{40.0, 40.0}, 14.0f, 25.0f, -12.0f},
+    };
+    glm::dvec3 pos[std::size(wps)];
+    for (std::size_t i = 0; i < std::size(wps); ++i)
+        pos[i] = {wps[i].xz.x,
+                  double(world.generator().surfaceHeight(int(wps[i].xz.x), int(wps[i].xz.y))) +
+                      double(wps[i].aboveSurface),
+                  wps[i].xz.y};
+
+    // Settle centred on the path's midpoint so the whole route is loaded before frame 0 —
+    // otherwise the first waypoint decides what's resident and the far end streams in on
+    // camera, which is exactly the artifact this mode exists to avoid.
+    camera.position = pos[std::size(wps) / 2];
+    for (int f = 0; f < 40000; ++f) {
+        window.pollEvents();
+        rc.renderer.beginFrame();
+        world.update(jobs, rc.renderer, light, camera.position);
+        rc.renderer.endFrame();
+        if (f > 200 && !world.busy() && light.idle())
+            break;
+    }
+    std::vector<vx::ChunkDrawInfo> di, wi;
+    world.collectDrawInfo(di, wi);
+    rc.renderer.updateChunkMeta(di);
+    rc.renderer.updateWaterMeta(wi);
+
+    std::vector<std::uint8_t> pixels(std::size_t(w) * h * 3);
+    const int legs = int(std::size(wps)) - 1;
+    for (int f = 0; f < frames; ++f) {
+        const float t = float(f) / float(std::max(frames - 1, 1)) * float(legs);
+        const int leg = std::min(int(t), legs - 1);
+        const float lt = t - float(leg);
+        camera.position = glm::mix(pos[leg], pos[leg + 1], double(lt));
+        camera.yawDeg = wps[leg].yaw + (wps[leg + 1].yaw - wps[leg].yaw) * lt;
+        camera.pitchDeg = wps[leg].pitch + (wps[leg + 1].pitch - wps[leg].pitch) * lt;
+
+        window.pollEvents();
+        rc.renderer.beginFrame();
+        world.update(jobs, rc.renderer, light, camera.position);
+        rc.renderer.endFrame();
+        world.collectDrawInfo(di, wi);
+        rc.renderer.updateChunkMeta(di);
+        rc.renderer.updateWaterMeta(wi);
+        world.updateVisibilityIfNeeded(rc.renderer, camera.position, true);
+        rc.renderer.beginFrame();
+        renderFrame(rc, camera, fx, true, w, h, fbo, 0.6f, nullptr);
+        rc.renderer.endFrame();
+        glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, pixels.data());
+        char name[64];
+        std::snprintf(name, sizeof(name), "flyframe_%04d.bmp", f);
+        vx::writeBmp24(name, w, h, pixels);
+    }
+    VX_INFO("flythrough: wrote %d frames (flyframe_0000.bmp..flyframe_%04d.bmp)", frames,
+            frames - 1);
+
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &color);
+    glDeleteRenderbuffers(1, &depth);
+    return 0;
+}
+
 } // namespace vx

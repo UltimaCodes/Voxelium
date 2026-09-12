@@ -1,8 +1,13 @@
 # Voxelium
 
 voxel engine from scratch in C++20 + OpenGL 4.6 (core profile, DSA everywhere). no engine,
-no bloat. the roadmap is in [SPEC.md](SPEC.md), and every milestone's numbers are kept in
-[docs/MILESTONES.md](docs/MILESTONES.md) so optimizations are proven, not vibes.
+no bloat. every optimization below is a measured number, not a vibe — see "what's in it".
+
+![flythrough](assets/flythrough.gif)
+
+captured with the engine's own `--flythrough` harness mode — a fully-settled world first
+(no streaming pop-in), then a smoothly interpolated camera path, exactly so a promotional
+clip never shows the thing the rest of the test suite exists to catch.
 
 ## building
 
@@ -113,8 +118,7 @@ world is usually a few tens of KB.
 
 ## what's in it
 
-all 12 milestones from [SPEC.md](SPEC.md), each written up with real numbers in
-[docs/MILESTONES.md](docs/MILESTONES.md):
+12 milestones deep:
 binary greedy meshing + vertex pulling (8-byte quads, no VBO), palette-compressed chunks,
 a jthread job system, GPU-driven culling with the whole world in one indirect draw call,
 cave culling, flood-fill RGB block + sky lighting, FastNoise2 terrain with caves and ores,
@@ -127,3 +131,7 @@ far as you like and the loaded band follows you.
 
 `voxelium --smoke [out.bmp]` renders offscreen, checks that pixels actually got drawn,
 writes a screenshot and exits 0/1. headless self-check, useful for CI later.
+
+`voxelium --flythrough [frames]` is what made the clip at the top of this file: settles a
+world, then interpolates the camera through a short path, writing one `flyframe_NNNN.bmp`
+per frame for something else to assemble into a GIF.

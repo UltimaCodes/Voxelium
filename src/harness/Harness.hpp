@@ -57,4 +57,13 @@ int runTour(RenderContext& rc, ChunkManager& world, JobSystem& jobs, LightEngine
 int runBenchmark(RenderContext& rc, ChunkManager& world, JobSystem& jobs, LightEngine& light,
                  FlyCamera& camera, Window& window, int radius, bool saveBaseline = false);
 
+// README GIF material: settles the world FIRST (unlike --tour, which deliberately captures
+// mid-stream) at a modest radius around spawn, then smoothly interpolates the camera through
+// a short path over `frames` frames, writing flyframe_NNNN.bmp for every one of them — a
+// promotional clip has no business showing the streaming pop-in the rest of the harness
+// exists to catch. Assembling the frames into an actual .gif is a Python/PIL job, not
+// something worth a new C++ dependency for.
+int runFlythrough(RenderContext& rc, ChunkManager& world, JobSystem& jobs, LightEngine& light,
+                  FlyCamera& camera, Window& window, int frames);
+
 } // namespace vx
