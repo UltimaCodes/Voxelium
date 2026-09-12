@@ -61,7 +61,26 @@ float vnoise(vec2 p);
 // is not periodic against the sines nothing tiles.
 //
 // Returns d(height)/d(xz). The normal is built from it in main().
-vec2 waveGrad(vec2 p, float detail) {
+//
+// swellFade: owner report, live screenshots — wide lake views show dark contour-line streaks
+// and wedge-shaped patches sweeping the whole surface, not the cellular SSR "black spots"
+// #72 already fixed (this is the SHADING normal, not the reflection one, and it moved with
+// no relation to reflection angle). Root cause: the three swell waves below have real periods
+// of 2*pi/0.10, 2*pi/0.23 =~ 27-63 blocks (from W[i].z) — "low frequency" relative to a
+// close-up view, but nowhere near low enough to survive a wide shot of a lake spanning
+// hundreds of blocks, where perspective compresses many swell periods into a handful of
+// screen pixels. The chop octaves right below already fade with distance for exactly this
+// reason (see `detail`'s own comment: undersampled ripple normals fire the specular
+// essentially at random) — but that fade was only ever applied to chop; the swell term was
+// computed at full, undamped strength at every distance, and the shading normal (`N` in
+// main(), not the separately-damped `Nrefl`) used it as-is. Same disease as #72 and the
+// cloud-shadow aliasing fixed earlier this session, different symptom because it hits the
+// DIFFUSE normal (dark contour lines from `ndl` swinging with an aliased slope) rather than
+// the specular or a reflection ray. Faded here the same way, keyed off the actual screen-space
+// footprint of the sample position (fwidth, measured once in main() and passed in) against the
+// swell's own shortest period, rather than a flat distance curve tuned for chop's much finer
+// scale — swell needs to survive much farther out before its own aliasing threshold arrives.
+vec2 waveGrad(vec2 p, float detail, float swellFade) {
     vec2 g = vec2(0.0);
 
     // Swell: three long directional waves. Kept few and low frequency — this is the part
@@ -72,7 +91,7 @@ vec2 waveGrad(vec2 p, float detail) {
     for (int i = 0; i < 3; ++i) {
         vec2 d = normalize(W[i].xy);
         float ph = dot(d, p) * W[i].z + uTime * sp[i];
-        g += d * W[i].z * W[i].w * cos(ph);
+        g += d * W[i].z * W[i].w * cos(ph) * swellFade;
     }
 
     // Chop: central differences over a scrolling noise field, two octaves drifting in
@@ -243,7 +262,12 @@ void main() {
         // Detail falls off with distance; see waveGrad. Squared so it holds up close and
         // then drops away quickly rather than lingering as a shimmer band.
         float fade = exp(-length(vWorldRel) * 0.016);
-        g = waveGrad(vWorldRel.xz, fade * fade);
+        // Swell's own footprint-based fade (see waveGrad's comment): the shortest swell
+        // period is ~27 blocks, so start fading once a screen pixel's own xz footprint
+        // approaches a meaningful fraction of that, well past where chop's distance fade has
+        // already reached zero.
+        float swellFade = 1.0 - smoothstep(6.0, 24.0, length(fwidth(vWorldRel.xz)));
+        g = waveGrad(vWorldRel.xz, fade * fade, swellFade);
         N = normalize(vec3(-g.x * 6.0, 1.0, -g.y * 6.0));
         Nrefl = normalize(vec3(-g.x * 6.0 * 0.25, 1.0, -g.y * 6.0 * 0.25));
     }
