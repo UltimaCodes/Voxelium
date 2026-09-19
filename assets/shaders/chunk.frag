@@ -204,6 +204,8 @@ float sunShadow(vec3 pos, vec3 N) {
 // How much sunlight gets through the cloud layer to worldPos, 1 = clear. The coverage field
 // is rendered once a frame into uCloudMap (cloudmap.frag), so this is three filtered fetches
 // along the sun ray instead of the per-fragment fbm it used to be.
+const float kCloudMaxBlock = 0.5;
+
 float cloudSunlight(vec3 worldPos, vec3 sunDir) {
     if (sunDir.y <= 0.05 || worldPos.y >= kCloudBase)
         return 1.0;
@@ -229,9 +231,71 @@ float cloudSunlight(vec3 worldPos, vec3 sunDir) {
     return mix(1.0, lit, smoothstep(0.0, 0.08, edge));
 }
 
+// ---- natural variation -------------------------------------------------------------------
+// A block texture is one 16x16 tile stamped on every block, and a beach or a hillside of it is
+// visibly a repeating grid. Two cheap fixes, both keyed to the block's WORLD cell so they never
+// change with view or LOD: each block gets one of eight orientations (four turns, mirrored or
+// not), and its brightness is nudged a few percent, with a slow world-space drift on top so
+// whole patches run a little warmer or cooler. Only ground-like tiles take part: bark grain,
+// brick courses and strata have a direction that a turn would break, and leaves are excluded
+// so the holes still match the shadow pass, which cannot see any of this.
+bool naturalLayer(uint l) {
+    return l == 0u || l == 1u || l == 2u || l == 8u || l == 9u || l == 12u || l == 13u ||
+           l == 14u || l == 47u || l == 49u;
+}
+
+uint cellHash(ivec3 c) {
+    uint h = uint(c.x) * 0x8DA6B343u ^ uint(c.y) * 0xD8163841u ^ uint(c.z) * 0xCB1AB31Fu;
+    h ^= h >> 15;
+    h *= 0x2C1B3C6Du;
+    h ^= h >> 12;
+    h *= 0x297A2D39u;
+    h ^= h >> 15;
+    return h;
+}
+
+float vnoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = float(cellHash(ivec3(i, 7)) & 0xFFFFu), b = float(cellHash(ivec3(i + vec2(1, 0), 7)) & 0xFFFFu);
+    float c = float(cellHash(ivec3(i + vec2(0, 1), 7)) & 0xFFFFu), d = float(cellHash(ivec3(i + vec2(1, 1), 7)) & 0xFFFFu);
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y) / 65535.0;
+}
+
+// the linear part of a cell's orientation, applied to an offset from the tile centre
+vec2 turnUv(vec2 c, uint hsh) {
+    if ((hsh & 4u) != 0u)
+        c.x = -c.x;
+    uint r = hsh & 3u;
+    if (r == 1u) c = vec2(-c.y, c.x);
+    else if (r == 2u) c = -c;
+    else if (r == 3u) c = vec2(c.y, -c.x);
+    return c;
+}
+
 void main() {
     vec3 N = kNormal[vDir];
-    vec4 texel = texture(uBlockTex, vec3(vUv, float(vLayer)));
+    vec2 uv = vUv;
+    vec2 duvdx = dFdx(vUv), duvdy = dFdy(vUv);
+    float natTint = 1.0;
+    vec3 natWarm = vec3(1.0);
+    uint natHash = 0u;
+    bool natural = vDir < 6u && naturalLayer(vLayer);
+    if (natural) {
+        vec3 wp = uCamPos + vWorldRel;
+        natHash = cellHash(ivec3(floor(wp - N * 0.5)));
+        vec2 base = floor(vUv);
+        uv = base + turnUv(fract(vUv) - 0.5, natHash) + 0.5;
+        duvdx = turnUv(duvdx, natHash);
+        duvdy = turnUv(duvdy, natHash);
+        natTint = 0.95 + 0.10 * float((natHash >> 3) & 255u) / 255.0;
+        // slow patches, ~30 blocks across: a little warmer/drier in some, cooler in others
+        float drift = vnoise(wp.xz * 0.035) - 0.5;
+        natTint *= 1.0 + 0.10 * drift;
+        natWarm = vec3(1.0 + 0.16 * drift, 1.0 + 0.02 * drift, 1.0 - 0.20 * drift);
+    }
+    vec4 texel = natural ? textureGrad(uBlockTex, vec3(uv, float(vLayer)), duvdx, duvdy)
+                         : texture(uBlockTex, vec3(vUv, float(vLayer)));
     // Alpha cutout. Two cases, same mechanism: cross-plane foliage (dir 6/7) is mostly
     // empty tile, and LEAVES are a solid block riddled with gaps. Leaves are deliberately
     // not occluders in the mesher either, so the faces behind them are still there to be
@@ -239,7 +303,7 @@ void main() {
     // green cube, and it is why light and shadow get through it.
     if ((vDir >= 6u || isCutoutLayer(vLayer)) && texel.a < 0.5)
         discard;
-    vec3 albedo = texel.rgb;
+    vec3 albedo = texel.rgb * natTint * natWarm;
 
     // Grass side faces (layer 3) get the grass colour blended over their top edge. Without
     // it a terraced hillside alternates green tops with brown risers every single block,
@@ -292,19 +356,24 @@ void main() {
         // several blocks of the same material legitimately carries vUv past 1.0, tiling via
         // the same GL_REPEAT, and a flat clamp would wrongly flatten relief across all of it
         // past the first block.
-        vec2 cellMin = floor(vUv);
+        vec2 cellMin = floor(uv);
         vec2 cellMax = cellMin + 1.0;
         // One-sided differences off the texel already fetched above: two extra fetches
         // instead of four. Stepping toward the far side of the cell (and flipping the sign)
         // when the near side would leave it keeps the edge texels from falling back to zero.
-        vec2 dir = vec2(vUv.x + ts.x > cellMax.x ? -1.0 : 1.0, vUv.y + ts.y > cellMax.y ? -1.0 : 1.0);
+        vec2 dir = vec2(uv.x + ts.x > cellMax.x ? -1.0 : 1.0, uv.y + ts.y > cellMax.y ? -1.0 : 1.0);
         float h0 = dot(texel.rgb, kLuma);
-        float hx = dot(texture(uBlockTex, vec3(vUv.x + dir.x * ts.x, vUv.y, float(vLayer))).rgb, kLuma);
-        float hy = dot(texture(uBlockTex, vec3(vUv.x, vUv.y + dir.y * ts.y, float(vLayer))).rgb, kLuma);
+        float hx = dot(texture(uBlockTex, vec3(uv.x + dir.x * ts.x, uv.y, float(vLayer))).rgb, kLuma);
+        float hy = dot(texture(uBlockTex, vec3(uv.x, uv.y + dir.y * ts.y, float(vLayer))).rgb, kLuma);
         // Scaled to match the two-texel central difference this replaced, and clamped so a
         // high-contrast tile cannot flip the normal through the surface.
         vec2 slope = clamp(vec2((h0 - hx) * dir.x, (h0 - hy) * dir.y) * 2.0 * uRelief * 2.5 * reliefFade,
                            -0.9, 0.9);
+        if (natural) {
+            // the slope was measured in the turned tile: T^T takes it back to the face's own frame
+            vec2 ex = turnUv(vec2(1, 0), natHash), ey = turnUv(vec2(0, 1), natHash);
+            slope = vec2(dot(slope, ex), dot(slope, ey));
+        }
         Nl = normalize(N + kTangent[vDir] * slope.x + kBitangent[vDir] * slope.y);
     }
 
@@ -323,6 +392,12 @@ void main() {
     vec3 blockRGB = clamp(vLight.rgb + dither * (1.0 / 15.0), 0.0, 1.0);
     float skyL = clamp(vLight.a + dither * (1.0 / 15.0), 0.0, 1.0);
 
+    // Far terrain is made of terraces a pixel or less deep, and a lit tread next to a shaded
+    // riser then alternates every pixel: moire that crawls under TAA's jitter. From a distance
+    // that alternation is not information, so it is faded toward the face-averaged look
+    // (normal tipped toward up, riser darkening and per-corner AO eased off).
+    float farK = smoothstep(80.0, 300.0, length(vWorldRel));
+    Nl = normalize(mix(Nl, vec3(0.0, 1.0, 0.0), 0.55 * farK));
     float ndl = max(dot(Nl, uSunL), 0.0);
     float skyAccess = skyL * skyL; // voxel sky light gates how much sun reaches here
     // Nothing below ~1.4% reaches a sealed-in fragment anyway (direct is scaled by skyAccess),
@@ -338,6 +413,9 @@ void main() {
     float clouded = uCloudShadow > 0.0
                         ? mix(1.0, cloudSunlight(uCamPos + vWorldRel, uSunL), uCloudShadow)
                         : 1.0;
+    // A cloud is translucent: it takes at most about half the sun. Full strength made a cloud
+    // shadow as dark as the shadow of a solid block, so the two could not be told apart.
+    clouded = 1.0 - kCloudMaxBlock * (1.0 - clouded);
     // Emitters: layer 4 is glow, 15..39 the 25 lamp swatches. Needed in two places below,
     // so it is worked out once here rather than written out twice and allowed to disagree.
     float emitMask = (uEmissive > 0.0 && isEmitterLayer(vLayer)) ? 1.0 : 0.0;
@@ -464,7 +542,8 @@ void main() {
     // time and cannot be separated here, so the corner term is softened for the ambient
     // path rather than removed: at worst it takes 45% instead of everything. `direct`
     // keeps the full term — a face the sun does not reach should still go dark.
-    float ambShade = mix(0.75, 1.0, vShade);
+    float vShadeF = mix(vShade, 1.0, 0.7 * farK);
+    float ambShade = mix(0.75, 1.0, vShadeF);
     // direct's OWN occlusion question — is the sun blocked here — is already answered by
     // `shadow` above, from the actual cascade, not a 4-voxel corner guess. Multiplying by
     // the full vShade on top of that double-asks the same question with a much coarser
@@ -477,7 +556,7 @@ void main() {
     // shadow-map behaviour. Softened the same shape as ambShade, just less aggressively,
     // since `shadow` is already doing the real work here and this is only damping residual
     // corner noise, not the thing that makes a genuine notch look recessed.
-    float directShade = mix(0.7, 1.0, vShade);
+    float directShade = mix(0.7, 1.0, vShadeF);
     vec3 shading = direct * directShade + (ambient + cloudFill) * ambShade + torch * ownShade;
     // Hard backstop, not another adjustment to one contributing term: owner report, several
     // rounds running, is that ANY hard black reads as broken, regardless of which path
@@ -486,5 +565,5 @@ void main() {
     // allowed to render darker than this, full stop — dim and blue-tinted like the existing
     // flat ambient term above, so it reads as "in shadow" rather than as a flat grey floor.
     shading = max(shading, vec3(0.05, 0.055, 0.065));
-    outColor = vec4(albedo * kShade[vDir] * shading + emission + transmit, 1.0);
+    outColor = vec4(albedo * mix(kShade[vDir], 0.88, farK) * shading + emission + transmit, 1.0);
 }

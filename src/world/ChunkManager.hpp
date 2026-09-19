@@ -170,6 +170,14 @@ public:
         m_dirty = false;
         return was;
     }
+    // How close to the camera, in blocks, the nearest chunk changed since the last call (the
+    // shadow cascades only need redrawing where the change is, not everywhere). Infinite if
+    // nothing did.
+    float takeDirtyNearest() {
+        const float d = m_dirtyNearest;
+        m_dirtyNearest = 1e30f;
+        return d;
+    }
 
     // Recomputes the camera-outward visibility flood (cave culling) only when needed:
     // the chunk set changed, the camera crossed a chunk boundary, or the toggle
@@ -395,6 +403,8 @@ private:
     ChunkPos m_center{INT32_MIN, 0, INT32_MIN};
     int m_lastRadius = -1;
     bool m_dirty = false;
+    float m_dirtyNearest = 1e30f; // blocks; see takeDirtyNearest()
+    void noteDirty(ChunkPos p);
 
     // cached full-chunk scan for the HUD, refreshed a few times a second
     struct Scan {

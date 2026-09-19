@@ -110,6 +110,20 @@ std::uint8_t coarseNeighborMask(ChunkPos pos, int lod, ChunkPos center, int radi
 
 } // namespace
 
+void ChunkManager::noteDirty(ChunkPos p) {
+    m_dirty = true;
+    // before the first update there is no centre, and everything counts as near
+    if (m_center.x == INT32_MIN) {
+        m_dirtyNearest = 0.0f;
+        return;
+    }
+    const double dx = double(p.x - m_center.x), dy = double(p.y - m_center.y),
+                 dz = double(p.z - m_center.z);
+    const float blocks = float(std::sqrt(dx * dx + dy * dy + dz * dz) * kChunkSize) -
+                         0.5f * float(kChunkSize);
+    m_dirtyNearest = std::min(m_dirtyNearest, std::max(blocks, 0.0f));
+}
+
 void ChunkManager::columnRange(int cx, int cz, int& y0, int& y1, bool& skyAtTop) const {
     const int surf = m_gen.surfaceHeight(cx * kChunkSize + kChunkSize / 2,
                                          cz * kChunkSize + kChunkSize / 2);
@@ -256,11 +270,11 @@ void ChunkManager::processEvictions(Renderer& renderer, JobSystem& jobs) {
         }
         if (e.range.count != 0) {
             renderer.free(e.range);
-            m_dirty = true;
+            noteDirty(m_evictList[i]);
         }
         if (e.waterRange.count != 0) {
             renderer.free(e.waterRange);
-            m_dirty = true;
+            noteDirty(m_evictList[i]);
         }
         // Return the mesh buffers to the pool before the Entry (and its pointers) are gone
         // for good — miss this and the slot is still sitting in m_slots, just unreachable
@@ -295,6 +309,7 @@ void ChunkManager::rebuildArena(Renderer& renderer) {
             e.waterRange = renderer.alloc(*e.waterBuf);
     }
     m_dirty = true;
+    m_dirtyNearest = 0.0f; // every range moved
 }
 
 void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& light,
@@ -920,7 +935,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             e.sunlit = r.stats.sunlit;
             e.lod = r.lod;
             e.state = ChunkState::Meshed;
-            m_dirty = true;
+            noteDirty(r.pos);
             m_visDirty = true;
             // A landed mesh is a state change the LOD scan has to see. reLod only fires for
             // chunks in state Meshed, so one that was still Meshing when the camera moved
@@ -997,6 +1012,7 @@ void ChunkManager::loadWorld(Renderer& renderer, int seed, std::filesystem::path
     m_lastRadius = -1;
     m_meshScanDirty = true;
     m_dirty = true;
+    m_dirtyNearest = 0.0f;
     m_visDirty = true;
 }
 
@@ -1206,7 +1222,7 @@ void ChunkManager::remeshNow(Renderer& renderer, ChunkPos pos) {
     e.meshingLod = -1; // drop any in-flight async re-LOD result for this chunk
     e.remesh = false;  // just meshed against current light
     e.state = ChunkState::Meshed; // a stale worker result for this chunk now gets dropped
-    m_dirty = true;
+    noteDirty(pos);
     m_visDirty = true;
 }
 

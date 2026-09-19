@@ -354,6 +354,7 @@ void PostFx::run(const RunParams& p) {
                            (m_taaValid && p.taaHistoryValid) ? 1.0f : 0.0f);
         const glm::vec2 texel(1.0f / float(m_width), 1.0f / float(m_height));
         glProgramUniform2fv(m_progTaa, 11, 1, &texel.x);
+        glProgramUniform1f(m_progTaa, 12, p.camPos.y);
         glBindTextureUnit(0, m_hdr2);
         glBindTextureUnit(1, m_taa[prev]);
         glBindTextureUnit(2, m_depth);

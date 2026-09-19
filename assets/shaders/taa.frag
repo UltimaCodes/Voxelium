@@ -22,6 +22,7 @@ layout(location = 5) uniform mat4 uPrevViewProj; // last frame, unjittered
 layout(location = 9) uniform vec3 uCamDelta;    // thisCamPos - prevCamPos
 layout(location = 10) uniform float uHistoryValid;
 layout(location = 11) uniform vec2 uTexel;      // (1/w, 1/h)
+layout(location = 12) uniform float uCamY;      // camera world height, for the cloud layer
 
 void main() {
     vec3 cur = texture(uCurrent, vUv).rgb;
@@ -32,8 +33,18 @@ void main() {
     // reproject by rotation only)
     vec3 worldRel;
     if (rawD <= 0.0) {
-        worldRel = normalize(uInvViewRot *
-                             vec3(ndc.x * uProjScale.x, ndc.y * uProjScale.y, -1.0)) * 10000.0;
+        // Sky is mostly cloud, and clouds are a real layer 420..560 up: moving vertically
+        // shifts them on screen by parallax. Reprojecting as if at infinity (rotation only)
+        // held last frame's clouds in place, so they looked glued to the camera while the
+        // ground slid past. Put the pixel on the layer's middle instead.
+        vec3 dir = normalize(uInvViewRot * vec3(ndc.x * uProjScale.x, ndc.y * uProjScale.y, -1.0));
+        float dist = 10000.0;
+        if (dir.y > 0.05) {
+            float t = (490.0 - uCamY) / dir.y;
+            if (t > 1.0)
+                dist = min(t, 10000.0);
+        }
+        worldRel = dir * dist;
     } else {
         float viewZ = -uNear / max(rawD, 1e-7);
         worldRel = uInvViewRot * vec3(ndc.x * uProjScale.x * -viewZ,

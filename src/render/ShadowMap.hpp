@@ -62,6 +62,13 @@ public:
     // the wrong default while the world is streaming hard.
     void invalidate();
 
+    // Geometry changed `nearestBlocks` from the camera (see ChunkManager::takeDirtyNearest).
+    // Only the cascades whose part of the view can actually see that change are redrawn, each
+    // no more often than its own interval. Cascade 0 is redrawn every frame anyway. Before
+    // this every mesh that landed or edit made redrew all three, and the far one draws the
+    // whole visible world: ~20 ms of GPU per block you broke.
+    void invalidateNear(float nearestBlocks);
+
     // How many cascade redraws render() has actually issued, ever. Not per-frame — callers
     // that want a rate sample it at two points and diff, the same pattern SoundBank's
     // decodeCount() uses and for the same reason: a counter that resets itself is much
@@ -110,6 +117,10 @@ private:
     float m_radius[kCascades] = {};
     bool m_dirty[kCascades] = {true, true, true};
     bool m_forceAll = true;
+    // invalidateNear's deferred redraws: set now, honoured by update() once the cascade's
+    // interval has passed, so the last change is never dropped, only delayed.
+    bool m_pending[kCascades] = {};
+    std::chrono::steady_clock::time_point m_lastRedraw[kCascades] = {};
 
     // invalidate()'s throttle. A point in the past so the very first call always fires.
     static constexpr std::chrono::milliseconds kMinForceInterval{100};

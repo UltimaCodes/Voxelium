@@ -91,6 +91,18 @@ void ShadowMap::invalidate() {
     ++m_forcedCount;
 }
 
+void ShadowMap::invalidateNear(float nearestBlocks) {
+    // A cascade serves a band of distances; a changed block only matters to the pixels whose
+    // shadows it can fall on, which is the band it sits in plus about a tree's height either
+    // side. An edit beside the player therefore never touches the far cascade at all, and a
+    // chunk streaming in at the horizon never touches the near one.
+    constexpr float kReach = 64.0f;
+    if (nearestBlocks <= m_splits.y + kReach)
+        m_pending[1] = true;
+    if (nearestBlocks + kReach >= m_splits.y)
+        m_pending[2] = true;
+}
+
 void ShadowMap::setViewDistance(float blocks) {
     const float far = std::clamp(blocks, kFarMin, kFarMax);
     if (std::abs(far - m_splits.z) < 8.0f)
@@ -120,6 +132,11 @@ void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& forward,
 
     const float tanH = std::tan(fovYRad * 0.5f);
     const float tanW = tanH * aspect;
+    const auto now = std::chrono::steady_clock::now();
+    // the far cascade holds the most geometry by a distance, so it is the one made to wait
+    constexpr std::chrono::milliseconds kInterval[kCascades] = {std::chrono::milliseconds(0),
+                                                                std::chrono::milliseconds(60),
+                                                                std::chrono::milliseconds(700)};
 
     for (int c = 0; c < kCascades; ++c) {
         const float nearD = c == 0 ? 0.1f : m_splits[c - 1];
@@ -142,7 +159,13 @@ void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& forward,
         const bool reanchor = m_forceAll || c == 0 || m_radius[c] == 0.0f ||
                               drift > double(radius * kSlack) || sunMoved;
 
+        if (m_pending[c] && now - m_lastRedraw[c] >= kInterval[c]) {
+            m_pending[c] = false;
+            m_dirty[c] = true;
+            m_lastRedraw[c] = now;
+        }
         if (reanchor) {
+            m_lastRedraw[c] = now;
             // snap the centre to the texel grid in light space — double precision so the
             // snap is exact anywhere in the world and shadows never swim
             double cx = glm::dot(lx, idealWorld);
