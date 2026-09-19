@@ -75,6 +75,16 @@ weather is in the visuals tab: rain, snow, and wet surfaces that only get wet wh
 sky can actually reach them — caves, overhangs and ledge undersides stay dry, because the
 shading reads the same voxel sky access the sun does.
 
+it also runs itself. with **auto weather** on (the default) the clouds build for a while, it
+rains or snows for a minute or two, then it clears — no rain over desert, snow up on the
+peaks, and a mist at sunrise that hangs thickest over water. the thickening clouds and their
+shadows come from the same coverage field, so a storm rolling in darkens the ground under it
+instead of just painting the sky grey. turn it off and the sliders are yours again.
+
+cloud shadows are one small texture drawn per frame and read with a few taps along the sun
+ray, and the shadow cascades reach as far as you can see. thick tree canopy lets light
+through in gaps, so you get dappled floors and shafts rather than a flat dark blob.
+
 night is lit by the moon, not by a raised ambient floor — it rides the same shadow cascades
 the sun does, so hills have a lit side after dark and the fill can stay low.
 
@@ -90,8 +100,10 @@ you also get: a scuff when you jump, a landing that gets heavier the further you
 step off one block is a stride, not a drop), splashes going into and out of water, swim
 strokes, and bubbles while your head is under.
 
-ambience is eight looping beds crossfaded by where you actually are — day, night, wind,
-cave, deep underground, underwater, rain, and near water. "am i in a cave" is read off the
+ambience is a pile of looping beds crossfaded by where you actually are — day, night, wind,
+cave, deep underground, underwater, rain, near water, and now the biomes: birdsong under
+leaves, cicadas, frogs at dusk, desert wind, surf and gulls on a beach, and a low reef hum
+underwater. "am i in a cave" is read off the
 voxel **sky light** rather than by casting rays, since the light engine has already worked
 that out, and it needs you to be enclosed *and* underground, so an overhang isn't a cave.
 heavy rain gets occasional thunder, rolled off by how much sky you can see.
@@ -101,8 +113,9 @@ to 700 Hz — menus stay dry, because a menu click isn't in the water with you. 
 also muffled by solid blocks between them and your ear, one raycast per sound, with its own
 slider.
 
-everything bundled is **CC0** with its source listed in `sounds/README.md`, and no clip is
-required — delete any of them and the engine just stays quiet for that one. drop your own
+everything bundled is **CC0** or made here, with its source listed in `sounds/README.md` —
+the biome beds are synthesized by `scripts/gen_ambience.py`, so there's no third-party audio
+in them. no clip is required — delete any of them and the engine just stays quiet for that one. drop your own
 in and they take over; the naming rules are in that same file.
 
 ## worlds
@@ -116,10 +129,25 @@ so the world is built before you are standing in it.
 only your edits are stored, never the terrain — that regenerates from the seed — so a saved
 world is usually a few tens of KB.
 
+## biomes
+
+besides the usual hills, forests and mountains there's **desert** (dunes, sandstone, cacti,
+dead brush) and **ocean**: shallow reefs with branching, brain and tube coral, kelp forests,
+seagrass, and glowing coral for deeper water. beaches have their own sand with a shell
+pattern in it instead of plain desert sand, palm trees leaning over the water, and
+waterlogged plants that still count as water for the fluid sim and for swimming. the terrain
+is still a pure function of the seed and the column, so none of it needs neighbour lookups
+or breaks streaming.
+
+it isn't just scenery either — butterflies by day, fireflies at night, gulls and bird flocks
+crossing overhead, fish you can see through the water, falling leaves in forests. all of it
+is procedural sprites with no textures. wind comes through in gusts that sweep across the
+grass and leaves rather than every blade swaying in lockstep.
+
 ## what's in it
 
 12 milestones deep:
-binary greedy meshing + vertex pulling (8-byte quads, no VBO), palette-compressed chunks,
+binary greedy meshing + vertex pulling (16-byte quads, no VBO), palette-compressed chunks,
 a jthread job system, GPU-driven culling with the whole world in one indirect draw call,
 cave culling, flood-fill RGB block + sky lighting, FastNoise2 terrain with caves and ores,
 player physics + block editing, a forward HDR pipeline (cascaded shadows, SSAO,

@@ -14,6 +14,7 @@ class ShadowMap;
 class Overlay;
 class Particles;
 class Weather;
+class Wildlife;
 
 // Everything needed to draw one frame of the world, shared by the live game loop and by all
 // three offscreen harnesses (--smoke, --bench, --tour). It lives here rather than in main so
@@ -74,6 +75,7 @@ struct RenderContext {
     Overlay& overlay;
     Particles* particles; // null in the offscreen paths that never spawn any
     Weather* weather;     // null where precipitation is not wanted
+    Wildlife* wildlife;   // null where nothing lives; creatures are drawn before the water
     unsigned int drawProgram;
     unsigned int waterProgram;
     unsigned int blockTex;

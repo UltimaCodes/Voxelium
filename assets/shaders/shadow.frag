@@ -14,8 +14,7 @@ layout(binding = 0) uniform sampler2DArray uBlockTex;
 // holes.
 layout(location = 7) uniform float uLeafGap;
 
-// leaves; keep in step with texLayer in texlayer.glsl
-const uint kLeavesLayer = 7u;
+#include "texlayer.glsl"
 
 float gapHash(vec2 p) {
     p = fract(p * vec2(0.1031, 0.1030));
@@ -31,7 +30,7 @@ float gapNoise(vec2 p) {
 }
 
 void main() {
-    if (vLayer != kLeavesLayer)
+    if (!isCutoutLayer(vLayer))
         return;
     if (texture(uBlockTex, vec3(vUv, float(vLayer))).a < 0.5)
         discard;

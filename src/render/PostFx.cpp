@@ -118,7 +118,7 @@ void PostFx::shutdown() {
     glDeleteVertexArrays(1, &m_vao);
 }
 
-void PostFx::updateCloudMap(const glm::dvec3& camPos, float time) {
+void PostFx::updateCloudMap(const glm::dvec3& camPos, float time, float cloudBias) {
     constexpr float kTexel = kCloudMapSpan / float(kCloudMapRes);
     m_cloudOrigin = {std::floor(float(camPos.x) / kTexel) * kTexel - kCloudMapSpan * 0.5f,
                      std::floor(float(camPos.z) / kTexel) * kTexel - kCloudMapSpan * 0.5f};
@@ -130,6 +130,7 @@ void PostFx::updateCloudMap(const glm::dvec3& camPos, float time) {
     glProgramUniform2fv(m_progCloudMap, 0, 1, &m_cloudOrigin.x);
     glProgramUniform1f(m_progCloudMap, 1, kCloudMapSpan);
     glProgramUniform1f(m_progCloudMap, 2, time);
+    glProgramUniform1f(m_progCloudMap, 33, cloudBias);
     glBindVertexArray(m_vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glGenerateTextureMipmap(m_cloudTex); // the shader blurs by picking a coarser level
@@ -321,6 +322,7 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform3fv(m_progComposite, 30, 1, &p.lightL.x);
     glProgramUniform3fv(m_progComposite, 31, 1, &p.lightColor.x);
     glProgramUniform1f(m_progComposite, 32, p.daylight);
+    glProgramUniform1f(m_progComposite, 33, p.toggles.cloudBias);
     glProgramUniformMatrix4fv(m_progComposite, 6, 3, GL_FALSE,
                               &p.shadows->cascadeVp()[0][0][0]);
     const glm::vec3 splits = p.shadows->splits();

@@ -29,7 +29,11 @@ constexpr int kCrossLayer0 = kLampLayerEnd;
 // Break-progress crack stages, appended last so the block overlay can sample them out of
 // the same array the world already has bound — no second texture, no second sampler.
 constexpr int kCrackLayer0 = kLampLayerEnd + kCrossLayers;
-constexpr int kLayers = kCrackLayer0 + kCrackStages;
+// Coast, desert and reef tiles. Appended after the crack stages so every layer number the
+// shaders already hard-code (leaves 7, lamps 15..39, cross 40/41) stays where it was.
+constexpr int kBiomeLayer0 = kCrackLayer0 + kCrackStages;
+constexpr int kBiomeLayers = 22;
+constexpr int kLayers = kBiomeLayer0 + kBiomeLayers;
 
 // filename (without extension) per layer, looked up in assets/textures/
 constexpr const char* kNames[kNamedLayers] = {"stone",    "dirt",     "grass_top", "grass_side",
@@ -284,6 +288,350 @@ Rgba genGravel(int x, int y) {
     return shade(tone, tone * 0.98f, tone * 0.94f, n);
 }
 
+
+// ---- coast / desert / reef ----------------------------------------------------------------
+
+using Fill = void (*)(Rgba*);
+
+template <Gen G>
+void fillWith(Rgba* slot) {
+    for (int y = 0; y < kTile; ++y)
+        for (int x = 0; x < kTile; ++x)
+            slot[y * kTile + x] = G(x, y);
+}
+
+void clearTile(Rgba* slot) {
+    for (int i = 0; i < kTile * kTile; ++i)
+        slot[i] = {0, 0, 0, 0};
+}
+
+void put(Rgba* slot, int x, int y, Rgba c) {
+    if (x >= 0 && x < kTile && y >= 0 && y < kTile)
+        slot[y * kTile + x] = c;
+}
+
+Rgba solid(float r, float g, float b, float m = 1.0f) {
+    Rgba c = shade(r, g, b, m);
+    c.a = 255;
+    return c;
+}
+
+// Beach sand. Paler and finer than the desert one, flecked with shells: a scallop, a conch and
+// a few clams laid out so the 16x16 tile still reads as scattered when it repeats.
+Rgba genBeachSand(int x, int y) {
+    float n = 0.92f + 0.10f * h01(x, y, 101);
+    if (h01(x, y, 102) > 0.94f)
+        n *= 0.86f; // a darker grain
+    // Warm cream, but darker than it looks on paper: a sunlit beach is nearly all direct light,
+    // and 0.88/0.80/0.62 (then 0.80/0.66/0.42) blew out to a white sheet that read as snow, with
+    // nothing for the shells to stand out against. The desert sand (sand.png) averages
+    // 0.79/0.54/0.27 and is fine, so this matches its luminance with less orange in it.
+    Rgba c = shade(0.64f, 0.53f, 0.34f, n);
+
+    const auto ell = [&](float cx, float cy, float rx, float ry) {
+        const float dx = (float(x) - cx) / rx, dy = (float(y) - cy) / ry;
+        return dx * dx + dy * dy;
+    };
+    // scallop: a ribbed fan opening downward
+    {
+        const float d = ell(3.5f, 4.5f, 3.4f, 3.0f);
+        if (d < 1.0f && float(y) <= 6.0f) {
+            const int rib = int(std::floor((float(x) - 3.5f) * 1.6f + 8.0f)) & 1;
+            c = d > 0.72f ? shade(0.80f, 0.60f, 0.56f, 1.0f)
+                          : shade(rib ? 0.99f : 0.93f, rib ? 0.86f : 0.78f, rib ? 0.86f : 0.80f, 1.0f);
+        }
+        if (x >= 3 && x <= 4 && y == 7)
+            c = shade(0.80f, 0.60f, 0.56f, 1.0f); // the hinge
+    }
+    // conch: a tan spiral with a pale lip
+    {
+        const float d = ell(11.0f, 9.5f, 3.6f, 2.8f);
+        if (d < 1.0f) {
+            const float ang = std::atan2(float(y) - 9.5f, float(x) - 11.0f);
+            const float spiral = std::sin(ang + std::sqrt(d) * 9.0f);
+            c = d > 0.8f ? shade(0.98f, 0.93f, 0.85f, 1.0f)
+                         : (spiral > 0.1f ? shade(0.78f, 0.56f, 0.40f, 1.0f)
+                                          : shade(0.90f, 0.74f, 0.58f, 1.0f));
+        }
+    }
+    // small clams
+    const float clam = ell(5.5f, 12.5f, 2.2f, 1.6f);
+    if (clam < 1.0f)
+        c = clam > 0.6f ? shade(0.72f, 0.66f, 0.60f, 1.0f) : shade(0.96f, 0.92f, 0.90f, 1.0f);
+    if (ell(13.5f, 2.5f, 1.8f, 1.4f) < 1.0f)
+        c = shade(0.97f, 0.84f, 0.84f, 1.0f);
+    if (ell(1.5f, 14.0f, 1.6f, 1.2f) < 1.0f)
+        c = shade(0.92f, 0.88f, 0.82f, 1.0f);
+    return c;
+}
+
+Rgba genSandstoneSide(int x, int y) {
+    // strata: bands of slightly different tone, each with its own grain
+    const float band = std::sin(float(y) * 0.9f + h01(0, y / 3, 111) * 3.0f);
+    float n = 0.90f + 0.06f * band + 0.07f * h01(x, y, 112);
+    if (y % 5 == 0)
+        n *= 0.88f; // a bedding line
+    return shade(0.86f, 0.74f, 0.50f, n);
+}
+
+Rgba genSandstoneTop(int x, int y) {
+    const float n = 0.95f + 0.07f * h01(x, y, 113);
+    return shade(0.88f, 0.77f, 0.53f, n);
+}
+
+Rgba genCactusSide(int x, int y) {
+    // vertical ribs: a dark groove every 4 columns, spine dots on the ridges
+    float n = 0.85f + 0.10f * h01(x, y, 121);
+    const int col = x & 3;
+    if (col == 0)
+        n *= 0.72f;
+    Rgba c = shade(0.22f, 0.50f, 0.22f, n);
+    if (col == 2 && (y % 4) == 1)
+        c = shade(0.93f, 0.92f, 0.78f, 1.0f); // a spine
+    return c;
+}
+
+Rgba genCactusTop(int x, int y) {
+    const float dx = float(x) - 7.5f, dy = float(y) - 7.5f;
+    const float r = std::sqrt(dx * dx + dy * dy);
+    float n = 0.85f + 0.10f * h01(x, y, 122);
+    if (r > 6.2f)
+        n *= 0.7f; // rind
+    Rgba c = shade(0.24f, 0.54f, 0.24f, n);
+    if (r < 1.6f)
+        c = shade(0.90f, 0.88f, 0.70f, 1.0f); // the crown of spines
+    return c;
+}
+
+void fillDeadBush(Rgba* slot) {
+    clearTile(slot);
+    const Rgba twig = solid(0.45f, 0.32f, 0.18f);
+    const Rgba dry = solid(0.55f, 0.42f, 0.24f);
+    for (int t = 0; t < 8; ++t)
+        put(slot, 7, 15 - t, twig); // the trunk
+    const auto branch = [&](int x0, int y0, int dx, int len, Rgba c) {
+        int x = x0, y = y0;
+        for (int i = 0; i < len; ++i) {
+            put(slot, x, y, c);
+            x += dx;
+            if (i % 2 == 1)
+                --y;
+        }
+    };
+    branch(7, 9, -1, 6, dry);
+    branch(7, 9, 1, 6, twig);
+    branch(7, 11, -1, 5, twig);
+    branch(7, 11, 1, 4, dry);
+    branch(7, 7, -1, 3, twig);
+    branch(7, 7, 1, 4, dry);
+}
+
+Rgba genPalmSide(int x, int y) {
+    // a ringed, fibrous trunk: dark growth scars every third row over a grey-tan fibre
+    float n = 0.86f + 0.14f * h01(x, y / 2, 131);
+    Rgba c = shade(0.60f, 0.50f, 0.36f, n);
+    if (y % 3 == 0)
+        c = shade(0.38f, 0.30f, 0.20f, 0.9f + 0.1f * h01(x, y, 132));
+    if (x == 0 || x == 15)
+        c = shade(0.34f, 0.27f, 0.18f, 1.0f);
+    return c;
+}
+
+Rgba genPalmTop(int x, int y) {
+    const float dx = float(x) - 7.5f, dy = float(y) - 7.5f;
+    const float rings = 0.8f + 0.2f * std::sin(std::sqrt(dx * dx + dy * dy) * 2.6f);
+    return shade(0.62f, 0.52f, 0.34f, rings * (0.95f + 0.05f * h01(x, y, 133)));
+}
+
+Rgba genPalmLeaves(int x, int y) {
+    // a frond seen flat: a central rib with leaflets angling off it and gaps between them, so
+    // the cutout reads as many narrow leaves rather than one green sheet
+    const float dx = std::abs(float(x) - 7.5f);
+    const bool rib = dx < 0.9f;
+    const int row = int(std::floor(float(y) + dx * 0.55f)); // leaflets sweep back toward the tip
+    const bool leaflet = (row % 3) != 2 && dx < 7.5f;
+    Rgba c = shade(0.20f, 0.56f, 0.20f, 0.78f + 0.4f * h01(x / 2, y / 2, 141));
+    if (rib)
+        c = shade(0.34f, 0.66f, 0.28f, 1.0f);
+    c.a = (rib || (leaflet && h01(x, y, 142) > 0.16f)) ? 255 : 0;
+    return c;
+}
+
+Rgba genCoconut(int x, int y) {
+    const float dx = float(x) - 7.5f, dy = float(y) - 7.5f;
+    const float n = 0.80f + 0.30f * h01(x, y, 151);
+    Rgba c = shade(0.42f, 0.28f, 0.16f, n);
+    if (std::sqrt(dx * dx + dy * dy) > 7.0f)
+        c = shade(0.30f, 0.20f, 0.11f, 1.0f);
+    if ((x == 5 && y == 5) || (x == 9 && y == 5) || (x == 7 && y == 8))
+        c = shade(0.12f, 0.08f, 0.05f, 1.0f); // the three eyes
+    return c;
+}
+
+// seagrass: a clump of long blades that lean and cross
+void fillSeagrass(Rgba* slot) {
+    clearTile(slot);
+    for (int b = 0; b < 7; ++b) {
+        const int x0 = 1 + int(h01(b, 0, 161) * 13.0f);
+        const int h = 8 + int(h01(b, 0, 162) * 7.0f);
+        const float lean = (h01(b, 0, 163) - 0.5f) * 0.6f;
+        for (int t = 0; t < h; ++t) {
+            const int x = x0 + int(lean * float(t) + std::sin(float(t) * 0.7f + float(b)) * 0.8f);
+            const int y = kTile - 1 - t;
+            const float m = 0.65f + 0.35f * float(t) / float(h);
+            put(slot, x, y, solid(0.16f, 0.58f, 0.36f, m));
+            if (t > h / 2)
+                put(slot, x + 1, y, solid(0.20f, 0.66f, 0.40f, m)); // the blade widens
+        }
+    }
+}
+
+// kelp: two long strands that start and end on the same column, so blocks stacked on top of
+// each other read as one continuous stalk
+void fillKelp(Rgba* slot) {
+    clearTile(slot);
+    for (int strand = 0; strand < 2; ++strand) {
+        const float base = strand == 0 ? 5.0f : 10.5f;
+        for (int y = 0; y < kTile; ++y) {
+            const float w = base + std::sin((float(y) / float(kTile)) * 6.2831853f +
+                                            float(strand) * 2.1f) * 1.6f;
+            const int x = int(std::floor(w));
+            put(slot, x, y, solid(0.40f, 0.44f, 0.10f, 0.85f + 0.2f * h01(x, y, 171)));
+            put(slot, x + 1, y, solid(0.34f, 0.40f, 0.09f, 0.9f));
+            if ((y % 4) == 1) { // a leaf off the side, alternating
+                const int dir = ((y / 4) & 1) ? 1 : -1;
+                put(slot, x + dir * 2, y, solid(0.52f, 0.56f, 0.14f, 1.0f));
+                put(slot, x + dir * 3, y - 1, solid(0.52f, 0.56f, 0.14f, 1.0f));
+                put(slot, x + dir * 2, y + 1, solid(0.44f, 0.48f, 0.12f, 1.0f));
+            }
+        }
+    }
+}
+
+Rgba genBrainCoral(int x, int y) {
+    // the meandering ridges of a brain: two crossed sine fields
+    const float u = float(x), v = float(y);
+    const float r = std::sin(u * 1.25f + std::sin(v * 0.95f) * 1.9f) +
+                    std::sin(v * 1.20f + std::sin(u * 1.10f) * 1.9f);
+    const float m = r > 0.55f ? 1.12f : (r < -0.7f ? 0.72f : 0.94f);
+    return shade(0.92f, 0.46f, 0.62f, m * (0.94f + 0.08f * h01(x, y, 181)));
+}
+
+Rgba genTubeCoral(int x, int y) {
+    // a grid of open tubes: a pale rim round a dark mouth
+    const int cx = (x & 7) - 4, cy = (y & 7) - 4;
+    const float d = std::sqrt(float(cx * cx + cy * cy));
+    if (d < 1.4f)
+        return shade(0.05f, 0.12f, 0.32f, 1.0f);
+    if (d < 2.6f)
+        return shade(0.50f, 0.72f, 1.0f, 1.0f);
+    return shade(0.18f, 0.44f, 0.88f, 0.86f + 0.16f * h01(x, y, 191));
+}
+
+Rgba genFireCoral(int x, int y) {
+    // vertical branching, hot at the tips
+    const float n = 0.86f + 0.22f * h01(x / 2, y, 201);
+    const bool streak = (h01(x, 0, 202) > 0.5f) ^ ((y / 3) % 2 == 0);
+    Rgba c = shade(0.96f, streak ? 0.42f : 0.28f, 0.12f, n);
+    if (h01(x, y, 203) > 0.9f)
+        c = shade(1.0f, 0.78f, 0.25f, 1.0f);
+    return c;
+}
+
+Rgba genHornCoral(int x, int y) {
+    // a tree of dark forking lines over yellow
+    const bool line = ((x * 3 + y * 2) % 7 == 0) || ((x * 2 - y * 3 + 64) % 9 == 0);
+    if (line)
+        return shade(0.62f, 0.44f, 0.08f, 1.0f);
+    return shade(0.96f, 0.80f, 0.24f, 0.88f + 0.16f * h01(x, y, 211));
+}
+
+Rgba genBubbleCoral(int x, int y) {
+    // clusters of round bubbles with a bright glint each
+    const float bx = float(((x + 3) / 5) * 5) - 0.5f + (h01(x / 5, y / 5, 221) - 0.5f) * 2.0f;
+    const float by = float(((y + 3) / 5) * 5) - 0.5f + (h01(y / 5, x / 5, 222) - 0.5f) * 2.0f;
+    const float d = std::sqrt((float(x) - bx) * (float(x) - bx) + (float(y) - by) * (float(y) - by));
+    if (d < 1.0f)
+        return shade(0.92f, 0.78f, 1.0f, 1.0f);
+    if (d < 2.7f)
+        return shade(0.72f, 0.42f, 0.90f, 1.0f);
+    return shade(0.40f, 0.20f, 0.60f, 0.9f);
+}
+
+// A coral fan: veins radiate from the foot of the tile, joined by a lace of webbing.
+// Transparent outside the fan so it draws as a frond, not a block.
+void fillFan(Rgba* slot, float r, float g, float b) {
+    clearTile(slot);
+    for (int y = 0; y < kTile; ++y)
+        for (int x = 0; x < kTile; ++x) {
+            const float dx = float(x) - 7.5f, dy = 15.5f - float(y);
+            const float d = std::sqrt(dx * dx + dy * dy);
+            if (d > 14.0f || d < 1.5f || dy < 0.5f)
+                continue;
+            const float ang = std::atan2(dx, dy);
+            if (std::abs(ang) > 1.05f)
+                continue;
+            const float vein = std::abs(std::sin(ang * 9.0f));
+            const bool web = std::fmod(d, 3.4f) < 0.9f;
+            if (vein > 0.82f || web || d < 3.0f)
+                put(slot, x, y, solid(r, g, b, 0.75f + 0.35f * (d / 14.0f)));
+        }
+}
+void fillFanPink(Rgba* slot) { fillFan(slot, 0.96f, 0.42f, 0.66f); }
+void fillFanBlue(Rgba* slot) { fillFan(slot, 0.30f, 0.55f, 0.98f); }
+void fillFanOrange(Rgba* slot) { fillFan(slot, 0.98f, 0.55f, 0.16f); }
+
+// a conch standing on the sand, and nothing else on the tile
+void fillShell(Rgba* slot) {
+    clearTile(slot);
+    const int cx = 7, cy = 13;
+    for (int y = -5; y <= 2; ++y)
+        for (int x = -4; x <= 4; ++x) {
+            const float rx = float(x) / 4.2f, ry = float(y) / 4.2f;
+            if (rx * rx + ry * ry * 1.4f > 1.0f)
+                continue;
+            const bool ridge = ((x + y * 2 + 16) & 3) == 0;
+            put(slot, cx + x, cy + y,
+                ridge ? solid(0.78f, 0.52f, 0.44f, 1.0f) : solid(0.98f, 0.86f, 0.80f, 1.0f));
+        }
+}
+
+Rgba genGlowCoral(int x, int y) {
+    // organic cells with bright cores: the coral is meant to read as a light source
+    const float cx = float(((x + 2) / 6) * 6) - 0.5f + (h01(x / 6, y / 6, 231) - 0.5f) * 2.0f;
+    const float cy = float(((y + 2) / 6) * 6) - 0.5f + (h01(y / 6, x / 6, 232) - 0.5f) * 2.0f;
+    const float d = std::sqrt((float(x) - cx) * (float(x) - cx) + (float(y) - cy) * (float(y) - cy));
+    float glow = 1.0f - 0.16f * d + 0.08f * h01(x, y, 233);
+    if (glow < 0.4f)
+        glow = 0.4f;
+    return shade(0.32f, 1.0f, 0.95f, glow);
+}
+
+constexpr std::array<Fill, kBiomeLayers> kBiomeFill = {
+    fillWith<genBeachSand>,     // 47 beach sand
+    fillWith<genSandstoneSide>, // 48
+    fillWith<genSandstoneTop>,  // 49
+    fillWith<genCactusSide>,    // 50
+    fillWith<genCactusTop>,     // 51
+    fillDeadBush,               // 52
+    fillWith<genPalmSide>,      // 53
+    fillWith<genPalmTop>,       // 54
+    fillWith<genPalmLeaves>,    // 55
+    fillWith<genCoconut>,       // 56
+    fillSeagrass,               // 57
+    fillKelp,                   // 58
+    fillWith<genBrainCoral>,    // 59
+    fillWith<genTubeCoral>,     // 60
+    fillWith<genFireCoral>,     // 61
+    fillWith<genHornCoral>,     // 62
+    fillWith<genBubbleCoral>,   // 63
+    fillFanPink,                // 64
+    fillFanBlue,                // 65
+    fillFanOrange,              // 66
+    fillShell,                  // 67
+    fillWith<genGlowCoral>,     // 68
+};
+
 constexpr std::array<Gen, kNamedLayers> kGens = {genStone,    genDirt,    genGrassTop,
                                             genGrassSide, genGlow,   genWoodSide,
                                             genWoodTop,  genLeaves,  genSand,
@@ -317,6 +665,10 @@ unsigned int createBlockTextureArray(const std::filesystem::path& textureDir) {
         Rgba* slot = pixels.data() + std::size_t(layer) * kTile * kTile;
         if (layer >= kCrossLayer0 && layer < kCrackLayer0) { // foliage: generated, has alpha
             fillCross(layer - kCrossLayer0, slot);
+            continue;
+        }
+        if (layer >= kBiomeLayer0) { // coast, desert, reef: generated only
+            kBiomeFill[std::size_t(layer - kBiomeLayer0)](slot);
             continue;
         }
         if (layer >= kCrackLayer0) { // crack stages: generated, never loaded
@@ -383,6 +735,18 @@ int blockTopLayer(int b) {
         return kCrossLayer0;
     if (b == blocks::Flower)
         return kCrossLayer0 + 1;
+    switch (b) {
+        case blocks::BeachSand: return kBiomeLayer0;
+        case blocks::Sandstone: return kBiomeLayer0 + 2;
+        case blocks::Cactus: return kBiomeLayer0 + 4;
+        case blocks::DeadBush: return kBiomeLayer0 + 5;
+        case blocks::PalmWood: return kBiomeLayer0 + 7;
+        case blocks::PalmLeaves: return kBiomeLayer0 + 8;
+        case blocks::Coconut: return kBiomeLayer0 + 9;
+        default: break;
+    }
+    if (b >= blocks::Seagrass && b <= blocks::GlowCoral)
+        return kBiomeLayer0 + 10 + (b - blocks::Seagrass);
     return 0;
 }
 

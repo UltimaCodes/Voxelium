@@ -25,6 +25,8 @@
 #include "render/QualityPreset.hpp"
 #include "render/Renderer.hpp"
 #include "render/Weather.hpp"
+#include "render/WeatherDirector.hpp"
+#include "render/Wildlife.hpp"
 #include "render/ShadowMap.hpp"
 #include "ui/DebugHud.hpp"
 #include "world/Chunk.hpp"
@@ -225,10 +227,14 @@ int main(int argc, char** argv) {
     vx::Weather weather;
     if (!weather.init(shaders))
         return 1;
+    vx::Wildlife wildlife;
+    vx::WeatherDirector weatherDirector;
+    if (!wildlife.init(shaders))
+        return 1;
     vx::shutdownShaderCache(); // every program is built by here
     const GLuint blockTex = vx::createBlockTextureArray(assets / "textures");
     RenderContext rc{renderer,   shadowMap,    postfx,   overlay,  &particles,
-                     &weather,   drawProgram,  waterProgram, blockTex};
+                     &weather,   &wildlife,    drawProgram, waterProgram, blockTex};
 
     vx::DebugHud hud;
     if (!hud.init(window->handle()))
@@ -354,6 +360,7 @@ int main(int argc, char** argv) {
                                      benchSaveBaseline);
         hud.shutdown();
         particles.shutdown();
+        wildlife.shutdown();
         overlay.shutdown();
         postfx.shutdown();
         shadowMap.shutdown();
@@ -366,6 +373,7 @@ int main(int argc, char** argv) {
                                     assets.parent_path() / "sounds");
         hud.shutdown();
         particles.shutdown();
+        wildlife.shutdown();
         overlay.shutdown();
         postfx.shutdown();
         shadowMap.shutdown();
@@ -685,7 +693,8 @@ int main(int argc, char** argv) {
             const bool mmb = window->mouseDown(GLFW_MOUSE_BUTTON_MIDDLE);
             const auto hit = vx::raycastVoxels(
                 camera.position, camera.forward(), 6.0, [&](const glm::ivec3& p) {
-                    return vx::blocks::opaque(world->blockAtWorld(p));
+                    const vx::BlockId b = world->blockAtWorld(p);
+                    return vx::blocks::opaque(b) || vx::blocks::isCross(b);
                 });
 
             // Breaking is held, not clicked. Anything that changes what you are aiming at
@@ -774,6 +783,22 @@ int main(int argc, char** argv) {
             // Same function the frame shades from, so dusk sounds like dusk looks rather
             // than crossing over at its own private time of day.
             ambience.daylight = vx::computeSky(fx.timeOfDay).daylight;
+            // Auto weather runs BEFORE anything reads precip below (ambience, storm audio,
+            // wildlife and the next render), so sound, creatures and picture agree in-frame.
+            // desert/coast are last frame's, which is plenty for a quantity that moves over
+            // minutes.
+            if (fx.autoWeather) {
+                const auto w = weatherDirector.update(float(dt), float(camera.position.y),
+                                                      ambience.desert, ambience.coast,
+                                                      fx.timeOfDay);
+                fx.precip = w.precip;
+                fx.snow = w.snow;
+                fx.cloudBias = w.cloudBias;
+                fx.mist = w.mist;
+            } else {
+                fx.cloudBias = 0.0f;
+                fx.mist = 0.0f;
+            }
             ambience.precip = fx.precip;
             ambience.underwater = eyeUnderwater;
             // A coarse count of the water around the ear, so standing by a lake is audibly
@@ -788,6 +813,36 @@ int main(int argc, char** argv) {
                                    ? 1
                                    : 0;
             ambience.nearWater = float(wet) / 27.0f;
+            // Where the ear is standing: the generator's biome function at the ear and four
+            // points around it (so a shoreline is heard before you are on it), plus a lattice
+            // count of what is physically here - leaves for the canopy, coral for the reef.
+            {
+                constexpr int kSpread = 24;
+                const int offs[5][2] = {{0, 0}, {kSpread, 0}, {-kSpread, 0}, {0, kSpread},
+                                        {0, -kSpread}};
+                float coast = 0.0f, desert = 0.0f;
+                for (const auto& o : offs) {
+                    const auto b = world->generator().biomeAt(ear.x + o[0], ear.z + o[1]);
+                    coast += std::max(b.ocean, b.beach);
+                    desert += b.desert;
+                }
+                ambience.coast = coast / 5.0f;
+                ambience.desert = desert / 5.0f;
+                int leaves = 0, reef = 0;
+                for (int dy = -3; dy <= 9; dy += 6)
+                    for (int dz = -8; dz <= 8; dz += 8)
+                        for (int dx = -8; dx <= 8; dx += 8) {
+                            const vx::BlockId b =
+                                world->blockAtWorld(ear + glm::ivec3(dx, dy, dz));
+                            leaves += (b == vx::blocks::Leaves || b == vx::blocks::PalmLeaves) ? 1 : 0;
+                            reef += (vx::blocks::isCoral(b) || b == vx::blocks::GlowCoral ||
+                                     b == vx::blocks::Kelp || b == vx::blocks::Seagrass)
+                                        ? 1
+                                        : 0;
+                        }
+                ambience.forest = std::min(float(leaves) / 5.0f, 1.0f);
+                ambience.reef = std::min(float(reef) / 4.0f, 1.0f);
+            }
             vx::applyAmbience(audio, vx::mixAmbience(ambience), fx.volAmbient);
             storm.update(audio, fx.precip, ambience.skyAccess, float(dt));
         }
@@ -798,6 +853,19 @@ int main(int argc, char** argv) {
 
         world->update(*jobs, renderer, *light, camera.position);
         particles.update(float(dt));
+        {
+            vx::Wildlife::Env we;
+            we.daylight = ambience.daylight;
+            we.precip = ambience.precip;
+            we.skyAccess = ambience.skyAccess;
+            we.coast = ambience.coast;
+            we.forest = ambience.forest;
+            we.desert = ambience.desert;
+            we.reef = ambience.reef;
+            we.nearWater = ambience.nearWater;
+            we.underwater = eyeUnderwater;
+            wildlife.update(float(dt), *world, camera.position, we);
+        }
 
         // Fluid runs on its own slow clock, not per frame: water moving at 60 Hz looks
         // like a nervous twitch rather than a flow, and each tick is a batched edit that
@@ -849,7 +917,8 @@ int main(int argc, char** argv) {
         if (!settingsOpen) {
             const auto sel = vx::raycastVoxels(
                 camera.position, camera.forward(), 6.0, [&](const glm::ivec3& p) {
-                    return vx::blocks::opaque(world->blockAtWorld(p));
+                    const vx::BlockId b = world->blockAtWorld(p);
+                    return vx::blocks::opaque(b) || vx::blocks::isCross(b);
                 });
             if (sel.hit) {
                 hasSel = true;
@@ -987,6 +1056,7 @@ int main(int argc, char** argv) {
                 world->update(*jobs, renderer, *light, camera.position);
                 renderer.endFrame();
             }
+            weatherDirector.reset();
             int newSeed = 0;
             const char* title = "voxelium";
             if (wantLoad && worldStore.load(worldUi.selected, newSeed)) {
@@ -1064,6 +1134,7 @@ int main(int argc, char** argv) {
     world->saveDirty(); // persist edits before teardown (workers join after this)
     hud.shutdown();
     particles.shutdown();
+    wildlife.shutdown();
     overlay.shutdown();
     postfx.shutdown();
     shadowMap.shutdown();

@@ -1353,8 +1353,11 @@ int ChunkManager::stepFalling(Renderer& renderer, LightEngine& light, int* lande
         // tick would be worse than one that vanishes.
         if (blocks::isCross(here)) {
             const BlockId under = blockAtWorld({p.x, p.y - 1, p.z});
-            if (under == blocks::Air || blocks::isWater(under) || blocks::isCross(under))
-                m_fluidEdits.push_back({p, blocks::Air});
+            // Stands on anything solid; kelp may also stand on more kelp. Waterlogged plants
+            // are replaced by water, not air, or a popped stalk would leave a hole in the sea.
+            const bool wet = blocks::isWaterlogged(here);
+            if (!blocks::opaque(under) && !(wet && blocks::isWaterlogged(under)))
+                m_fluidEdits.push_back({p, wet ? blocks::Water : blocks::Air});
             continue;
         }
         if (!blocks::falls(here))

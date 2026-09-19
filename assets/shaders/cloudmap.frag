@@ -21,5 +21,6 @@ layout(location = 2) uniform float uTime;
 
 void main() {
     vec2 xz = uOrigin + vUv * uSpan;
-    outShade = smoothstep(0.15, 1.05, cloudCoverageShadow(xz, uTime));
+    outShade = smoothstep(0.15 - uCloudBias * 0.6, 1.05 - uCloudBias * 0.6,
+                          cloudCoverageShadow(xz, uTime));
 }

@@ -526,6 +526,12 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
                                   "daylight is untouched.");
 
             ImGui::SeparatorText("weather");
+            ImGui::Checkbox("auto weather", &fx.autoWeather);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("clouds build, it rains or snows, then it clears, on its own.\n"
+                                  "mist gathers at dawn, thickest over water. no rain on sand.\n"
+                                  "turn it off to set the sky by hand with the sliders below.");
+            ImGui::BeginDisabled(fx.autoWeather);
             ImGui::SetNextItemWidth(-125.0f);
             ImGui::SliderFloat("precipitation", &fx.precip, 0.0f, 1.0f, "%.2f");
             if (ImGui::IsItemHovered())
@@ -536,6 +542,7 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
             ImGui::SliderFloat("snow", &fx.snow, 0.0f, 1.0f, "%.2f");
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("0 rain, 1 snow. snow drifts and does not wet anything.");
+            ImGui::EndDisabled();
 
             ImGui::SeparatorText("exposure & bloom");
             ImGui::Checkbox("auto exposure", &fx.autoExposure);

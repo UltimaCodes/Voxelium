@@ -28,13 +28,38 @@ public:
     void generate(Chunk& chunk, ChunkPos pos, bool detailed = true) const;
     int surfaceHeight(int wx, int wz) const; // for spawn placement
 
+    // What the ground at a column is, as 0..1 weights: open sea (deeper is higher), the sandy
+    // band around it, and desert. Pure function of the seed, same as everything here, so the
+    // ambience director can ask where the player is standing without touching the world.
+    struct BiomeSample {
+        float ocean = 0.0f;
+        float beach = 0.0f;
+        float desert = 0.0f;
+    };
+    BiomeSample biomeAt(int wx, int wz) const;
+
 private:
+    // Final height of a column and how desert it is. Every place that needs to agree about the
+    // ground (chunks, trees, foliage, spawn, light) goes through this one shaping function.
+    struct Column {
+        int h;
+        float desert;
+    };
+    Column column(int wx, int wz) const;
+    static Column shapeColumn(float heightNoise, float continent, float arid, float dune);
+
     void placeTrees(Chunk& chunk, ChunkPos pos) const;
-    void placeFoliage(Chunk& chunk, ChunkPos pos) const;
+    void placeFoliage(Chunk& chunk, ChunkPos pos, const int (*heights)[kChunkSize],
+                      const float (*desert)[kChunkSize]) const;
+    void decorateSea(Chunk& chunk, int baseX, int baseY, int baseZ, int x, int z, int h) const;
+    void placePalm(Chunk& chunk, ChunkPos pos, int tx, int tz, int surf,
+                   std::uint32_t rv) const;
 
     int m_seed;
     FastNoise::SmartNode<> m_height;    // domain-warped fbm, [-1,1]
     FastNoise::SmartNode<> m_continent; // very low frequency, drives the spline
+    FastNoise::SmartNode<> m_arid;      // very low frequency, where it is hot and dry
+    FastNoise::SmartNode<> m_dune;      // crest lines for the desert's dunes
     FastNoise::SmartNode<> m_cheese;    // 3d fbm cave blobs
     // Worm tunnels are the intersection of these two: the places where BOTH are near zero
     // form a 1D curve through the volume, and carving a radius around it gives a tunnel.

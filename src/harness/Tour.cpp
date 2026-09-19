@@ -18,6 +18,7 @@
 #include "render/FrameRenderer.hpp"
 #include "render/Overlay.hpp"
 #include "render/Particles.hpp"
+#include "render/Wildlife.hpp"
 #include "render/PostFx.hpp"
 #include "render/Renderer.hpp"
 #include "render/ShadowMap.hpp"
@@ -89,6 +90,12 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
     // off. Rendering both and diffing answers it in one run.
     if (const char* c = std::getenv("VX_TOUR_CLOUDSHADOW"))
         fx.cloudShadow = std::clamp(float(std::atof(c)), 0.0f, 1.0f);
+    // The weather director only runs in the game loop, so its two visual outputs get their own
+    // hooks: VX_TOUR_CLOUDBIAS=0.22 is fully overcast, VX_TOUR_MIST=1 the thickest dawn haze.
+    if (const char* cb = std::getenv("VX_TOUR_CLOUDBIAS"))
+        fx.cloudBias = std::clamp(float(std::atof(cb)), 0.0f, 0.3f);
+    if (const char* ms = std::getenv("VX_TOUR_MIST"))
+        fx.mist = std::clamp(float(std::atof(ms)), 0.0f, 1.0f);
 
     std::vector<std::uint8_t> pixels(std::size_t(w) * h * 3);
     // walk outward from spawn: the report is that things degrade with distance travelled.
@@ -144,6 +151,10 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
     if (const char* cp = std::getenv("VX_TOUR_CUSTOM")) {
         double cx = 0.0, cy = 0.0, cz = 0.0;
         std::sscanf(cp, "%lf,%lf,%lf", &cx, &cy, &cz);
+        // VX_TOUR_ABOVE=n puts the camera n blocks above the terrain at (x,z) and ignores y, so
+        // a spot found by scanning the generator is never accidentally inside the ground
+        if (const char* ab = std::getenv("VX_TOUR_ABOVE"))
+            cy = double(world.generator().surfaceHeight(int(cx), int(cz))) + std::atof(ab);
         camera.position = {cx, cy, cz};
         camera.yawDeg = 0.0f;
         camera.pitchDeg = -20.0f;
@@ -159,24 +170,70 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
         world.collectDrawInfo(di, wi);
         rc.renderer.updateChunkMeta(di);
         rc.renderer.updateWaterMeta(wi);
-        const float pitches[] = {-55.0f, -20.0f, 10.0f};
-        int shot = 0;
-        for (float pitch : pitches) {
-            camera.pitchDeg = pitch;
-            for (int yaw = 0; yaw < 360; yaw += 45) {
-                camera.yawDeg = float(yaw);
-                world.updateVisibilityIfNeeded(rc.renderer, camera.position, true);
-                rc.renderer.beginFrame();
-                renderFrame(rc, camera, fx, true, w, h, fbo, 0.6f, nullptr);
-                rc.renderer.endFrame();
-                glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, pixels.data());
-                char name[64];
-                std::snprintf(name, sizeof(name), "tour_custom_%d.bmp", shot++);
-                vx::writeBmp24(name, w, h, pixels);
+        // VX_TOUR_SHOTS="yaw:pitch;yaw:pitch" takes explicit views instead of the full sweep
+        std::vector<std::pair<float, float>> views;
+        if (const char* sp = std::getenv("VX_TOUR_SHOTS")) {
+            while (*sp) {
+                float yaw = 0.0f, pitch = 0.0f;
+                int used = 0;
+                if (std::sscanf(sp, "%f:%f%n", &yaw, &pitch, &used) < 2)
+                    break;
+                views.emplace_back(yaw, pitch);
+                sp += used;
+                while (*sp == ';' || *sp == ' ')
+                    ++sp;
             }
+        } else {
+            for (float pitch : {-55.0f, -20.0f, 10.0f})
+                for (int yaw = 0; yaw < 360; yaw += 45)
+                    views.emplace_back(float(yaw), pitch);
         }
-        VX_INFO("tour custom: %d shots (8 yaw x 3 pitch) from (%.0f,%.0f,%.0f)", shot, cx, cy,
-                cz);
+        // below the surface the composite needs to know, or the fog and tint never apply
+        const bool under = vx::blocks::isWater(
+            world.blockAtWorld(glm::ivec3(glm::floor(camera.position))));
+        // VX_TOUR_WILD=day|night|coast|sea lets the creatures run for ~20 simulated seconds
+        // first, with the surroundings that mode implies. The tour never runs the game loop,
+        // so without this nothing would be alive in the shots.
+        if (const char* wm = std::getenv("VX_TOUR_WILD"); wm != nullptr && rc.wildlife != nullptr) {
+            vx::Wildlife::Env we;
+            we.underwater = under;
+            const std::string mode = wm;
+            if (mode == "day") {
+                we.daylight = 1.0f;
+                we.forest = 0.7f;
+            } else if (mode == "night") {
+                we.daylight = 0.0f;
+                we.forest = 0.6f;
+                we.nearWater = 0.4f;
+            } else if (mode == "coast") {
+                we.coast = 1.0f;
+                we.nearWater = 0.5f;
+            } else if (mode == "sea") {
+                we.nearWater = 1.0f;
+                we.reef = 0.8f;
+                we.coast = 0.5f;
+            }
+            for (int i = 0; i < 600; ++i)
+                rc.wildlife->update(1.0f / 30.0f, world, camera.position, we);
+            VX_INFO("tour wildlife: %d creatures alive (%s)", rc.wildlife->liveCount(), wm);
+        }
+        int shot = 0;
+        for (const auto& [yaw, pitch] : views) {
+            camera.yawDeg = yaw;
+            camera.pitchDeg = pitch;
+            world.updateVisibilityIfNeeded(rc.renderer, camera.position, true);
+            rc.renderer.beginFrame();
+            renderFrame(rc, camera, fx, true, w, h, fbo, 0.6f, nullptr, false, glm::vec3(0.0f),
+                        under);
+            rc.renderer.endFrame();
+            glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, pixels.data());
+            char name[64];
+            std::snprintf(name, sizeof(name), "tour_custom_%d.bmp", shot++);
+            vx::writeBmp24(name, w, h, pixels);
+        }
+        VX_INFO("tour custom: %d shots from (%.0f,%.0f,%.0f)%s", shot, cx, cy, cz,
+                under ? " underwater" : "");
+        return 0; // a custom run is only the custom shots, not the fixed stops on top
     }
     for (int i = 0; i < int(std::size(stops)); ++i) {
         camera.position = stops[i];

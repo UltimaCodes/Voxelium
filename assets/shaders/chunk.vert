@@ -8,6 +8,7 @@ layout(std430, binding = 1) readonly buffer Offsets { vec4 uOffsets[]; };
 
 layout(location = 0) uniform mat4 uViewProj; // camera-relative: view is at the origin
 layout(location = 20) uniform float uTime;   // for leaf sway
+layout(location = 24) uniform vec3 uCamPos;  // camera world position, for wind gusts
 
 out vec3 vWorldRel;
 out vec2 vUv;         // tiling texture coords (0..w, 0..h)
@@ -33,6 +34,15 @@ const vec2 kCorner[6][4] = vec2[6][4](
 const vec2 kQuadCorner[4] = vec2[4](vec2(0, 0), vec2(0, 1), vec2(1, 1), vec2(1, 0));
 
 const float kBloat = 0.001; // greedy T-junction pinhole fix (docs/M4)
+
+// Wind comes in gusts that sweep across the ground rather than every blade moving in step:
+// a slow travelling wave in WORLD space (so walking does not drag it along), squared so most of
+// the time it is a breeze and now and then it leans everything over.
+float windGust(vec3 camRelPos) {
+    vec3 w = camRelPos + uCamPos;
+    float g = 0.5 + 0.5 * sin(dot(w.xz, vec2(0.047, 0.031)) + uTime * 0.45);
+    return 0.55 + 1.2 * g * g;
+}
 
 void main() {
     uvec4 q = quads[gl_VertexID / 6];
@@ -61,10 +71,20 @@ void main() {
             p = (dir == 6u) ? vec3(cc.x, cc.y, cc.x) : vec3(cc.x, cc.y, 1.0 - cc.x);
             wpos = origin + p + uOffsets[gl_DrawID].xyz;
         }
-        // same wind wobble the leaves get, scaled by height up the blade so the root stays
         float ph = wpos.x * 0.5 + wpos.z * 0.5;
-        wpos.x += 0.09 * cc.y * sin(uTime * 1.7 + ph);
-        wpos.z += 0.07 * cc.y * sin(uTime * 2.0 + ph * 1.3);
+        if (block == 56u || block == 57u || (block >= 63u && block <= 65u)) {
+            // Underwater plants sway with the current, and it has to be a function of world
+            // height rather than of this block's own blade: kelp is stacked blocks, and a root
+            // that stays put under a tip that moves would kink at every join.
+            float sw = sin(uTime * 0.9 + wpos.y * 0.55 + ph) * 0.11 * (block == 57u ? 1.0 : 0.6);
+            wpos.x += sw;
+            wpos.z += sw * 0.6 * cos(uTime * 0.7 + wpos.y * 0.4);
+        } else {
+            // same wind wobble the leaves get, scaled by height up the blade so the root stays
+            float gust = windGust(wpos);
+            wpos.x += 0.09 * cc.y * sin(uTime * 1.7 + ph) * gust;
+            wpos.z += 0.07 * cc.y * sin(uTime * 2.0 + ph * 1.3) * gust;
+        }
         vWorldRel = wpos;
         // Flip V: cc.y is 0 at the BOTTOM of the voxel, but texture row 0 is the TOP of
         // the tile. Without this the blades render upside down, which also hangs them from
@@ -93,11 +113,12 @@ void main() {
     vec3 world = pos + uOffsets[gl_DrawID].xyz;
 
     // leaf sway: gentle wind wobble driven by world position + time
-    if (block == 7u) {
+    if (block == 7u || block == 54u) {
         float ph = world.x * 0.5 + world.z * 0.5;
-        world.x += 0.06 * sin(uTime * 1.6 + ph);
-        world.z += 0.05 * sin(uTime * 1.9 + ph * 1.3);
-        world.y += 0.03 * sin(uTime * 2.2 + ph * 0.7);
+        float gust = windGust(world);
+        world.x += 0.06 * sin(uTime * 1.6 + ph) * gust;
+        world.z += 0.05 * sin(uTime * 1.9 + ph * 1.3) * gust;
+        world.y += 0.03 * sin(uTime * 2.2 + ph * 0.7) * gust;
     }
 
     // Per-corner vertex brightness: 4 corners x 3 bits, 7 = full. Lives entirely inside w1

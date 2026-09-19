@@ -47,6 +47,7 @@ layout(location = 30) uniform float uWetness;    // 0 dry .. 1 soaked (#29)
 layout(location = 31) uniform vec3 uCloudMapXf;  // cloud map: world XZ of its corner, 1 / span
 
 #include "clouds.glsl"
+#include "texlayer.glsl"
 
 layout(binding = 0) uniform sampler2DArray uBlockTex;
 layout(binding = 6) uniform sampler2D uCloudMap; // coverage field, see cloudmap.frag
@@ -236,7 +237,7 @@ void main() {
     // not occluders in the mesher either, so the faces behind them are still there to be
     // seen through those gaps — that is what makes a canopy read as leaves rather than as a
     // green cube, and it is why light and shadow get through it.
-    if ((vDir >= 6u || vLayer == 7u) && texel.a < 0.5)
+    if ((vDir >= 6u || isCutoutLayer(vLayer)) && texel.a < 0.5)
         discard;
     vec3 albedo = texel.rgb;
 
@@ -339,8 +340,7 @@ void main() {
                         : 1.0;
     // Emitters: layer 4 is glow, 15..39 the 25 lamp swatches. Needed in two places below,
     // so it is worked out once here rather than written out twice and allowed to disagree.
-    float emitMask =
-        (uEmissive > 0.0 && (vLayer == 4u || (vLayer >= 15u && vLayer <= 39u))) ? 1.0 : 0.0;
+    float emitMask = (uEmissive > 0.0 && isEmitterLayer(vLayer)) ? 1.0 : 0.0;
 
     vec3 direct = uSunColor * (ndl * shadow * skyAccess * clouded);
     // A cloud does not delete the light it blocks, it scatters it. Under one the ground gets
@@ -410,7 +410,7 @@ void main() {
     // everything else is opaque and gets nothing. Scaled by skyAccess so leaves buried deep
     // inside a canopy, which no sunlight reaches, do not light up.
     vec3 transmit = vec3(0.0);
-    if (uLeafSss > 0.0 && (vLayer == 7u || vLayer == 40u || vLayer == 41u)) {
+    if (uLeafSss > 0.0 && (isCutoutLayer(vLayer) || vDir >= 6u)) {
         float back = pow(max(dot(-uSunL, normalize(vWorldRel)), 0.0), 3.0);
         // wrap: some light gets through even side-on, which keeps it from popping in
         float wrap = max(dot(N, -uSunL), 0.0) * 0.35 + 0.65 * back;

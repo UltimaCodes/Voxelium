@@ -254,7 +254,10 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
                             // enough cubes win to shred a hillside into floating shelves
                             // and dot a shoreline with a checkerboard of gaps.
                             const BlockId raw = chunk.get(sx * f + dx, sy * f + dy, sz * f + dz);
-                            const BlockId b = blocks::isCross(raw) ? blocks::Air : raw;
+                            // a waterlogged plant is water at this scale, not a hole in the sea
+                            const BlockId b = blocks::isWaterlogged(raw)
+                                                  ? blocks::Water
+                                                  : (blocks::isCross(raw) ? blocks::Air : raw);
                             if (b < blocks::kBlockCount)
                                 ++counts[b];
                             const std::uint32_t l = chunk.lightAt(sx * f + dx, sy * f + dy,

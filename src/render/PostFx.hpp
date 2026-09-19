@@ -90,6 +90,12 @@ struct FxToggles {
     // put their finger on but everybody notices.
     float precip = 0.0f;
     float snow = 0.0f;
+    // Let the weather change on its own (render/WeatherDirector). precip and snow are then
+    // driven, and the sliders only apply with this off.
+    bool autoWeather = true;
+    // Runtime only, never saved: filled in each frame by whatever is directing the sky.
+    float cloudBias = 0.0f; // extra cloud cover, 0..~0.22
+    float mist = 0.0f;      // 0..1, pulls the fog in (dawn, over water)
     // Shader quality tier, 0 Low .. 3 Ultra. Injected as VX_QUALITY and baked into the
     // programs, so changing it costs a shader rebuild — not a per-frame branch. 2 is the
     // build that existed before presets, which is what every other tier is judged against.
@@ -136,7 +142,7 @@ public:
     // Re-renders the cloud coverage texture around the camera. Call before the opaque pass;
     // terrain samples it (unit 6) for cloud shadows. Origin is snapped to whole texels so
     // the sample grid never shimmers as the camera moves.
-    void updateCloudMap(const glm::dvec3& camPos, float time);
+    void updateCloudMap(const glm::dvec3& camPos, float time, float cloudBias);
     unsigned int cloudMapTex() const { return m_cloudTex; }
     // xy = world XZ of the map's corner, z = 1 / span
     glm::vec3 cloudMapXf() const { return {m_cloudOrigin.x, m_cloudOrigin.y, 1.0f / kCloudMapSpan}; }

@@ -4,6 +4,7 @@
 #include "render/Particles.hpp"
 #include "render/Renderer.hpp"
 #include "render/Weather.hpp"
+#include "render/Wildlife.hpp"
 #include "render/ShadowMap.hpp"
 #include "world/Chunk.hpp"
 
@@ -128,7 +129,7 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     if (timers) timers->scene.begin();
     const bool cloudShadows = fx.clouds && fx.cloudShadow > 0.0f;
     if (cloudShadows)
-        rc.postfx.updateCloudMap(camera.position, time);
+        rc.postfx.updateCloudMap(camera.position, time, fx.cloudBias);
     rc.postfx.beginScene();
     glClearColor(0.42f, 0.68f, 1.05f, 1.0f); // HDR sky
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -170,6 +171,16 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     rc.renderer.drawWorld(cam.viewProj, cam.frustum, cam.cameraChunk, cam.cameraFrac,
                           caveCull);
     glBindSampler(5, 0);
+
+    // Creatures go in with the opaque scene, not after the water: a fish under a lake has to be
+    // seen THROUGH it, refracted and absorbed like the seabed, and the snapshot the water pass
+    // takes next is what makes that happen.
+    if (rc.wildlife && rc.wildlife->liveCount() > 0) {
+        const glm::vec3 fwd = camera.forward();
+        const glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0.0f, 1.0f, 0.0f)));
+        const glm::vec3 upv = glm::cross(right, fwd);
+        rc.wildlife->draw(cam.viewProj, camera.position, right, upv, underwater);
+    }
 
     // transparent water over the opaque scene: alpha blend, depth test but no write.
     // snapshot the opaque colour first so the water shader can reflect it (SSR).
@@ -257,7 +268,10 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     rp.lightColor = sky.color;
     rp.sunColor = sky.sunColor;
     rp.daylight = sky.daylight;
-    rp.fog = {fogEnd * 0.55f, fogEnd};
+    // mist pulls the fog in; the shadow reach above uses fogEnd untouched so the cascades do
+    // not redraw every time the mist moves
+    const float mistScale = 1.0f - 0.5f * fx.mist;
+    rp.fog = {fogEnd * 0.55f * mistScale, fogEnd * mistScale};
     rp.shadows = &rc.shadows;
     rp.toggles = fx;
     rp.time = time;

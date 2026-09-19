@@ -73,7 +73,6 @@ inline constexpr int kLampShades = 2; // saturated, then washed halfway to white
 inline constexpr int kLampCount = kLampHues * kLampShades + 1;
 inline constexpr BlockId LampFirst = 22;
 inline constexpr BlockId LampLast = LampFirst + kLampCount - 1;
-inline constexpr int kBlockCount = 49; // through Flower
 inline constexpr bool isLamp(BlockId id) { return id >= LampFirst && id <= LampLast; }
 
 struct LampRgb {
@@ -105,13 +104,49 @@ inline constexpr std::array<LampRgb, kLampCount> kLampRGB = makeLampTable();
 // hide the faces behind them, and non-solid, so you walk through them.
 inline constexpr BlockId GrassTuft = 47;
 inline constexpr BlockId Flower = 48;
-inline constexpr bool isCross(BlockId id) { return id == GrassTuft || id == Flower; }
+
+// Coast, desert and reef. Appended after everything that already existed so no saved id
+// moves. Beach sand is its own block (pale, shell-flecked) rather than a tint of Sand, since
+// there is no per-voxel metadata to tint with.
+inline constexpr BlockId BeachSand = 49;
+inline constexpr BlockId Sandstone = 50;
+inline constexpr BlockId Cactus = 51;
+inline constexpr BlockId DeadBush = 52;   // cross
+inline constexpr BlockId PalmWood = 53;
+inline constexpr BlockId PalmLeaves = 54; // cutout
+inline constexpr BlockId Coconut = 55;
+inline constexpr BlockId Seagrass = 56;   // cross, waterlogged
+inline constexpr BlockId Kelp = 57;       // cross, waterlogged
+inline constexpr BlockId BrainCoral = 58;
+inline constexpr BlockId TubeCoral = 59;
+inline constexpr BlockId FireCoral = 60;
+inline constexpr BlockId HornCoral = 61;
+inline constexpr BlockId BubbleCoral = 62;
+inline constexpr BlockId CoralFanPink = 63;   // cross, waterlogged
+inline constexpr BlockId CoralFanBlue = 64;   // cross, waterlogged
+inline constexpr BlockId CoralFanOrange = 65; // cross, waterlogged
+inline constexpr BlockId Shell = 66;          // cross, sits on beach sand
+inline constexpr BlockId GlowCoral = 67;      // emitter
+inline constexpr int kBlockCount = 68; // through GlowCoral
+
+inline constexpr bool isCoral(BlockId id) { return id >= BrainCoral && id <= BubbleCoral; }
+// Plants that grow underwater. The cell holds the plant instead of water, so it has to count
+// as water everywhere the mesher, fluid and player ask - otherwise every one would sit inside
+// a pane-walled pocket of air, and you could not swim through a kelp forest.
+inline constexpr bool isWaterlogged(BlockId id) {
+    return id == Seagrass || id == Kelp || (id >= CoralFanPink && id <= CoralFanOrange);
+}
+inline constexpr bool isCross(BlockId id) {
+    return id == GrassTuft || id == Flower || id == DeadBush || id == Shell || isWaterlogged(id);
+}
 
 // Blocks with nothing under them fall. Sand and gravel only — dirt and stone staying put
 // is what keeps a cliff a cliff.
 inline constexpr bool falls(BlockId id) { return id == Sand || id == Gravel; }
 
-inline constexpr int luminance(BlockId id) { return (id == Glow || isLamp(id)) ? 14 : 0; }
+inline constexpr int luminance(BlockId id) {
+    return (id == Glow || isLamp(id)) ? 14 : (id == GlowCoral ? 12 : 0);
+}
 
 // Seconds of held click to break a block. Ordered by what it feels like to dig, not by
 // any real material property: loose ground gives way at once, worked blocks resist, stone
@@ -119,13 +154,19 @@ inline constexpr int luminance(BlockId id) { return (id == Glow || isLamp(id)) ?
 inline constexpr float hardness(BlockId id) {
     if (isCross(id))
         return 0.02f; // foliage comes away the instant you touch it
-    if (id == Leaves)
+    if (id == Leaves || id == PalmLeaves)
         return 0.12f;
+    if (id == BeachSand || id == Coconut)
+        return 0.30f;
+    if (id == Cactus)
+        return 0.40f;
+    if (isCoral(id) || id == GlowCoral)
+        return 0.60f;
     if (id == Sand || id == Gravel || id == Snow)
         return 0.30f;
     if (id == Dirt || id == Grass)
         return 0.42f;
-    if (id == Wood || id == Planks || id == Glow || isLamp(id))
+    if (id == Wood || id == PalmWood || id == Planks || id == Glow || isLamp(id))
         return 0.70f;
     if (id == CoalOre || id == IronOre)
         return 1.60f;
@@ -140,13 +181,16 @@ inline constexpr float hardness(BlockId id) {
 // furthest, blue dies first, so its pool goes orange at the edges the way firelight does.
 // This table is the entire interface for adding an emitter.
 inline constexpr int emitR(BlockId id) {
-    return id == Glow ? 14 : (isLamp(id) ? kLampRGB[std::size_t(id - LampFirst)].r : 0);
+    return id == Glow ? 14 : (isLamp(id) ? kLampRGB[std::size_t(id - LampFirst)].r
+                                         : (id == GlowCoral ? 3 : 0));
 }
 inline constexpr int emitG(BlockId id) {
-    return id == Glow ? 10 : (isLamp(id) ? kLampRGB[std::size_t(id - LampFirst)].g : 0);
+    return id == Glow ? 10 : (isLamp(id) ? kLampRGB[std::size_t(id - LampFirst)].g
+                                         : (id == GlowCoral ? 11 : 0));
 }
 inline constexpr int emitB(BlockId id) {
-    return id == Glow ? 5 : (isLamp(id) ? kLampRGB[std::size_t(id - LampFirst)].b : 0);
+    return id == Glow ? 5 : (isLamp(id) ? kLampRGB[std::size_t(id - LampFirst)].b
+                                        : (id == GlowCoral ? 12 : 0));
 }
 inline constexpr bool emissive(BlockId id) {
     return emitR(id) > 0 || emitG(id) > 0 || emitB(id) > 0;
@@ -155,7 +199,7 @@ inline constexpr bool emissive(BlockId id) {
 // opaque = blocks light and hides faces behind it. water is see-through (renders in the
 // transparent pass, lets light through); leaves are opaque for cheap "fast" foliage.
 inline constexpr bool isWater(BlockId id) {
-    return id == Water || (id >= WaterL1 && id <= WaterL7);
+    return id == Water || (id >= WaterL1 && id <= WaterL7) || isWaterlogged(id);
 }
 inline constexpr bool opaque(BlockId id) {
     return id != Air && !isWater(id) && !isCross(id);
@@ -168,7 +212,7 @@ inline constexpr bool opaque(BlockId id) {
 //   - it does NOT stop light, it attenuates it, so a canopy dapples instead of casting a
 //     solid black interior
 //   - it DOES still collide; a tree is not walk-through
-inline constexpr bool isCutout(BlockId id) { return id == Leaves; }
+inline constexpr bool isCutout(BlockId id) { return id == Leaves || id == PalmLeaves; }
 
 // Hides the faces behind it, and blocks the cave-cull visibility flood. A cutout does not.
 inline constexpr bool occludes(BlockId id) { return opaque(id) && !isCutout(id); }
@@ -184,7 +228,7 @@ inline constexpr int lightCost(BlockId id) { return isCutout(id) ? 3 : 1; }
 // 8 = full source, 1 = thinnest film, 0 = not water. The source level never decays; every
 // other level is recomputed from its neighbours each fluid tick.
 inline constexpr int waterLevel(BlockId id) {
-    if (id == Water)
+    if (id == Water || isWaterlogged(id))
         return 8;
     if (id >= WaterL1 && id <= WaterL7)
         return 1 + int(WaterL7 - id);
@@ -208,16 +252,21 @@ inline constexpr bool solid(BlockId id) { return opaque(id); }
 // Leaves and foliage answer "grass" on purpose. A canopy and a lawn are the same rustle in
 // every game that has bothered to distinguish them, and it is one clip rather than three.
 inline constexpr const char* soundMaterial(BlockId id) {
+    if (isWaterlogged(id))
+        return "grass"; // a plant you push through, not the water around it
     if (isWater(id))
         return "water";
-    if (isLamp(id) || id == Glow)
+    if (isLamp(id) || id == Glow || id == GlowCoral)
         return "glass";
-    if (isCross(id) || id == Leaves || id == Grass)
+    if (isCross(id) || id == Leaves || id == PalmLeaves || id == Grass || id == Cactus)
         return "grass";
     switch (id) {
         case Wood:
+        case PalmWood:
+        case Coconut:
         case Planks: return "wood";
-        case Sand: return "sand";
+        case Sand:
+        case BeachSand: return "sand";
         case Snow: return "snow";
         case Dirt: return "dirt";
         case Gravel: return "gravel";

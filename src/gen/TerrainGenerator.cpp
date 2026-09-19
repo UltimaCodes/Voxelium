@@ -34,16 +34,20 @@ float heightSpline(float c) {
     // 384-block world: valleys near sea level up to real mountains around 240, which with
     // the exponential amplitude on top reaches ~314 — comfortably under the 376 ceiling so
     // a peak is shaped by the noise rather than sheared off by the clamp.
-    static constexpr float kX[] = {-1.0f, -0.5f, 0.0f, 0.45f, 1.0f};
-    static constexpr float kY[] = {50.0f, 64.0f, 82.0f, 130.0f, 240.0f};
+    //
+    // The low end used to bottom out at 50, i.e. an ocean 12 blocks deep at its deepest, which
+    // is a puddle. The land side (c >= -0.5) is untouched; only what lies past the coast
+    // drops away, so there is a shelf, a slope and a deep floor to build a reef on.
+    static constexpr float kX[] = {-1.0f, -0.75f, -0.5f, 0.0f, 0.45f, 1.0f};
+    static constexpr float kY[] = {16.0f, 38.0f, 64.0f, 82.0f, 130.0f, 240.0f};
     if (c <= kX[0])
         return kY[0];
-    for (int i = 1; i < 5; ++i)
+    for (int i = 1; i < 6; ++i)
         if (c <= kX[i]) {
             const float t = (c - kX[i - 1]) / (kX[i] - kX[i - 1]);
             return kY[i - 1] + t * (kY[i] - kY[i - 1]);
         }
-    return kY[4];
+    return kY[5];
 }
 
 // deterministic per-voxel hash for glow deposit placement
@@ -71,6 +75,44 @@ std::int32_t floorDivI(std::int32_t a, std::int32_t b) {
     return (a % b != 0 && (a < 0) != (b < 0)) ? q - 1 : q;
 }
 
+float smooth01(float a, float b, float x) {
+    const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+// 0..1 lattice noise for the decoration masks (reef patches, kelp forests). These only decide
+// WHERE something grows, at scales of tens of blocks, so a hashed lattice is plenty and a
+// fraction of the cost of a FastNoise node per column.
+float valueNoise(float x, float z, int salt) {
+    const int ix = int(std::floor(x)), iz = int(std::floor(z));
+    const float fx = x - float(ix), fz = z - float(iz);
+    const float sx = fx * fx * (3.0f - 2.0f * fx), sz = fz * fz * (3.0f - 2.0f * fz);
+    const auto at = [&](int cx, int cz) {
+        return float(cellHash(cx + salt * 7919, cz - salt * 104729) & 0xFFFFu) / 65535.0f;
+    };
+    const float a = at(ix, iz), b = at(ix + 1, iz), c = at(ix, iz + 1), d = at(ix + 1, iz + 1);
+    return (a + (b - a) * sx) + ((c + (d - c) * sx) - (a + (b - a) * sx)) * sz;
+}
+
+// Flattens the band of heights around sea level into a wide, gentle shelf. Raw terrain crosses
+// the waterline at whatever slope the noise happens to have there - usually a couple of blocks
+// of sand and then a wall - so beaches were a fringe you could not stand on. Compressing
+// [56, 70] into [57, 65.2] (slope ~0.58) leaves room to walk, and the catch-up above it
+// (slope ~1.6 to 78) is the dune ridge behind the beach. Monotonic, so it can never fold the
+// terrain over on itself, and the identity outside the band means mountains are untouched.
+float beachRemap(float h) {
+    static constexpr float kX[] = {40.0f, 56.0f, 62.0f, 70.0f, 78.0f};
+    static constexpr float kY[] = {40.0f, 57.0f, 61.8f, 65.2f, 78.0f};
+    if (h <= kX[0] || h >= kX[4])
+        return h;
+    for (int i = 1; i < 5; ++i)
+        if (h <= kX[i]) {
+            const float t = (h - kX[i - 1]) / (kX[i] - kX[i - 1]);
+            return kY[i - 1] + t * (kY[i] - kY[i - 1]);
+        }
+    return h;
+}
+
 constexpr int kSeaLevel = 62;   // air at or below this over the seafloor becomes water
 constexpr int kCaveDepth = 56;  // caves only within this many blocks below the surface
 // Squared radius of the worm tunnels around the curve where both worm fields vanish.
@@ -80,9 +122,13 @@ constexpr float kWormR2 = 0.26f;
 constexpr int kTreeCell = 7; // one tree candidate per 7x7 column cell
 // Scan overlap. MUST be >= the widest horizontal reach of any species or trees get sliced
 // off at chunk borders — a tree is only placed by chunks that bother to consider its cell.
-// Worst case is an oak: branch length 3 plus a radius-2 leaf blob on the end.
+// Worst case is an oak: branch length 3 plus a radius-2 leaf blob on the end. A palm is
+// bounded to the same figure: 2 blocks of lean plus a 4-block frond.
 constexpr int kTreeCanopyR = 6;
 constexpr int kSnowLine = 205;  // peaks at/above this get snow (jittered per column)
+// The sandy band. Beach sand runs from just under the waterline to a few blocks above it;
+// everything past that is grass.
+constexpr int kBeachTop = kSeaLevel + 3;
 
 // glow-lit test room kept from M9 as the lighting regression anchor; a 1-block stone
 // shell is re-solidified around it so no cave can crack it open
@@ -146,6 +192,23 @@ TerrainGenerator::TerrainGenerator(int seed) : m_seed(seed) {
     contFbm->SetOctaveCount(2);
     m_continent = contFbm;
 
+    // Deserts are regions hundreds of blocks across, unrelated to continentalness, so a dry
+    // coast and a dry plateau are both possible.
+    auto aridBase = FastNoise::New<FastNoise::Simplex>();
+    aridBase->SetScale(560.0f);
+    auto aridFbm = FastNoise::New<FastNoise::FractalFBm>();
+    aridFbm->SetSource(aridBase);
+    aridFbm->SetOctaveCount(2);
+    m_arid = aridFbm;
+
+    auto duneBase = FastNoise::New<FastNoise::Simplex>();
+    duneBase->SetScale(46.0f);
+    auto duneFbm = FastNoise::New<FastNoise::FractalFBm>();
+    duneFbm->SetSource(duneBase);
+    duneFbm->SetOctaveCount(2);
+    duneFbm->SetGain(0.4f);
+    m_dune = duneFbm;
+
     auto cheeseBase = FastNoise::New<FastNoise::Simplex>();
     cheeseBase->SetScale(45.0f);
     auto cheese = FastNoise::New<FastNoise::FractalFBm>();
@@ -171,12 +234,46 @@ TerrainGenerator::TerrainGenerator(int seed) : m_seed(seed) {
     m_wormB = wormB;
 }
 
-int TerrainGenerator::surfaceHeight(int wx, int wz) const {
-    float h = 0.0f;
-    float c = 0.0f;
-    m_height->GenUniformGrid2D(&h, float(wx), float(wz), 1, 1, 1.0f, 1.0f, m_seed);
+TerrainGenerator::Column TerrainGenerator::shapeColumn(float heightNoise, float continent,
+                                                        float arid, float dune) {
+    float raw = heightSpline(continent) + heightNoise * reliefAmplitude(continent);
+    raw = beachRemap(raw);
+    // Desert needs dry land: not on the beach, not up in the mountains, feathered at both
+    // ends and by how arid the region is.
+    const float dry = smooth01(0.16f, 0.34f, arid);
+    const float land = smooth01(float(kSeaLevel + 4), float(kSeaLevel + 9), raw) *
+                       (1.0f - smooth01(float(kSeaLevel + 45), float(kSeaLevel + 80), raw));
+    const float desert = dry * land;
+    if (desert > 0.0f) {
+        // ridged: the crest lines of the noise become dune crests. Squared so the crests are
+        // narrow and the troughs between them wide and flat.
+        const float ridge = 1.0f - std::abs(std::clamp(dune, -1.0f, 1.0f));
+        raw += ridge * ridge * 9.0f * desert;
+    }
+    return {std::clamp(int(raw), 8, kWorldHeight - 8), desert};
+}
+
+TerrainGenerator::Column TerrainGenerator::column(int wx, int wz) const {
+    float hn = 0.0f, c = 0.0f, a = 0.0f, d = 0.0f;
+    m_height->GenUniformGrid2D(&hn, float(wx), float(wz), 1, 1, 1.0f, 1.0f, m_seed);
     m_continent->GenUniformGrid2D(&c, float(wx), float(wz), 1, 1, 1.0f, 1.0f, m_seed + 1);
-    return std::clamp(int(heightSpline(c) + h * reliefAmplitude(c)), 8, kWorldHeight - 8);
+    m_arid->GenUniformGrid2D(&a, float(wx), float(wz), 1, 1, 1.0f, 1.0f, m_seed + 5);
+    if (a > 0.16f) // the dune field only matters where it can show
+        m_dune->GenUniformGrid2D(&d, float(wx), float(wz), 1, 1, 1.0f, 1.0f, m_seed + 6);
+    return shapeColumn(hn, c, a, d);
+}
+
+int TerrainGenerator::surfaceHeight(int wx, int wz) const { return column(wx, wz).h; }
+
+TerrainGenerator::BiomeSample TerrainGenerator::biomeAt(int wx, int wz) const {
+    const Column col = column(wx, wz);
+    BiomeSample b;
+    b.desert = col.desert;
+    b.ocean = smooth01(float(kSeaLevel), float(kSeaLevel - 8), float(col.h));
+    // the sandy band, only where it is beach rather than a dune or a lake shore inland
+    b.beach = (1.0f - smooth01(0.0f, 6.0f, std::abs(float(col.h) - float(kSeaLevel + 1)))) *
+              (1.0f - col.desert);
+    return b;
 }
 
 void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const {
@@ -187,31 +284,45 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
 
     float heightNoise[kChunkSize * kChunkSize];
     float contNoise[kChunkSize * kChunkSize];
+    float aridNoise[kChunkSize * kChunkSize];
+    float duneNoise[kChunkSize * kChunkSize];
     m_height->GenUniformGrid2D(heightNoise, float(baseX), float(baseZ), kChunkSize,
                                kChunkSize, 1.0f, 1.0f, m_seed);
     m_continent->GenUniformGrid2D(contNoise, float(baseX), float(baseZ), kChunkSize,
                                   kChunkSize, 1.0f, 1.0f, m_seed + 1);
+    m_arid->GenUniformGrid2D(aridNoise, float(baseX), float(baseZ), kChunkSize, kChunkSize,
+                             1.0f, 1.0f, m_seed + 5);
+    float aridMax = -1.0f;
+    for (const float a : aridNoise)
+        aridMax = std::max(aridMax, a);
+    if (aridMax > 0.16f)
+        m_dune->GenUniformGrid2D(duneNoise, float(baseX), float(baseZ), kChunkSize, kChunkSize,
+                                 1.0f, 1.0f, m_seed + 6);
+    else
+        std::fill(std::begin(duneNoise), std::end(duneNoise), 0.0f);
 
     int heights[kChunkSize][kChunkSize];
+    float desertW[kChunkSize][kChunkSize];
     int hMin = 1 << 30;
     int hMax = -(1 << 30);
     for (int z = 0; z < kChunkSize; ++z)
         for (int x = 0; x < kChunkSize; ++x) {
             // grid order: x + z * kChunkSize (x start axis first)
-            const float hn = heightNoise[x + z * kChunkSize];
-            const float c = contNoise[x + z * kChunkSize];
-            const int h = std::clamp(int(heightSpline(c) + hn * reliefAmplitude(c)), 8,
-                                     kWorldHeight - 8);
-            heights[z][x] = h;
-            hMin = std::min(hMin, h);
-            hMax = std::max(hMax, h);
+            const int i = x + z * kChunkSize;
+            const Column col = shapeColumn(heightNoise[i], contNoise[i], aridNoise[i], duneNoise[i]);
+            heights[z][x] = col.h;
+            desertW[z][x] = col.desert;
+            hMin = std::min(hMin, col.h);
+            hMax = std::max(hMax, col.h);
         }
 
     // wholly above both terrain and sea: air, except trees can still reach up into it
     if (baseY > hMax && baseY > kSeaLevel) {
         chunk.makeUniform(blocks::Air);
         placeTrees(chunk, pos);
-        placeFoliage(chunk, pos);
+        // foliage sits ON the surface, so only a chunk that holds a surface cell has any
+        if (baseY <= hMax + 1)
+            placeFoliage(chunk, pos, heights, desertW);
         carveTestRoom(chunk, pos); // no-op unless the room overlaps
         return;
     }
@@ -229,10 +340,17 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
     for (int z = 0; z < kChunkSize; ++z)
         for (int x = 0; x < kChunkSize; ++x) {
             const int h = heights[z][x];
-            const bool coastal = h <= kSeaLevel + 1; // beaches and seabed are sand
+            // The desert edge is feathered per column so it is a ragged border, not a contour.
+            const bool desert = desertW[z][x] > 0.42f + 0.16f * float(cellHash(baseX + x, baseZ + z) & 255u) / 255.0f;
+            const bool beach = !desert && h >= kSeaLevel - 1 && h <= kBeachTop;
+            const bool seabed = h < kSeaLevel - 1;
             // ragged snow line so peaks cap in snow without a razor-straight edge
             const int snowLine = kSnowLine + int(cellHash(baseX + x, baseZ + z) & 7u) - 3;
-            const bool snowy = !coastal && h >= snowLine;
+            const bool snowy = !desert && !beach && !seabed && h >= snowLine;
+            // patches of gravel on the sea floor break up an otherwise flat sheet of sand
+            const bool gravelBed = seabed && h < kSeaLevel - 5 &&
+                                   valueNoise(float(baseX + x) * 0.05f, float(baseZ + z) * 0.05f,
+                                              m_seed + 53) > 0.66f;
             const int top = std::min(h - baseY, kChunkSize - 1);
             for (int y = 0; y <= top; ++y) {
                 const int wy = baseY + y;
@@ -257,7 +375,11 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
                         id = blocks::Gravel;
                 }
                 if (wy >= h - 3) {
-                    if (coastal)
+                    if (beach)
+                        id = blocks::BeachSand;
+                    else if (seabed)
+                        id = gravelBed ? blocks::Gravel : blocks::Sand;
+                    else if (desert)
                         id = blocks::Sand;
                     else if (snowy && wy >= h - 1)
                         id = blocks::Snow; // a couple blocks of cap
@@ -265,6 +387,8 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
                         id = blocks::Grass;
                     else
                         id = blocks::Dirt;
+                } else if (desert && wy >= h - 8) {
+                    id = blocks::Sandstone; // the strata under the dunes
                 }
                 chunk.set(x, y, z, id);
             }
@@ -350,11 +474,68 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
             for (int y = yLo; y <= yHi; ++y)
                 if (chunk.get(x, y, z) == blocks::Air)
                     chunk.set(x, y, z, blocks::Water);
+            // life on the sea floor, now that there is water to stand it in
+            if (h < kSeaLevel - 1 && baseY <= h + 16 && baseY + kChunkSize - 1 >= h + 1)
+                decorateSea(chunk, baseX, baseY, baseZ, x, z, h);
         }
 
     placeTrees(chunk, pos); // trees even in coarse gen — cheap, and stops them popping in
-    placeFoliage(chunk, pos);
+    placeFoliage(chunk, pos, heights, desertW);
     carveTestRoom(chunk, pos);
+}
+
+// Coral reefs, kelp forests and seagrass meadows. Everything here is a pure function of the
+// column's world position, so a reef that straddles a chunk border is built identically by
+// both halves with no neighbour lookups, the same rule trees follow.
+//
+// Three habitats, by depth and by a low-frequency mask that makes them patches rather than a
+// uniform carpet: a reef on the shelf (bright, dense, the thing you swim toward), kelp in the
+// deeper water beyond it, and seagrass on the sand between.
+void TerrainGenerator::decorateSea(Chunk& chunk, int baseX, int baseY, int baseZ, int x, int z,
+                                   int h) const {
+    const int wx = baseX + x, wz = baseZ + z;
+    const int depth = kSeaLevel - h;
+    const std::uint32_t hh = cellHash(wx * 3 + m_seed, wz * 5 - m_seed);
+    const float reefM = valueNoise(float(wx) * 0.022f, float(wz) * 0.022f, m_seed + 31);
+    const float kelpM = valueNoise(float(wx) * 0.017f, float(wz) * 0.017f, m_seed + 37);
+    const float grassM = valueNoise(float(wx) * 0.031f, float(wz) * 0.031f, m_seed + 41);
+
+    // only ever replaces water, so a plant can never overwrite terrain or another plant
+    const auto put = [&](int wy, BlockId id) {
+        const int ly = wy - baseY;
+        if (ly >= 0 && ly < kChunkSize && chunk.get(x, ly, z) == blocks::Water)
+            chunk.set(x, ly, z, id);
+    };
+
+    if (depth >= 3 && depth <= 20 && reefM > 0.58f) {
+        const float strength = std::min((reefM - 0.58f) / 0.30f, 1.0f); // 0 at the rim, 1 at the heart
+        // colonies are 4-block cells of one species, so a reef is patchwork, not confetti
+        const int colony = int(cellHash(wx / 4 + m_seed, wz / 4 + 17) % 5u);
+        if (float(hh & 255u) < 40.0f + 110.0f * strength) {
+            // never up through the surface: a coral head poking out of the sea reads as a
+            // stray coloured tile floating on the waves
+            const int height = std::min(1 + int((hh >> 8) % (1u + std::uint32_t(strength * 2.0f + 1.0f))),
+                                        depth - 2);
+            const BlockId coral = BlockId(blocks::BrainCoral + colony);
+            for (int k = 1; k <= height; ++k)
+                put(h + k, coral);
+            // the odd glowing head, deep enough that it reads against the water
+            if (depth > 6 && ((hh >> 16) & 31u) == 0u)
+                put(h + height, blocks::GlowCoral);
+            // fans sprout off the top of a colony
+            if (((hh >> 20) & 3u) == 0u)
+                put(h + height + 1, BlockId(blocks::CoralFanPink + colony % 3));
+        } else if (((hh >> 12) & 3u) != 0u) {
+            put(h + 1, blocks::Seagrass);
+        }
+    } else if (depth >= 6 && depth <= 32 && kelpM > 0.55f && (hh & 255u) < 46u) {
+        const int maxH = std::min(depth - 2, 15);
+        const int height = 3 + int((hh >> 8) % std::uint32_t(std::max(maxH - 2, 1)));
+        for (int k = 1; k <= std::min(height, maxH); ++k)
+            put(h + k, blocks::Kelp);
+    } else if (depth <= 14 && grassM > 0.40f && (hh & 255u) < 128u) {
+        put(h + 1, blocks::Seagrass);
+    }
 }
 
 // Deferred structure placement: scans every tree candidate cell that could reach into
@@ -365,16 +546,21 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
 // Grass tufts and flowers on top of grass. Per-column and purely positional, so like the
 // trees it needs no neighbour lookups — but unlike them it never reaches past its own
 // column, so there is no overlap scan and no canopy-radius bound to get wrong.
-void TerrainGenerator::placeFoliage(Chunk& chunk, ChunkPos pos) const {
+//
+// Takes the chunk's own height grid instead of asking the noise again per column: it used
+// to call surfaceHeight for all 1024 columns of every chunk it ran on, which was most of the
+// cost of an all-air chunk.
+void TerrainGenerator::placeFoliage(Chunk& chunk, ChunkPos pos, const int (*heights)[kChunkSize],
+                                    const float (*desert)[kChunkSize]) const {
     const int baseX = pos.x * kChunkSize;
     const int baseY = pos.y * kChunkSize;
     const int baseZ = pos.z * kChunkSize;
     for (int z = 0; z < kChunkSize; ++z)
         for (int x = 0; x < kChunkSize; ++x) {
             const int wx = baseX + x, wz = baseZ + z;
-            const int surf = surfaceHeight(wx, wz);
-            if (surf < kSeaLevel + 2 || surf >= kSnowLine)
-                continue; // not on beaches, underwater, or up in the snow
+            const int surf = heights[z][x];
+            if (surf >= kSnowLine)
+                continue; // up in the snow
             const int y = surf + 1 - baseY;
             if (y < 0 || y >= kChunkSize)
                 continue;
@@ -382,10 +568,105 @@ void TerrainGenerator::placeFoliage(Chunk& chunk, ChunkPos pos) const {
                 continue; // a tree trunk or a cave mouth already owns this cell
             const std::uint32_t h = cellHash(wx * 7 + m_seed, wz * 13);
             const std::uint32_t roll = h % 100u;
+            const bool isDesert = desert[z][x] > 0.42f + 0.16f * float(cellHash(wx, wz) & 255u) / 255.0f;
+
+            if (isDesert) {
+                // dry country: the odd cactus and dead bush, nothing green
+                const std::uint32_t r = h % 1000u;
+                if (r < 13u) {
+                    const int height = 1 + int((h >> 10) % 3u);
+                    for (int k = 0; k < height; ++k)
+                        if (y + k < kChunkSize && chunk.get(x, y + k, z) == blocks::Air)
+                            chunk.set(x, y + k, z, blocks::Cactus);
+                } else if (r < 44u) {
+                    chunk.set(x, y, z, blocks::DeadBush);
+                }
+                continue;
+            }
+            if (surf >= kSeaLevel - 1 && surf <= kBeachTop) {
+                // beach: shells on the sand, and dune grass creeping down from the back of it
+                if (surf >= kSeaLevel && roll < 3u)
+                    chunk.set(x, y, z, blocks::Shell);
+                else if (surf >= kSeaLevel + 2 && roll >= 90u)
+                    chunk.set(x, y, z, blocks::GrassTuft);
+                continue;
+            }
+            if (surf < kBeachTop + 1)
+                continue; // underwater
             if (roll < 26u)
                 chunk.set(x, y, z, blocks::GrassTuft);
             else if (roll < 30u)
                 chunk.set(x, y, z, blocks::Flower);
+        }
+}
+
+// A palm: a trunk that leans away from the sea wind and arcs, a crown of fronds that arch up
+// and droop, and a few coconuts hanging under it. Like the other species it is a pure function
+// of its world position, so every chunk it overlaps builds the same tree.
+void TerrainGenerator::placePalm(Chunk& chunk, ChunkPos pos, int tx, int tz, int surf,
+                                 std::uint32_t rv) const {
+    const int baseX = pos.x * kChunkSize;
+    const int baseY = pos.y * kChunkSize;
+    const int baseZ = pos.z * kChunkSize;
+    const auto put = [&](int wx, int wy, int wz, BlockId id, bool overLeaves) {
+        const int lx = wx - baseX, ly = wy - baseY, lz = wz - baseZ;
+        if (lx < 0 || lx >= kChunkSize || ly < 0 || ly >= kChunkSize || lz < 0 || lz >= kChunkSize)
+            return;
+        const BlockId cur = chunk.get(lx, ly, lz);
+        if (cur == blocks::Air || (overLeaves && cur == blocks::PalmLeaves))
+            chunk.set(lx, ly, lz, id);
+    };
+
+    const int height = 6 + int(rv % 5u);                  // 6..10
+    const int lean = int((rv >> 4) % 3u);                 // 0..2 blocks over the whole trunk
+    const float lang = float((rv >> 8) & 63u) * 0.09817f; // direction it leans
+    const int lx = int(std::lround(std::cos(lang) * float(lean)));
+    const int lz = int(std::lround(std::sin(lang) * float(lean)));
+
+    int px = tx, pz = tz;
+    for (int t = 1; t <= height; ++t) {
+        // a smooth arc: nearly straight at the foot, bending most toward the top
+        const float u = float(t) / float(height);
+        const int ox = int(std::lround(float(lx) * u * u));
+        const int oz = int(std::lround(float(lz) * u * u));
+        const int nx = tx + ox, nz = tz + oz;
+        if (nx != px || nz != pz)
+            put(nx, surf + t - 1, nz, blocks::PalmWood, false); // keep the trunk face-connected
+        put(nx, surf + t, nz, blocks::PalmWood, false);
+        px = nx;
+        pz = nz;
+    }
+    const int cy = surf + height + 1; // the crown sits on top of the trunk
+    put(px, cy, pz, blocks::PalmLeaves, false);
+    put(px, cy + 1, pz, blocks::PalmLeaves, false);
+
+    // fronds: 7 of them, each an arch (rise, level, dip, droop) with a leaflet either side
+    static constexpr int kArch[4] = {0, 1, 0, -1};
+    const int fronds = 7;
+    for (int f = 0; f < fronds; ++f) {
+        const std::uint32_t fh = voxelHash(tx, 60 + f, tz);
+        const float ang = float(f) * 6.2831853f / float(fronds) + float(rv & 15u) * 0.04f +
+                          (float(fh & 15u) - 7.5f) * 0.03f;
+        const float ex = std::cos(ang), ez = std::sin(ang);
+        const float sx = -ez, sz = ex; // sideways, for the leaflets
+        for (int i = 1; i <= 4; ++i) {
+            const int bx = px + int(std::lround(ex * float(i)));
+            const int bz = pz + int(std::lround(ez * float(i)));
+            const int by = cy + kArch[i - 1] - (i == 4 && (fh & 32u) ? 1 : 0);
+            put(bx, by, bz, blocks::PalmLeaves, false);
+            if (i <= 3) { // a fuller frond near the crown
+                put(bx + int(std::lround(sx)), by, bz + int(std::lround(sz)),
+                    blocks::PalmLeaves, false);
+                put(bx - int(std::lround(sx)), by - (i == 3 ? 1 : 0), bz - int(std::lround(sz)),
+                    blocks::PalmLeaves, false);
+            }
+        }
+    }
+    // coconuts, tucked under the crown where the fronds leave the trunk
+    for (int k = 0; k < 4; ++k)
+        if (((rv >> (12 + k)) & 1u) != 0u) {
+            static constexpr int kDx[4] = {1, -1, 0, 0}, kDz[4] = {0, 0, 1, -1};
+            put(px + kDx[k], cy - 1, pz + kDz[k], blocks::Coconut, true);
         }
 }
 
@@ -417,14 +698,26 @@ void TerrainGenerator::placeTrees(Chunk& chunk, ChunkPos pos) const {
                 continue; // ~43% of cells grow a tree
             const int tx = cx * kTreeCell + int((hsh >> 8) % kTreeCell);
             const int tz = cz * kTreeCell + int((hsh >> 13) % kTreeCell);
-            const int surf = surfaceHeight(tx, tz);
-            if (surf < kSeaLevel + 2)
-                continue; // no trees on beaches or underwater
+            const Column col = column(tx, tz);
+            const int surf = col.h;
+            if (surf < kSeaLevel + 1)
+                continue; // nothing grows underwater
+            if (col.desert > 0.35f)
+                continue; // and nothing tall in the desert
 
             // per-tree variation: an independent hash drives size and shape. everything
             // below is a pure function of the tree's world position, which is what lets
             // every chunk it overlaps compute the identical tree with no neighbour lookups.
             const std::uint32_t rv = voxelHash(tx, 7, tz);
+
+            // The beach belongs to palms, and they are sparser than a forest.
+            if (surf <= kBeachTop + 1) {
+                if (((hsh >> 18) & 255u) > 96u)
+                    continue;
+                placePalm(chunk, pos, tx, tz, surf, rv);
+                continue;
+            }
+
             const auto leaf = [&](int wx, int wy, int wz, int holePerMille) {
                 if (int(voxelHash(wx, wy, wz) % 1000) >= holePerMille)
                     put(wx, wy, wz, blocks::Leaves);

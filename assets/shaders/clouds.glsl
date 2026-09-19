@@ -8,6 +8,11 @@
 // and have no position to cast a shadow from. Anchoring costs a camera-position uniform and
 // buys parallax, flying through them, and #32 for nearly free.
 
+// Extra cover from the weather director: lowers the coverage thresholds so the same field
+// simply has more of itself counted as cloud. The sky and the cloud map both read it, so the
+// clouds and their shadows stay in agreement as a storm builds.
+layout(location = 33) uniform float uCloudBias;
+
 const float kCloudBase = 420.0; // above kTerrainTop (384), so terrain never intersects
 const float kCloudTop = 560.0;
 const float kCloudMid = 0.5 * (kCloudBase + kCloudTop);
@@ -74,7 +79,7 @@ float cloudDensity(vec3 worldPos, float time) {
     // cloud-present overall, not clear sky with occasional puffs - widening the low end
     // means more of the coverage field's own range counts as cloud, without touching the
     // 0.70 upper end that already governs how solid a fully-covered patch reads.
-    float d = smoothstep(0.40, 0.70, cov);
+    float d = smoothstep(0.40 - uCloudBias, 0.70 - uCloudBias * 0.5, cov);
     if (d <= 0.0)
         return 0.0;
     float h = (worldPos.y - kCloudBase) / (kCloudTop - kCloudBase); // 0..1 up the slab
