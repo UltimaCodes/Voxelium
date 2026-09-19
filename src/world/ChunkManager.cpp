@@ -427,7 +427,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                     if (cit->second.meshingLod >= 0)
                         cit->second.lightDirty = true;
                     else if (cit->second.state == ChunkState::Meshed)
-                        cit->second.state = ChunkState::Ready;
+                        cit->second.remesh = true;
                 }
             m_meshScanDirty = true; // newly lit -> meshable
             // Sky light spreads sideways out of this column, and an absent neighbour reads
@@ -540,7 +540,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         if (e.meshingLod >= 0)
             e.lightDirty = true;
         else if (e.state == ChunkState::Meshed) {
-            e.state = ChunkState::Ready; // back through the mesh pipeline
+            e.remesh = true; // back through the mesh pipeline, still drawn meanwhile
             m_meshScanDirty = true;
         }
     }
@@ -650,7 +650,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             continue;
         const int desired = lodForDist2(horizontalDist2(item.first, center), radius);
         const bool firstMesh = e.state == ChunkState::Ready;
-        const bool reLod = e.state == ChunkState::Meshed && e.lod != desired;
+        const bool reLod = e.state == ChunkState::Meshed && (e.lod != desired || e.remesh);
         // A coarse chunk close enough to want detail re-generates (with caves) rather than
         // re-meshing cave-less data at a fine LOD. This is deliberately NOT keyed off a LOD
         // change: it used to require reLod, so a chunk that got its FIRST mesh at a fine LOD
@@ -708,7 +708,8 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         const int lod = lodForDist2(horizontalDist2(pos, center), radius);
         if (e.state == ChunkState::Ready)
             e.state = ChunkState::Meshing; // first mesh: not drawn until it lands
-        // (a re-LOD keeps state Meshed so the old mesh stays drawn meanwhile)
+        // (a re-LOD or relight keeps state Meshed so the old mesh stays drawn meanwhile)
+        e.remesh = false;
         e.meshingLod = std::int8_t(lod);
 
         const std::uint8_t skirt = coarseNeighborMask(pos, lod, center, radius);
@@ -943,7 +944,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         if (it != m_chunks.end() && it->second.lightDirty) {
             it->second.lightDirty = false;
             if (it->second.state == ChunkState::Meshed)
-                it->second.state = ChunkState::Ready;
+                it->second.remesh = true;
             m_meshScanDirty = true;
         }
         --m_jobsInFlight;
@@ -988,6 +989,7 @@ void ChunkManager::loadWorld(Renderer& renderer, int seed, std::filesystem::path
     m_evictList.clear();
     m_uploads.clear();
     m_fallQueue.clear();
+    m_fluidQueue.clear();
     m_pendingMesh = 0;
     m_lateSeeds = 0;
     renderer.resetArena(); // deliberate, not a failure: every range was just dropped
@@ -1202,6 +1204,7 @@ void ChunkManager::remeshNow(Renderer& renderer, ChunkPos pos) {
     }
     e.lod = 0;         // edits are always on near (full-detail) chunks
     e.meshingLod = -1; // drop any in-flight async re-LOD result for this chunk
+    e.remesh = false;  // just meshed against current light
     e.state = ChunkState::Meshed; // a stale worker result for this chunk now gets dropped
     m_dirty = true;
     m_visDirty = true;
@@ -1284,6 +1287,7 @@ int ChunkManager::setBlocks(Renderer& renderer, LightEngine& light,
         // which is what keeps untouched terrain still.
         queueFallCheck(e.pos);
         queueFallCheck({e.pos.x, e.pos.y + 1, e.pos.z});
+        queueFluidCheck(e.pos);
 
         // this chunk, plus any neighbour whose mesh samples across the touched border
         want(pos);
@@ -1386,52 +1390,78 @@ int ChunkManager::stepFalling(Renderer& renderer, LightEngine& light, int* lande
 // spill rather than a flood, and it halves the cells a tick has to touch.
 static constexpr int kFluidDecay = 2;
 
+void ChunkManager::queueFluidCheck(const glm::ivec3& p) {
+    static constexpr int kNeighbours[7][3] = {{0, 0, 0},  {1, 0, 0}, {-1, 0, 0}, {0, 1, 0},
+                                              {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+    if (m_fluidQueue.size() > 400000)
+        return; // a runaway cascade must not eat memory
+    for (const auto& d : kNeighbours)
+        m_fluidQueue.push_back({p.x + d[0], p.y + d[1], p.z + d[2]});
+}
+
 int ChunkManager::stepFluid(Renderer& renderer, LightEngine& light,
                             const glm::dvec3& around) {
-    // Radius is small on purpose: fluid only has to be right where it can be seen moving,
-    // and the cost is a scan of every cell in the box. Water far away is already settled.
-    constexpr int kR = 40;
+    if (m_fluidQueue.empty())
+        return 0;
+    // Only cells next to an edit can change, so only those are looked at. This used to scan
+    // an 81x81x41 box around the camera every tick (~270k cells, several hash lookups each)
+    // to find the nothing that had happened - a hitch six times a second, forever.
+    constexpr int kFarBlocks = 128;
+    constexpr std::size_t kPerTick = 60000;
     const glm::ivec3 c{int(std::floor(around.x)), int(std::floor(around.y)),
                        int(std::floor(around.z))};
-    const int y0 = std::max(c.y - kR / 2, 0);
-    const int y1 = std::min(c.y + kR / 2, kWorldHeight - 1);
+    m_fluidScratch.clear();
+    m_fluidScratch.swap(m_fluidQueue);
+    std::sort(m_fluidScratch.begin(), m_fluidScratch.end(),
+              [](const glm::ivec3& a, const glm::ivec3& b) {
+                  return a.y != b.y ? a.y > b.y : (a.z != b.z ? a.z < b.z : a.x < b.x);
+              });
+    m_fluidScratch.erase(std::unique(m_fluidScratch.begin(), m_fluidScratch.end()),
+                         m_fluidScratch.end());
 
     m_fluidEdits.clear();
-    for (int y = y1; y >= y0; --y) // top-down: water falls this tick rather than next
-        for (int z = c.z - kR; z <= c.z + kR; ++z)
-            for (int x = c.x - kR; x <= c.x + kR; ++x) {
-                const glm::ivec3 p{x, y, z};
-                const BlockId here = blockAtWorld(p);
-                const int level = blocks::waterLevel(here);
-                if (level == 8)
-                    continue; // source: never decays, never recomputed
-                if (here != blocks::Air && level == 0)
-                    continue; // solid
+    std::size_t looked = 0;
+    for (const glm::ivec3& p : m_fluidScratch) {
+        if (looked >= kPerTick || std::abs(p.x - c.x) > kFarBlocks ||
+            std::abs(p.z - c.z) > kFarBlocks) {
+            m_fluidQueue.push_back(p); // not this tick: far from the camera, or over budget
+            continue;
+        }
+        ++looked;
+        const int x = p.x, y = p.y, z = p.z;
+        const BlockId here = blockAtWorld(p);
+        const int level = blocks::waterLevel(here);
+        if (level == 8)
+            continue; // source: never decays, never recomputed
+        if (here != blocks::Air && level == 0)
+            continue; // solid
 
-                // Fed from directly above at near-full depth (a falling column stays a
-                // column), otherwise from the deepest horizontal neighbour minus one.
-                int want = 0;
-                if (blocks::isWater(blockAtWorld({x, y + 1, z}))) {
-                    want = 7;
-                } else {
-                    static constexpr int kSide[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
-                    for (const auto& d : kSide)
-                        want = std::max(want, blocks::waterLevel(blockAtWorld(
-                                                  {x + d[0], y, z + d[1]})) - kFluidDecay);
-                    // water only spreads sideways once it has something to sit on
-                    if (want > 0 && !blocks::opaque(blockAtWorld({x, y - 1, z})) &&
-                        !blocks::isWater(blockAtWorld({x, y - 1, z})))
-                        want = std::min(want, 7);
-                }
-                if (want == level)
-                    continue;
-                const BlockId next = blocks::waterForLevel(want);
-                if (next != here)
-                    m_fluidEdits.push_back({p, next});
-            }
+        // Fed from directly above at near-full depth (a falling column stays a column),
+        // otherwise from the deepest horizontal neighbour minus one.
+        int want = 0;
+        if (blocks::isWater(blockAtWorld({x, y + 1, z}))) {
+            want = 7;
+        } else {
+            static constexpr int kSide[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+            for (const auto& d : kSide)
+                want = std::max(want, blocks::waterLevel(blockAtWorld(
+                                          {x + d[0], y, z + d[1]})) - kFluidDecay);
+            // water only spreads sideways once it has something to sit on
+            if (want > 0 && !blocks::opaque(blockAtWorld({x, y - 1, z})) &&
+                !blocks::isWater(blockAtWorld({x, y - 1, z})))
+                want = std::min(want, 7);
+        }
+        if (want == level)
+            continue;
+        const BlockId next = blocks::waterForLevel(want);
+        if (next != here)
+            m_fluidEdits.push_back({p, next});
+    }
 
     if (m_fluidEdits.empty())
         return 0;
+    // setBlocks queues every voxel it changes (and its neighbours), which is what carries a
+    // spreading sheet outward one ring per tick until nothing changes any more
     return setBlocks(renderer, light, m_fluidEdits);
 }
 

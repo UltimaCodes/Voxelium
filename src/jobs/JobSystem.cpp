@@ -2,11 +2,24 @@
 
 #include <algorithm>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace vx {
 
 JobSystem::JobSystem() {
     const unsigned hw = std::thread::hardware_concurrency();
-    const unsigned count = std::max(1u, hw > 0 ? hw - 1 : 3u); // one core stays with the main thread
+    // Two cores stay free: the main thread, and the GL driver's own submission thread. With
+    // every core running a worker the render thread gets time-sliced against streaming, which
+    // is felt as frame-rate loss exactly while chunks load.
+    const unsigned count = std::max(1u, hw > 2 ? hw - 2 : 1u);
     m_workers.reserve(count);
     for (unsigned i = 0; i < count; ++i)
         m_workers.emplace_back([this](std::stop_token stop) { workerLoop(stop); });
@@ -33,6 +46,10 @@ int JobSystem::queued() const {
 }
 
 void JobSystem::workerLoop(std::stop_token stop) {
+#ifdef _WIN32
+    // Generation and meshing are background work: when a core is contended, the frame wins.
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#endif
     while (true) {
         std::unique_lock lock(m_mutex);
         if (!m_cv.wait(lock, stop, [this] { return m_head < m_queue.size(); }))

@@ -106,12 +106,12 @@ public:
     };
     int setBlocks(Renderer& renderer, LightEngine& light, std::span<const BlockEdit> edits);
 
-    // One fluid step over the water near `around`. Cellular, not particle-based: every
-    // non-source water cell recomputes its depth from its neighbours, so the field is
-    // stateless and self-correcting — no per-cell velocity to keep consistent, and an
-    // interrupted or budget-truncated tick just resolves on the next one. Returns the
-    // number of voxels that changed. Drives the batched edit path, because a tick changes
-    // many voxels and one-at-a-time would settle light and remesh per voxel.
+    // One fluid step over the cells queued by edits (near `around` first). Cellular, not
+    // particle-based: every non-source water cell recomputes its depth from its neighbours,
+    // so the field is stateless and self-correcting — no per-cell velocity to keep
+    // consistent, and an interrupted or budget-truncated tick just resolves on the next one.
+    // Returns the number of voxels that changed. Drives the batched edit path, because a
+    // tick changes many voxels and one-at-a-time would settle light and remesh per voxel.
     int stepFluid(Renderer& renderer, LightEngine& light, const glm::dvec3& around);
 
     // One gravity step for sand and gravel, over the DISTURBED set only. Same batched path
@@ -132,6 +132,9 @@ public:
                     glm::ivec3* landedAt = nullptr);
     // A voxel worth re-testing for falling: the block itself, and whatever sits on it.
     void queueFallCheck(const glm::ivec3& p);
+    // A voxel whose water depth may have changed: itself and its six neighbours. Fluid is
+    // event-driven for the same reason falling is - a scan finds nothing almost every tick.
+    void queueFluidCheck(const glm::ivec3& p);
 
     const TerrainGenerator& generator() const { return m_gen; }
     RegionStore& regions() { return m_regions; }
@@ -230,7 +233,8 @@ public:
     // area I spawn in").
     bool chunkMeshedAndLit(ChunkPos pos) const {
         const auto it = m_chunks.find(pos);
-        return it != m_chunks.end() && it->second.state == ChunkState::Meshed && it->second.lit;
+        return it != m_chunks.end() && it->second.state == ChunkState::Meshed &&
+               it->second.lit && !it->second.remesh;
     }
 
     int radius = 16; // render radius in chunks, horizontal
@@ -249,6 +253,10 @@ private:
         // normally sends a chunk back round can't be used here — the landing result would
         // overwrite it — so the intent is parked until the drain can act on it.
         bool lightDirty = false;
+        // Baked light is stale on an already-drawn chunk. The chunk stays Meshed and keeps
+        // drawing its old quads until the fresh mesh lands; flipping it back to Ready made it
+        // vanish in between, and one relit column takes its neighbours with it.
+        bool remesh = false;
         // any face reached by sky light. false = sealed underground, so the shadow pass
         // skips it entirely (it can never be the surface nearest the sun)
         bool sunlit = true;
@@ -361,6 +369,8 @@ private:
     // having landed if it is one of these; otherwise it was never in motion.
     std::vector<glm::ivec3> m_fellLast;
     std::vector<glm::ivec3> m_fellNow;
+    std::vector<glm::ivec3> m_fluidQueue;
+    std::vector<glm::ivec3> m_fluidScratch;
 
     // a detailed re-gen finished on a worker; carries its own chunk so completion doesn't
     // depend on the entry still existing (it's released if the entry went away)
