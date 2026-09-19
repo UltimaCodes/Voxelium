@@ -15,6 +15,7 @@ class Overlay;
 class Particles;
 class Weather;
 class Wildlife;
+class FarTerrain;
 
 // Everything needed to draw one frame of the world, shared by the live game loop and by all
 // three offscreen harnesses (--smoke, --bench, --tour). It lives here rather than in main so
@@ -76,6 +77,7 @@ struct RenderContext {
     Particles* particles; // null in the offscreen paths that never spawn any
     Weather* weather;     // null where precipitation is not wanted
     Wildlife* wildlife;   // null where nothing lives; creatures are drawn before the water
+    FarTerrain* farTerrain; // null where the horizon is not wanted
     unsigned int drawProgram;
     unsigned int waterProgram;
     unsigned int blockTex;
@@ -91,6 +93,6 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
                  FrameTimers* timers, bool hasSelection = false,
                  const glm::vec3& selMinCamRel = glm::vec3(0.0f), bool underwater = false,
                  TaaState* taa = nullptr, float fogEnd = 1e9f, int crackLayer = -1,
-                 unsigned int blockTex = 0);
+                 unsigned int blockTex = 0, float farEnd = 0.0f);
 
 } // namespace vx

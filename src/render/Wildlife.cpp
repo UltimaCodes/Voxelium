@@ -58,7 +58,8 @@ float Wildlife::rnd() {
 
 bool Wildlife::init(const std::filesystem::path& shaderDir) {
     m_prog = loadProgram(shaderDir / "wildlife.vert", shaderDir / "wildlife.frag");
-    if (!m_prog)
+    m_prog3d = loadProgram(shaderDir / "wildlife3d.vert", shaderDir / "wildlife3d.frag");
+    if (!m_prog || !m_prog3d)
         return false;
     glCreateVertexArrays(1, &m_vao);
     glCreateBuffers(1, &m_ssbo);
@@ -73,6 +74,11 @@ bool Wildlife::init(const std::filesystem::path& shaderDir) {
 }
 
 void Wildlife::shutdown() {
+    if (m_prog)
+        glDeleteProgram(m_prog);
+    if (m_prog3d)
+        glDeleteProgram(m_prog3d);
+    m_prog = m_prog3d = 0;
     if (m_ssbo)
         glDeleteBuffers(1, &m_ssbo);
     if (m_vao)
@@ -218,7 +224,7 @@ void Wildlife::spawnLeaf(const ChunkManager& w, const glm::dvec3& cam) {
     const int z = int(std::floor(cam.z + std::sin(ang) * r));
     for (int y = int(cam.y) + 12; y >= int(cam.y) - 8; --y) {
         const BlockId b = w.blockAtWorld({x, y, z});
-        if ((b == blocks::Leaves || b == blocks::PalmLeaves) &&
+        if (blocks::isLeafBlock(b) &&
             !blocks::opaque(w.blockAtWorld({x, y - 1, z}))) {
             Critter* c = acquire();
             if (!c)
@@ -509,18 +515,44 @@ void Wildlife::update(float dt, const ChunkManager& world, const glm::dvec3& cam
     m_light = 0.25f + 1.45f * env.daylight;
 }
 
+void Wildlife::placeDemo(const glm::dvec3& cam, const glm::vec3& forward) {
+    const glm::vec3 fwd = glm::normalize(glm::vec3(forward.x, 0.0f, forward.z));
+    const glm::vec3 side(-fwd.z, 0.0f, fwd.x);
+    struct D { Kind k; float size; glm::vec3 col; float heading; };
+    const D demo[] = {{Butterfly, 0.6f, {0.95f, 0.55f, 0.15f}, 0.3f}, {Gull, 0.9f, {0.95f, 0.95f, 0.95f}, 1.2f},
+                      {Bird, 0.7f, {0.16f, 0.16f, 0.18f}, 2.0f},      {Fish, 0.8f, {1.0f, 0.5f, 0.1f}, 0.0f},
+                      {Leaf, 0.5f, {0.8f, 0.45f, 0.1f}, 0.0f}};
+    int i = 0;
+    for (const D& d : demo) {
+        Critter* c = acquire();
+        if (!c)
+            return;
+        c->kind = d.k;
+        c->size = d.size;
+        c->color = d.col;
+        c->pos = cam + glm::dvec3(fwd * 5.0f + side * (float(i) - 2.0f) * 2.2f);
+        c->vel = glm::vec3(std::cos(d.heading), 0.0f, std::sin(d.heading)) * 0.5f;
+        c->age = 5.0f;
+        c->life = 1e9f;
+        c->phase = 0.4f * float(i);
+        ++i;
+    }
+}
+
 void Wildlife::draw(const glm::mat4& viewProj, const glm::dvec3& cam, const glm::vec3& right,
                     const glm::vec3& up, bool underwater) {
-    if (m_live == 0 || m_prog == 0)
+    if (m_live == 0 || m_prog == 0 || m_prog3d == 0)
         return;
-    // Two batches in one buffer: the soft ones first (fish, glows, bubbles - no depth write),
-    // then the cutouts that do write it. See the note at the bottom of wildlife.frag.
+    // Three batches packed into one buffer, in draw order: the glows (sprites, blended, no depth
+    // write), then the fish (solid, no depth write), then the airborne animals (solid, depth
+    // write).
+    const auto batchOf = [](Kind k) { return !isSolid(k) ? 0 : (writesDepth(k) ? 2 : 1); };
     int out = 0;
-    int softCount = 0;
-    for (int pass = 0; pass < 2; ++pass) {
+    int batchEnd[3] = {0, 0, 0};
+    for (int batch = 0; batch < 3; ++batch) {
         for (int i = 0; i < m_live; ++i) {
             const Critter& c = m_pool[i];
-            if (writesDepth(c.kind) != (pass == 1))
+            if (batchOf(c.kind) != batch)
                 continue;
             const glm::vec3 rel(c.pos - cam);
             const float d = glm::length(rel);
@@ -529,7 +561,13 @@ void Wildlife::draw(const glm::mat4& viewProj, const glm::dvec3& cam, const glm:
                       (1.0f - glm::smoothstep(far * 0.6f, far, d));
             const bool emissive = c.kind == Firefly;
             const float lit = emissive ? 1.0f : m_light;
-            glm::vec2 h(glm::dot(c.vel, right), glm::dot(c.vel, up));
+            // Sprites turn to a heading in the camera's own plane; bodies need the real one, along
+            // the ground.
+            glm::vec2 h;
+            if (isSolid(c.kind))
+                h = {c.vel.x, c.vel.z};
+            else
+                h = {glm::dot(c.vel, right), glm::dot(c.vel, up)};
             if (glm::dot(h, h) < 1e-6f)
                 h = {1.0f, 0.0f};
             if (c.kind == Mote)
@@ -548,24 +586,38 @@ void Wildlife::draw(const glm::mat4& viewProj, const glm::dvec3& cam, const glm:
             g.dirY = h.y;
             g.phase = c.phase;
         }
-        if (pass == 0)
-            softCount = out;
+        batchEnd[batch] = out;
     }
+    // 36 vertices a box, eight boxes a creature; keep in step with kParts in wildlife3d.vert
+    constexpr int kVertsPerBody = 8 * 36;
+
+    glUseProgram(m_prog);
     glProgramUniformMatrix4fv(m_prog, 0, 1, GL_FALSE, glm::value_ptr(viewProj));
     glProgramUniform3fv(m_prog, 4, 1, &right.x);
     glProgramUniform3fv(m_prog, 5, 1, &up.x);
-    glUseProgram(m_prog);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_ssbo);
     glBindVertexArray(m_vao);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
-    if (softCount > 0)
-        glDrawArrays(GL_TRIANGLES, 0, softCount * 6);
-    glDepthMask(GL_TRUE);
-    if (out > softCount)
-        glDrawArrays(GL_TRIANGLES, softCount * 6, (out - softCount) * 6);
+    if (batchEnd[0] > 0)
+        glDrawArrays(GL_TRIANGLES, 0, batchEnd[0] * 6);
     glDisable(GL_BLEND);
+
+    if (out > batchEnd[0]) {
+        glUseProgram(m_prog3d);
+        glProgramUniformMatrix4fv(m_prog3d, 0, 1, GL_FALSE, glm::value_ptr(viewProj));
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+        if (batchEnd[1] > batchEnd[0])
+            glDrawArrays(GL_TRIANGLES, batchEnd[0] * kVertsPerBody,
+                         (batchEnd[1] - batchEnd[0]) * kVertsPerBody);
+        glDepthMask(GL_TRUE);
+        if (batchEnd[2] > batchEnd[1])
+            glDrawArrays(GL_TRIANGLES, batchEnd[1] * kVertsPerBody,
+                         (batchEnd[2] - batchEnd[1]) * kVertsPerBody);
+    }
+    glDepthMask(GL_TRUE);
 }
 
 } // namespace vx

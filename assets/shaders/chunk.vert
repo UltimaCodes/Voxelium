@@ -113,7 +113,7 @@ void main() {
     vec3 world = pos + uOffsets[gl_DrawID].xyz;
 
     // leaf sway: gentle wind wobble driven by world position + time
-    if (block == 7u || block == 54u) {
+    if (block == 7u || block == 54u || block == 70u || block == 71u) {
         float ph = world.x * 0.5 + world.z * 0.5;
         float gust = windGust(world);
         world.x += 0.06 * sin(uTime * 1.6 + ph) * gust;

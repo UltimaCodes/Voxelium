@@ -38,6 +38,15 @@ public:
     };
     BiomeSample biomeAt(int wx, int wz) const;
 
+    // Everything the far-terrain horizon needs about a column, in one noise evaluation: its
+    // height, how desert it is, and how wooded (0 open grass .. 1 dense forest).
+    struct FarSample {
+        int h;
+        float desert;
+        float forest;
+    };
+    FarSample farSample(int wx, int wz) const;
+
 private:
     // Final height of a column and how desert it is. Every place that needs to agree about the
     // ground (chunks, trees, foliage, spawn, light) goes through this one shaping function.
@@ -46,7 +55,8 @@ private:
         float desert;
     };
     Column column(int wx, int wz) const;
-    static Column shapeColumn(float heightNoise, float continent, float arid, float dune);
+    static Column shapeColumn(float heightNoise, float continent, float arid, float dune,
+                              int wx, int wz, int seed);
 
     void placeTrees(Chunk& chunk, ChunkPos pos) const;
     void placeFoliage(Chunk& chunk, ChunkPos pos, const int (*heights)[kChunkSize],

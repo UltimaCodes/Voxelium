@@ -49,6 +49,7 @@ add_executable(voxelium
     src/render/ShadowMap.cpp
     src/render/Weather.cpp
     src/render/Wildlife.cpp
+    src/render/FarTerrain.cpp
     src/render/WeatherDirector.cpp
     src/ui/DebugHud.cpp
     src/world/Chunk.cpp

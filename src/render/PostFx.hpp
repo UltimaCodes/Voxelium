@@ -93,6 +93,9 @@ struct FxToggles {
     // Let the weather change on its own (render/WeatherDirector). precip and snow are then
     // driven, and the sliders only apply with this off.
     bool autoWeather = true;
+    // The coarse heightfield past the streamed chunks (render/FarTerrain), so the view reaches
+    // kilometres instead of ending in haze at the chunk radius.
+    bool farTerrain = true;
     // Runtime only, never saved: filled in each frame by whatever is directing the sky.
     float cloudBias = 0.0f; // extra cloud cover, 0..~0.22
     float mist = 0.0f;      // 0..1, pulls the fog in (dawn, over water)

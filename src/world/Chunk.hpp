@@ -127,7 +127,19 @@ inline constexpr BlockId CoralFanBlue = 64;   // cross, waterlogged
 inline constexpr BlockId CoralFanOrange = 65; // cross, waterlogged
 inline constexpr BlockId Shell = 66;          // cross, sits on beach sand
 inline constexpr BlockId GlowCoral = 67;      // emitter
-inline constexpr int kBlockCount = 68; // through GlowCoral
+// Tree species with their own bark and leaves. Oak is the original Wood / Leaves pair.
+inline constexpr BlockId SpruceWood = 68;
+inline constexpr BlockId BirchWood = 69;
+inline constexpr BlockId SpruceLeaves = 70; // cutout
+inline constexpr BlockId BirchLeaves = 71;  // cutout
+inline constexpr int kBlockCount = 72; // through BirchLeaves
+
+inline constexpr bool isLeafBlock(BlockId id) {
+    return id == Leaves || id == PalmLeaves || id == SpruceLeaves || id == BirchLeaves;
+}
+inline constexpr bool isLogBlock(BlockId id) {
+    return id == Wood || id == PalmWood || id == SpruceWood || id == BirchWood;
+}
 
 inline constexpr bool isCoral(BlockId id) { return id >= BrainCoral && id <= BubbleCoral; }
 // Plants that grow underwater. The cell holds the plant instead of water, so it has to count
@@ -154,7 +166,7 @@ inline constexpr int luminance(BlockId id) {
 inline constexpr float hardness(BlockId id) {
     if (isCross(id))
         return 0.02f; // foliage comes away the instant you touch it
-    if (id == Leaves || id == PalmLeaves)
+    if (isLeafBlock(id))
         return 0.12f;
     if (id == BeachSand || id == Coconut)
         return 0.30f;
@@ -166,7 +178,7 @@ inline constexpr float hardness(BlockId id) {
         return 0.30f;
     if (id == Dirt || id == Grass)
         return 0.42f;
-    if (id == Wood || id == PalmWood || id == Planks || id == Glow || isLamp(id))
+    if (isLogBlock(id) || id == Planks || id == Glow || isLamp(id))
         return 0.70f;
     if (id == CoalOre || id == IronOre)
         return 1.60f;
@@ -212,7 +224,7 @@ inline constexpr bool opaque(BlockId id) {
 //   - it does NOT stop light, it attenuates it, so a canopy dapples instead of casting a
 //     solid black interior
 //   - it DOES still collide; a tree is not walk-through
-inline constexpr bool isCutout(BlockId id) { return id == Leaves || id == PalmLeaves; }
+inline constexpr bool isCutout(BlockId id) { return isLeafBlock(id); }
 
 // Hides the faces behind it, and blocks the cave-cull visibility flood. A cutout does not.
 inline constexpr bool occludes(BlockId id) { return opaque(id) && !isCutout(id); }
@@ -258,11 +270,13 @@ inline constexpr const char* soundMaterial(BlockId id) {
         return "water";
     if (isLamp(id) || id == Glow || id == GlowCoral)
         return "glass";
-    if (isCross(id) || id == Leaves || id == PalmLeaves || id == Grass || id == Cactus)
+    if (isCross(id) || isLeafBlock(id) || id == Grass || id == Cactus)
         return "grass";
     switch (id) {
         case Wood:
         case PalmWood:
+        case SpruceWood:
+        case BirchWood:
         case Coconut:
         case Planks: return "wood";
         case Sand:

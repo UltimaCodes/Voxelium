@@ -32,7 +32,7 @@ constexpr int kCrackLayer0 = kLampLayerEnd + kCrossLayers;
 // Coast, desert and reef tiles. Appended after the crack stages so every layer number the
 // shaders already hard-code (leaves 7, lamps 15..39, cross 40/41) stays where it was.
 constexpr int kBiomeLayer0 = kCrackLayer0 + kCrackStages;
-constexpr int kBiomeLayers = 22;
+constexpr int kBiomeLayers = 28;
 constexpr int kLayers = kBiomeLayer0 + kBiomeLayers;
 
 // filename (without extension) per layer, looked up in assets/textures/
@@ -316,52 +316,28 @@ Rgba solid(float r, float g, float b, float m = 1.0f) {
     return c;
 }
 
-// Beach sand. Paler and finer than the desert one, flecked with shells: a scallop, a conch and
-// a few clams laid out so the 16x16 tile still reads as scattered when it repeats.
+// Beach sand: fine warm grain with faint wind ripples and the odd stray fleck. It used to be
+// a tile of scallops, conches and clams, which read as a pattern stamped over the beach; real
+// sand is mostly just sand, and the shells that do sit on it are the Shell blocks. Repetition
+// across the beach is broken up in the shader (per-block rotation and tint), not here.
 Rgba genBeachSand(int x, int y) {
-    float n = 0.92f + 0.10f * h01(x, y, 101);
-    if (h01(x, y, 102) > 0.94f)
-        n *= 0.86f; // a darker grain
-    // Warm cream, but darker than it looks on paper: a sunlit beach is nearly all direct light,
-    // and 0.88/0.80/0.62 (then 0.80/0.66/0.42) blew out to a white sheet that read as snow, with
-    // nothing for the shells to stand out against. The desert sand (sand.png) averages
-    // 0.79/0.54/0.27 and is fine, so this matches its luminance with less orange in it.
-    Rgba c = shade(0.64f, 0.53f, 0.34f, n);
-
-    const auto ell = [&](float cx, float cy, float rx, float ry) {
-        const float dx = (float(x) - cx) / rx, dy = (float(y) - cy) / ry;
-        return dx * dx + dy * dy;
-    };
-    // scallop: a ribbed fan opening downward
-    {
-        const float d = ell(3.5f, 4.5f, 3.4f, 3.0f);
-        if (d < 1.0f && float(y) <= 6.0f) {
-            const int rib = int(std::floor((float(x) - 3.5f) * 1.6f + 8.0f)) & 1;
-            c = d > 0.72f ? shade(0.80f, 0.60f, 0.56f, 1.0f)
-                          : shade(rib ? 0.99f : 0.93f, rib ? 0.86f : 0.78f, rib ? 0.86f : 0.80f, 1.0f);
-        }
-        if (x >= 3 && x <= 4 && y == 7)
-            c = shade(0.80f, 0.60f, 0.56f, 1.0f); // the hinge
-    }
-    // conch: a tan spiral with a pale lip
-    {
-        const float d = ell(11.0f, 9.5f, 3.6f, 2.8f);
-        if (d < 1.0f) {
-            const float ang = std::atan2(float(y) - 9.5f, float(x) - 11.0f);
-            const float spiral = std::sin(ang + std::sqrt(d) * 9.0f);
-            c = d > 0.8f ? shade(0.98f, 0.93f, 0.85f, 1.0f)
-                         : (spiral > 0.1f ? shade(0.78f, 0.56f, 0.40f, 1.0f)
-                                          : shade(0.90f, 0.74f, 0.58f, 1.0f));
-        }
-    }
-    // small clams
-    const float clam = ell(5.5f, 12.5f, 2.2f, 1.6f);
-    if (clam < 1.0f)
-        c = clam > 0.6f ? shade(0.72f, 0.66f, 0.60f, 1.0f) : shade(0.96f, 0.92f, 0.90f, 1.0f);
-    if (ell(13.5f, 2.5f, 1.8f, 1.4f) < 1.0f)
-        c = shade(0.97f, 0.84f, 0.84f, 1.0f);
-    if (ell(1.5f, 14.0f, 1.6f, 1.2f) < 1.0f)
-        c = shade(0.92f, 0.88f, 0.82f, 1.0f);
+    float n = 0.93f + 0.10f * h01(x, y, 101);
+    // wind ripples: slow diagonal waves, a few percent of brightness
+    n += 0.035f * std::sin((float(x) + float(y) * 0.6f) * 0.85f + h01(y / 5, 3, 103) * 3.0f);
+    const float g = h01(x, y, 102);
+    if (g > 0.955f)
+        n *= 0.84f; // a darker grain
+    else if (g < 0.03f)
+        n *= 1.10f; // a paler one
+    // Warm cream. Kept below the white a sunlit beach blows out to: 0.88/0.80/0.62 was a white
+    // sheet, 0.64/0.53/0.34 was right for luminance but greyish once lit.
+    Rgba c = shade(0.70f, 0.55f, 0.31f, n);
+    // very rare crushed-shell fleck, a pixel or two
+    const float f = h01(x, y, 104);
+    if (f > 0.992f)
+        c = shade(0.93f, 0.88f, 0.80f, 1.0f);
+    else if (f < 0.004f)
+        c = shade(0.86f, 0.66f, 0.62f, 1.0f);
     return c;
 }
 
@@ -427,13 +403,19 @@ void fillDeadBush(Rgba* slot) {
 }
 
 Rgba genPalmSide(int x, int y) {
-    // a ringed, fibrous trunk: dark growth scars every third row over a grey-tan fibre
-    float n = 0.86f + 0.14f * h01(x, y / 2, 131);
-    Rgba c = shade(0.60f, 0.50f, 0.36f, n);
-    if (y % 3 == 0)
-        c = shade(0.38f, 0.30f, 0.20f, 0.9f + 0.1f * h01(x, y, 132));
+    // Palm bark is grey-brown and crosshatched with leaf scars: short dark dashes in staggered
+    // rows over vertical fibre. Two earlier versions (single scar rows, then wide light bands)
+    // both read as stacked planks rather than a trunk.
+    float m = 0.86f + 0.10f * h01(x, 0, 131) + 0.08f * h01(x, y, 132);
+    Rgba c = shade(0.56f, 0.45f, 0.31f, m);
+    const int row = y % 5;
+    const bool dash = row == 0 && (((x + (y / 5) * 3) / 3) & 1) == 0;
+    if (dash)
+        c = shade(0.30f, 0.23f, 0.15f, 0.9f + 0.1f * h01(x, y, 133));
+    else if (row == 1 && (((x + (y / 5) * 3) / 3) & 1) == 0)
+        c = shade(0.44f, 0.35f, 0.24f, 1.0f); // the shadow under each scar
     if (x == 0 || x == 15)
-        c = shade(0.34f, 0.27f, 0.18f, 1.0f);
+        c = shade(0.40f, 0.31f, 0.21f, 1.0f); // a darker edge so the corners of the trunk read
     return c;
 }
 
@@ -607,6 +589,67 @@ Rgba genGlowCoral(int x, int y) {
     return shade(0.32f, 1.0f, 0.95f, glow);
 }
 
+Rgba genSpruceSide(int x, int y) {
+    // dark, deeply furrowed bark
+    float n = 0.78f + 0.22f * std::sin(float(x) * 2.3f + h01(0, y / 4, 161) * 2.0f);
+    n *= 0.88f + 0.12f * h01(x, y, 162);
+    if (h01(x, y, 163) > 0.93f)
+        n *= 0.7f;
+    return shade(0.30f, 0.21f, 0.14f, n);
+}
+
+Rgba genSpruceTop(int x, int y) {
+    const float dx = float(x) - 7.5f, dy = float(y) - 7.5f;
+    const float r = std::sqrt(dx * dx + dy * dy);
+    float n = 0.80f + 0.20f * std::sin(r * 2.4f);
+    if (r > 6.4f)
+        n *= 0.66f; // bark rim
+    return shade(0.50f, 0.37f, 0.22f, n * (0.95f + 0.05f * h01(x, y, 164)));
+}
+
+Rgba genBirchSide(int x, int y) {
+    // pale papery bark with short black scars, each a dash or two wide
+    float n = 0.93f + 0.07f * h01(x, y, 171);
+    Rgba c = shade(0.88f, 0.87f, 0.82f, n);
+    const int band = y / 3;
+    const float pick = h01(x / 2, band, 172);
+    if (pick > 0.66f && (y % 3) != 1)
+        c = shade(0.10f, 0.10f, 0.09f, 0.8f + 0.4f * h01(x, y, 173));
+    else if (pick > 0.55f && (y % 3) == 1)
+        c = shade(0.55f, 0.53f, 0.48f, 1.0f);
+    return c;
+}
+
+Rgba genBirchTop(int x, int y) {
+    const float dx = float(x) - 7.5f, dy = float(y) - 7.5f;
+    const float r = std::sqrt(dx * dx + dy * dy);
+    float n = 0.84f + 0.16f * std::sin(r * 2.6f);
+    Rgba c = shade(0.76f, 0.66f, 0.44f, n);
+    if (r > 6.4f)
+        c = shade(0.86f, 0.85f, 0.80f, 1.0f);
+    return c;
+}
+
+Rgba genSpruceLeaves(int x, int y) {
+    // needles: dark blue-green, with tighter gaps than oak
+    const float stroke = h01((x + y) / 2, y / 2, 181);
+    Rgba c = shade(0.17f, 0.35f, 0.15f, 0.72f + 0.55f * stroke + 0.10f * h01(x, y, 182));
+    const float hole = h01(x, y, 183) * 0.7f + h01(x / 2, y / 2, 184) * 0.3f;
+    if (hole > 0.78f)
+        c.a = 0;
+    return c;
+}
+
+Rgba genBirchLeaves(int x, int y) {
+    // small bright leaves: light yellow-green in tight clusters
+    const float cluster = h01(x / 2, y / 2, 191);
+    Rgba c = shade(0.44f, 0.60f, 0.22f, 0.78f + 0.45f * cluster + 0.10f * h01(x, y, 192));
+    const float hole = h01(x, y, 193) * 0.65f + h01(x / 2, y / 2, 194) * 0.35f;
+    if (hole > 0.72f)
+        c.a = 0;
+    return c;
+}
+
 constexpr std::array<Fill, kBiomeLayers> kBiomeFill = {
     fillWith<genBeachSand>,     // 47 beach sand
     fillWith<genSandstoneSide>, // 48
@@ -630,6 +673,12 @@ constexpr std::array<Fill, kBiomeLayers> kBiomeFill = {
     fillFanOrange,              // 66
     fillShell,                  // 67
     fillWith<genGlowCoral>,     // 68
+    fillWith<genSpruceSide>,    // 69
+    fillWith<genSpruceTop>,     // 70
+    fillWith<genBirchSide>,     // 71
+    fillWith<genBirchTop>,      // 72
+    fillWith<genSpruceLeaves>,  // 73
+    fillWith<genBirchLeaves>,   // 74
 };
 
 constexpr std::array<Gen, kNamedLayers> kGens = {genStone,    genDirt,    genGrassTop,
@@ -684,6 +733,40 @@ unsigned int createBlockTextureArray(const std::filesystem::path& textureDir) {
         const std::filesystem::path png = textureDir / (std::string(kNames[layer]) + ".png");
         if (loadLayerPng(png, slot)) {
             ++loaded;
+            // The bundled dirt and bark are rosy browns; under a blue sky ambient they read
+            // as mauve and lavender. Pushed toward a yellower brown (red kept, green up, blue
+            // down) so a lit dirt bank looks like earth.
+            // The bundled sand is speckled pink and brown at full contrast, which reads as noise
+            // across a whole desert. Pulled 35% toward its own average.
+            if (layer == 8) {
+                float mr = 0, mg = 0, mb = 0;
+                for (int i = 0; i < kTile * kTile; ++i) {
+                    mr += slot[i].r;
+                    mg += slot[i].g;
+                    mb += slot[i].b;
+                }
+                mr /= float(kTile * kTile);
+                mg /= float(kTile * kTile);
+                mb /= float(kTile * kTile);
+                for (int i = 0; i < kTile * kTile; ++i) {
+                    slot[i].r = std::uint8_t(mr + (float(slot[i].r) - mr) * 0.65f);
+                    slot[i].g = std::uint8_t(mg + (float(slot[i].g) - mg) * 0.65f);
+                    slot[i].b = std::uint8_t(mb + (float(slot[i].b) - mb) * 0.65f);
+                }
+            }
+            if (layer == 1 || layer == 3 || layer == 5 || layer == 6)
+                for (int i = 0; i < kTile * kTile; ++i) {
+                    Rgba& t = slot[i];
+                    const auto clampU = [](float v) {
+                        return std::uint8_t(v < 0 ? 0 : (v > 255 ? 255 : v));
+                    };
+                    // grass_side (3) carries green in its top: only the brown part is warmed
+                    if (t.g > t.r + 10 && t.g > t.b + 10)
+                        continue;
+                    t.r = clampU(float(t.r) * 1.03f);
+                    t.g = clampU(float(t.g) * 1.13f);
+                    t.b = clampU(float(t.b) * 0.76f);
+                }
         } else {
             for (int y = 0; y < kTile; ++y)
                 for (int x = 0; x < kTile; ++x)
@@ -743,6 +826,10 @@ int blockTopLayer(int b) {
         case blocks::PalmWood: return kBiomeLayer0 + 7;
         case blocks::PalmLeaves: return kBiomeLayer0 + 8;
         case blocks::Coconut: return kBiomeLayer0 + 9;
+        case blocks::SpruceWood: return kBiomeLayer0 + 23;
+        case blocks::BirchWood: return kBiomeLayer0 + 25;
+        case blocks::SpruceLeaves: return kBiomeLayer0 + 26;
+        case blocks::BirchLeaves: return kBiomeLayer0 + 27;
         default: break;
     }
     if (b >= blocks::Seagrass && b <= blocks::GlowCoral)

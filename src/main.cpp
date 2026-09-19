@@ -25,6 +25,7 @@
 #include "render/QualityPreset.hpp"
 #include "render/Renderer.hpp"
 #include "render/Weather.hpp"
+#include "render/FarTerrain.hpp"
 #include "render/WeatherDirector.hpp"
 #include "render/Wildlife.hpp"
 #include "render/ShadowMap.hpp"
@@ -229,12 +230,15 @@ int main(int argc, char** argv) {
         return 1;
     vx::Wildlife wildlife;
     vx::WeatherDirector weatherDirector;
+    vx::FarTerrain farTerrain;
+    if (!farTerrain.init(shaders))
+        return 1;
     if (!wildlife.init(shaders))
         return 1;
     vx::shutdownShaderCache(); // every program is built by here
     const GLuint blockTex = vx::createBlockTextureArray(assets / "textures");
     RenderContext rc{renderer,   shadowMap,    postfx,   overlay,  &particles,
-                     &weather,   &wildlife,    drawProgram, waterProgram, blockTex};
+                     &weather,   &wildlife,    &farTerrain, drawProgram, waterProgram, blockTex};
 
     vx::DebugHud hud;
     if (!hud.init(window->handle()))
@@ -361,6 +365,7 @@ int main(int argc, char** argv) {
         hud.shutdown();
         particles.shutdown();
         wildlife.shutdown();
+        farTerrain.shutdown();
         overlay.shutdown();
         postfx.shutdown();
         shadowMap.shutdown();
@@ -374,6 +379,7 @@ int main(int argc, char** argv) {
         hud.shutdown();
         particles.shutdown();
         wildlife.shutdown();
+        farTerrain.shutdown();
         overlay.shutdown();
         postfx.shutdown();
         shadowMap.shutdown();
@@ -676,10 +682,14 @@ int main(int argc, char** argv) {
                     playerSounds.tick(audio, *world, player, before);
                 if (se.stepped) {
                     const double top = std::floor(player.position.y);
-                    if (vx::blocks::opaque(vx::BlockId(se.blockId)))
-                        particles.spawnFootstep({se.at.x, top, se.at.z},
-                                                vx::blockTopLayer(se.blockId));
-                    else if (vx::blocks::isWater(vx::BlockId(se.blockId)))
+                    if (vx::blocks::opaque(vx::BlockId(se.blockId))) {
+                        if (se.landed)
+                            particles.spawnLanding({se.at.x, top, se.at.z},
+                                                   vx::blockTopLayer(se.blockId), se.blockId);
+                        else
+                            particles.spawnFootstep({se.at.x, top, se.at.z},
+                                                    vx::blockTopLayer(se.blockId), se.blockId);
+                    } else if (vx::blocks::isWater(vx::BlockId(se.blockId)))
                         particles.spawnSplash({se.at.x, top, se.at.z});
                 }
             }
@@ -724,7 +734,7 @@ int main(int argc, char** argv) {
                 }
                 if (breakProgress >= 1.0f) {
                     const glm::dvec3 at(hit.voxel);
-                    particles.spawnBlockBreak(at, vx::blockTopLayer(int(id)));
+                    particles.spawnBlockBreak(at, vx::blockTopLayer(int(id)), int(id));
                     world->setBlock(renderer, *light, hit.voxel, vx::blocks::Air);
                     const float occ = occlusionTo(at);
                     audioHit(audio, "break", int(id), at, occ, 0.72f, 1.0f);
@@ -834,7 +844,7 @@ int main(int argc, char** argv) {
                         for (int dx = -8; dx <= 8; dx += 8) {
                             const vx::BlockId b =
                                 world->blockAtWorld(ear + glm::ivec3(dx, dy, dz));
-                            leaves += (b == vx::blocks::Leaves || b == vx::blocks::PalmLeaves) ? 1 : 0;
+                            leaves += vx::blocks::isLeafBlock(b) ? 1 : 0;
                             reef += (vx::blocks::isCoral(b) || b == vx::blocks::GlowCoral ||
                                      b == vx::blocks::Kelp || b == vx::blocks::Seagrass)
                                         ? 1
@@ -852,7 +862,19 @@ int main(int argc, char** argv) {
         audio.update(float(dt));
 
         world->update(*jobs, renderer, *light, camera.position);
-        particles.update(float(dt));
+        if (fx.farTerrain)
+            farTerrain.update(world->generator(), *jobs, camera.position);
+        {
+            vx::Particles::Ambient pa;
+            pa.desert = ambience.desert;
+            pa.coast = ambience.coast;
+            pa.precip = fx.precip;
+            pa.snow = fx.snow;
+            pa.time = float(now);
+            pa.underwater = eyeUnderwater;
+            particles.emitAmbient(float(dt), *world, camera.position, pa);
+        }
+        particles.update(float(dt), &*world);
         {
             vx::Wildlife::Env we;
             we.daylight = ambience.daylight;
@@ -901,8 +923,9 @@ int main(int argc, char** argv) {
             world->collectDrawInfo(drawInfo, waterInfo);
             renderer.updateChunkMeta(drawInfo);
             renderer.updateWaterMeta(waterInfo);
-            // geometry changed, so cached cascades are holding stale casters
-            shadowMap.invalidate();
+            // geometry changed, so cached cascades are holding stale casters - but only the
+            // ones that can see where it changed
+            shadowMap.invalidateNear(world->takeDirtyNearest());
         }
         world->updateVisibilityIfNeeded(renderer, camera.position, caveCull);
         everBusy = everBusy || world->busy();
@@ -938,7 +961,8 @@ int main(int argc, char** argv) {
                 breaking ? vx::crackLayer(int(breakProgress * float(vx::crackStages())))
                          : -1;
             renderFrame(rc, camera, fx, caveCull, fbW, fbH, 0, float(now), &timers, hasSel,
-                        selMin, eyeUnderwater, &taaState, fogEnd, crack, blockTex);
+                        selMin, eyeUnderwater, &taaState, fogEnd, crack, blockTex,
+                        fx.farTerrain ? vx::FarTerrain::kFogEnd : 0.0f);
             if (hotbarOpen)
                 overlay.drawHotbar(fbW, fbH, kHotbar, kHotbarCount, hotbarSel, blockTex);
         }
@@ -1057,6 +1081,7 @@ int main(int argc, char** argv) {
                 renderer.endFrame();
             }
             weatherDirector.reset();
+            farTerrain.reset();
             int newSeed = 0;
             const char* title = "voxelium";
             if (wantLoad && worldStore.load(worldUi.selected, newSeed)) {
@@ -1135,6 +1160,7 @@ int main(int argc, char** argv) {
     hud.shutdown();
     particles.shutdown();
     wildlife.shutdown();
+        farTerrain.shutdown();
     overlay.shutdown();
     postfx.shutdown();
     shadowMap.shutdown();

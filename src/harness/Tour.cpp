@@ -17,6 +17,7 @@
 #include "render/Camera.hpp"
 #include "render/FrameRenderer.hpp"
 #include "render/Overlay.hpp"
+#include "render/FarTerrain.hpp"
 #include "render/Particles.hpp"
 #include "render/Wildlife.hpp"
 #include "render/PostFx.hpp"
@@ -43,6 +44,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace vx {
@@ -94,6 +96,10 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
     // hooks: VX_TOUR_CLOUDBIAS=0.22 is fully overcast, VX_TOUR_MIST=1 the thickest dawn haze.
     if (const char* cb = std::getenv("VX_TOUR_CLOUDBIAS"))
         fx.cloudBias = std::clamp(float(std::atof(cb)), 0.0f, 0.3f);
+    if (const char* pr = std::getenv("VX_TOUR_PRECIP")) // rain (or snow with VX_TOUR_SNOW) in custom shots
+        fx.precip = std::clamp(float(std::atof(pr)), 0.0f, 1.0f);
+    if (const char* sn = std::getenv("VX_TOUR_SNOW"))
+        fx.snow = std::clamp(float(std::atof(sn)), 0.0f, 1.0f);
     if (const char* ms = std::getenv("VX_TOUR_MIST"))
         fx.mist = std::clamp(float(std::atof(ms)), 0.0f, 1.0f);
 
@@ -208,14 +214,50 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
             } else if (mode == "coast") {
                 we.coast = 1.0f;
                 we.nearWater = 0.5f;
+            } else if (mode == "zoo") {
+                rc.wildlife->placeDemo(camera.position, glm::vec3(0.0f, 0.0f, 1.0f));
             } else if (mode == "sea") {
                 we.nearWater = 1.0f;
                 we.reef = 0.8f;
                 we.coast = 0.5f;
             }
-            for (int i = 0; i < 600; ++i)
-                rc.wildlife->update(1.0f / 30.0f, world, camera.position, we);
+            if (mode != "zoo")
+                for (int i = 0; i < 600; ++i)
+                    rc.wildlife->update(1.0f / 30.0f, world, camera.position, we);
             VX_INFO("tour wildlife: %d creatures alive (%s)", rc.wildlife->liveCount(), wm);
+        }
+        // VX_TOUR_PARTICLES=sand|rain|dig runs the ambient emitters (and their physics against the
+        // world) for a few simulated seconds before the shots, since the tour never runs the game
+        // loop. "dig" breaks a sand block under the camera's feet instead.
+        if (const char* pm = std::getenv("VX_TOUR_PARTICLES"); pm != nullptr && rc.particles != nullptr) {
+            vx::Particles::Ambient pa;
+            const std::string mode = pm;
+            pa.desert = mode == "sand" ? 1.0f : 0.0f;
+            pa.precip = mode == "rain" ? 0.9f : 0.0f;
+            for (int i = 0; i < 300; ++i) {
+                pa.time = float(i) / 30.0f;
+                if (mode == "dig" && i == 290) {
+                    const glm::ivec3 b = glm::ivec3(glm::floor(camera.position)) + glm::ivec3(3, -6, 0);
+                    rc.particles->spawnBlockBreak(glm::dvec3(b), vx::blockTopLayer(int(vx::blocks::Sand)), int(vx::blocks::Sand));
+                    rc.particles->spawnLanding(glm::dvec3(b) + glm::dvec3(0.5, 0.0, 3.5), vx::blockTopLayer(int(vx::blocks::Sand)), int(vx::blocks::Sand));
+                }
+                rc.particles->emitAmbient(1.0f / 30.0f, world, camera.position, pa);
+                rc.particles->update(1.0f / 30.0f, &world);
+            }
+            VX_INFO("tour particles: %d live (%s)", rc.particles->liveCount(), pm);
+        }
+        // VX_TOUR_FAR=1 turns the far horizon on: the haze then reaches out over it, and the mesh
+        // is built (on a worker, like the game) and waited for before the shots.
+        float tourFogEnd = 1e9f, tourFarEnd = 0.0f;
+        if (std::getenv("VX_TOUR_FAR") && rc.farTerrain != nullptr) {
+            tourFogEnd = float(world.radius) * float(vx::kChunkSize) * 0.92f;
+            tourFarEnd = vx::FarTerrain::kFogEnd;
+            fx.farTerrain = true;
+            for (int i = 0; i < 4000 && !rc.farTerrain->ready(); ++i) {
+                rc.farTerrain->update(world.generator(), jobs, camera.position);
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            VX_INFO("tour far terrain: %s", rc.farTerrain->ready() ? "ready" : "NOT ready");
         }
         int shot = 0;
         for (const auto& [yaw, pitch] : views) {
@@ -224,7 +266,7 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
             world.updateVisibilityIfNeeded(rc.renderer, camera.position, true);
             rc.renderer.beginFrame();
             renderFrame(rc, camera, fx, true, w, h, fbo, 0.6f, nullptr, false, glm::vec3(0.0f),
-                        under);
+                        under, nullptr, tourFogEnd, -1, 0, tourFarEnd);
             rc.renderer.endFrame();
             glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, pixels.data());
             char name[64];

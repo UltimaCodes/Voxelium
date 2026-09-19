@@ -4,6 +4,7 @@
 #include "render/Particles.hpp"
 #include "render/Renderer.hpp"
 #include "render/Weather.hpp"
+#include "render/FarTerrain.hpp"
 #include "render/Wildlife.hpp"
 #include "render/ShadowMap.hpp"
 #include "world/Chunk.hpp"
@@ -59,7 +60,7 @@ SkyLight computeSky(float timeOfDay) {
     // Night ambient can come back down now that the moon carries the shape. These are the
     // pre-lift values from before the fill was doing all the work on its own.
     const glm::vec3 ambient =
-        glm::mix(glm::vec3(0.030f, 0.040f, 0.072f), glm::vec3(0.26f, 0.36f, 0.55f), day);
+        glm::mix(glm::vec3(0.030f, 0.040f, 0.072f), glm::vec3(0.31f, 0.39f, 0.52f), day);
 
     SkyLight s;
     s.sunDir = dir;
@@ -85,7 +86,7 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
                  bool caveCull, int fbW, int fbH, unsigned int targetFbo, float time,
                  FrameTimers* timers, bool hasSelection, const glm::vec3& selMinCamRel,
                  bool underwater, TaaState* taa, float fogEnd, int crackLayer,
-                 unsigned int blockTex) {
+                 unsigned int blockTex, float farEnd) {
     const float aspect = float(fbW) / float(fbH);
     // internal render size; the final tonemap still runs at fbW x fbH and upscales. the
     // aspect is unchanged because both axes scale together.
@@ -171,6 +172,11 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     rc.renderer.drawWorld(cam.viewProj, cam.frustum, cam.cameraChunk, cam.cameraFrac,
                           caveCull);
     glBindSampler(5, 0);
+
+    // The horizon: the coarse world past the streamed chunks. Opaque, drawn after the chunks so
+    // depth keeps the real terrain in front of it.
+    if (rc.farTerrain && fx.farTerrain && farEnd > fogEnd && fogEnd < 1e8f)
+        rc.farTerrain->draw(cam.viewProj, camera.position, sunL, sky.color, sky.ambient, fogEnd);
 
     // Creatures go in with the opaque scene, not after the water: a fish under a lake has to be
     // seen THROUGH it, refracted and absorbed like the seabed, and the snapshot the water pass
@@ -271,7 +277,11 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     // mist pulls the fog in; the shadow reach above uses fogEnd untouched so the cascades do
     // not redraw every time the mist moves
     const float mistScale = 1.0f - 0.5f * fx.mist;
-    rp.fog = {fogEnd * 0.55f * mistScale, fogEnd * mistScale};
+    // With the far horizon on, the haze no longer hides the edge of the world - it reaches out
+    // across the heightfield instead, closing in where that ends. It still starts where it
+    // always did, so the near view looks the same.
+    const float hazeEnd = (farEnd > fogEnd && fogEnd < 1e8f) ? farEnd : fogEnd;
+    rp.fog = {fogEnd * 0.55f * mistScale, hazeEnd * mistScale};
     rp.shadows = &rc.shadows;
     rp.toggles = fx;
     rp.time = time;

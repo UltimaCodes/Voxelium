@@ -19,9 +19,12 @@ class ChunkManager;
 // recycled the moment they leave the ring. So the cost is a few hundred sprites and a handful
 // of block lookups per frame, at any render distance.
 //
-// Rendering is one vertex-pulled draw, procedural shapes in the fragment shader (see
-// wildlife.frag). It runs BEFORE the water pass so a fish under a lake is seen through the
-// water, tinted and refracted like everything else beneath it.
+// Rendering is vertex-pulled from one buffer in three batches. The glows (fireflies, motes,
+// bubbles) are camera-facing sprites, since a round soft dot looks the same from every side.
+// Everything with a body - butterflies, birds, fish, leaves - is real geometry built from small
+// boxes (see wildlife3d.vert), because a flat sprite turns edge-on and vanishes when seen from
+// the side. It runs BEFORE the water pass so a fish under a lake is seen through the water,
+// tinted and refracted like everything else beneath it.
 class Wildlife {
 public:
     static constexpr int kCapacity = 384;
@@ -52,11 +55,19 @@ public:
 
     int liveCount() const { return m_live; }
 
+    // Harness only (--tour, VX_TOUR_WILD=zoo): one of each animal in a row in front of the camera,
+    // close enough to judge the models from any side. The game never calls this.
+    void placeDemo(const glm::dvec3& cam, const glm::vec3& forward);
+
 private:
     enum Kind : std::uint8_t { Butterfly = 1, Firefly, Gull, Fish, Leaf, Mote, Bubble, Bird };
+    // Solid, airborne things write depth (composite paints sky over any pixel still at the far
+    // plane, so they would be erased otherwise). Fish are solid too but stay depth-free: one that
+    // wrote depth would read to the water pass as shallow water and grow foam around itself.
     static bool writesDepth(Kind k) {
         return k == Butterfly || k == Gull || k == Leaf || k == Bird;
     }
+    static bool isSolid(Kind k) { return k != Firefly && k != Mote && k != Bubble; }
 
     struct Critter {
         glm::dvec3 pos{0.0};
@@ -99,7 +110,8 @@ private:
     void spawnBubble(const ChunkManager& w, const glm::dvec3& cam);
     void spawnFlock(const glm::dvec3& cam);
 
-    unsigned int m_prog = 0;
+    unsigned int m_prog = 0;   // the glows, as camera-facing sprites
+    unsigned int m_prog3d = 0; // the animals, as boxes
     unsigned int m_vao = 0;
     unsigned int m_ssbo = 0;
     GpuSprite* m_map = nullptr;

@@ -139,9 +139,22 @@ waterlogged plants that still count as water for the fluid sim and for swimming.
 is still a pure function of the seed and the column, so none of it needs neighbour lookups
 or breaks streaming.
 
+trees come in species now: oak, birch (white bark, black scars) and spruce (dark bark, needles), with
+spruce taking over up in the cold and a density field that makes meadows and proper forests instead of
+one even orchard. deserts are a climate rather than a patch of sand - dry, inland, low and rolling -
+so there is always a belt of ordinary country and a beach between one and the sea.
+
+past the chunks that are loaded there is a **far horizon**: a coarse copy of the terrain out to about
+5 km, sampled straight from the generator and built on a worker, so distant mountains, bays and coastlines are
+there instead of the world ending in haze. it has no shadows and no detail and costs almost nothing.
+
 it isn't just scenery either — butterflies by day, fireflies at night, gulls and bird flocks
-crossing overhead, fish you can see through the water, falling leaves in forests. all of it
-is procedural sprites with no textures. wind comes through in gusts that sweep across the
+crossing overhead, fish you can see through the water, falling leaves in forests. the animals are
+built from small boxes (wings that beat, tails that wag) so they look right from any angle, with no textures.
+
+particles have physics: shards bounce and slide to a stop, dust and sand drift in the same gusts that
+lean the grass, sand and snow puff up under your feet (more when you land), sand streams across dunes
+in the wind, and rain splashes off whatever it hits. wind comes through in gusts that sweep across the
 grass and leaves rather than every blade swaying in lockstep.
 
 ## what's in it

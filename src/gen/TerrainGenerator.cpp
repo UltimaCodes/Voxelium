@@ -235,21 +235,42 @@ TerrainGenerator::TerrainGenerator(int seed) : m_seed(seed) {
 }
 
 TerrainGenerator::Column TerrainGenerator::shapeColumn(float heightNoise, float continent,
-                                                        float arid, float dune) {
-    float raw = heightSpline(continent) + heightNoise * reliefAmplitude(continent);
-    raw = beachRemap(raw);
-    // Desert needs dry land: not on the beach, not up in the mountains, feathered at both
-    // ends and by how arid the region is.
-    const float dry = smooth01(0.16f, 0.34f, arid);
-    const float land = smooth01(float(kSeaLevel + 4), float(kSeaLevel + 9), raw) *
-                       (1.0f - smooth01(float(kSeaLevel + 45), float(kSeaLevel + 80), raw));
-    const float desert = dry * land;
+                                                        float arid, float dune, int wx, int wz,
+                                                        int seed) {
+    const float base = heightSpline(continent);
+    float raw = base + heightNoise * reliefAmplitude(continent);
+
+    // A desert is a climate, not a patch of sand: dry, INLAND, and not up in the mountains.
+    // The inland ramp is what keeps a belt of ordinary country (and the beach) between a desert
+    // and the sea; the old mask keyed on height alone put dunes straight onto the shoreline.
+    const float dry = smooth01(0.14f, 0.32f, arid);
+    const float inland = smooth01(-0.30f, -0.08f, continent) *
+                         (1.0f - smooth01(0.02f, 0.22f, continent));
+    // ...and not down where a depression has let the sea (or a lake) in: sand meeting open water
+    // directly is a beach, not a desert. Judged on the height before the desert reshapes it.
+    const float high = smooth01(float(kSeaLevel + 4), float(kSeaLevel + 12), raw);
+    const float desert = dry * inland * high;
     if (desert > 0.0f) {
-        // ridged: the crest lines of the noise become dune crests. Squared so the crests are
-        // narrow and the troughs between them wide and flat.
+        // Desert country is low and rolling, not mountainous: most of the relief is taken out,
+        // leaving a broad basin, and the dunes ride on top of that. Blended by the desert weight
+        // so it eases into the neighbouring land instead of stepping.
+        const float calm = base + heightNoise * reliefAmplitude(continent) * 0.28f;
+        raw += (calm - raw) * desert;
+        // ridged: the crest lines of the noise become dune crests, squared so the crests are
+        // narrow and the troughs between them wide and flat
         const float ridge = 1.0f - std::abs(std::clamp(dune, -1.0f, 1.0f));
-        raw += ridge * ridge * 9.0f * desert;
+        raw += ridge * ridge * 5.5f * desert;
     }
+    raw = beachRemap(raw);
+
+    // Roughen the shoreline. The beach shelf is nearly flat, and a flat surface quantised to whole
+    // blocks turns into a few huge terraces with smooth polygonal edges (foam-outlined patches in
+    // the shallows). A little low-frequency noise near the waterline wanders those contours into
+    // bays, spits and sandbars, and a finer one breaks them into ragged steps.
+    const float shore = 1.0f - smooth01(2.0f, 9.0f, std::abs(raw - float(kSeaLevel)));
+    if (shore > 0.0f)
+        raw += ((valueNoise(float(wx) * 0.045f, float(wz) * 0.045f, seed + 61) - 0.5f) * 4.0f +
+                (valueNoise(float(wx) * 0.19f, float(wz) * 0.19f, seed + 67) - 0.5f) * 1.6f) * shore;
     return {std::clamp(int(raw), 8, kWorldHeight - 8), desert};
 }
 
@@ -258,9 +279,9 @@ TerrainGenerator::Column TerrainGenerator::column(int wx, int wz) const {
     m_height->GenUniformGrid2D(&hn, float(wx), float(wz), 1, 1, 1.0f, 1.0f, m_seed);
     m_continent->GenUniformGrid2D(&c, float(wx), float(wz), 1, 1, 1.0f, 1.0f, m_seed + 1);
     m_arid->GenUniformGrid2D(&a, float(wx), float(wz), 1, 1, 1.0f, 1.0f, m_seed + 5);
-    if (a > 0.16f) // the dune field only matters where it can show
+    if (a > 0.14f) // the dune field only matters where it can show
         m_dune->GenUniformGrid2D(&d, float(wx), float(wz), 1, 1, 1.0f, 1.0f, m_seed + 6);
-    return shapeColumn(hn, c, a, d);
+    return shapeColumn(hn, c, a, d, wx, wz, m_seed);
 }
 
 int TerrainGenerator::surfaceHeight(int wx, int wz) const { return column(wx, wz).h; }
@@ -274,6 +295,12 @@ TerrainGenerator::BiomeSample TerrainGenerator::biomeAt(int wx, int wz) const {
     b.beach = (1.0f - smooth01(0.0f, 6.0f, std::abs(float(col.h) - float(kSeaLevel + 1)))) *
               (1.0f - col.desert);
     return b;
+}
+
+TerrainGenerator::FarSample TerrainGenerator::farSample(int wx, int wz) const {
+    const Column col = column(wx, wz);
+    return {col.h, col.desert,
+            smooth01(0.30f, 0.70f, valueNoise(float(wx) * 0.0045f, float(wz) * 0.0045f, m_seed + 71))};
 }
 
 void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const {
@@ -295,7 +322,7 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
     float aridMax = -1.0f;
     for (const float a : aridNoise)
         aridMax = std::max(aridMax, a);
-    if (aridMax > 0.16f)
+    if (aridMax > 0.14f)
         m_dune->GenUniformGrid2D(duneNoise, float(baseX), float(baseZ), kChunkSize, kChunkSize,
                                  1.0f, 1.0f, m_seed + 6);
     else
@@ -309,7 +336,8 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
         for (int x = 0; x < kChunkSize; ++x) {
             // grid order: x + z * kChunkSize (x start axis first)
             const int i = x + z * kChunkSize;
-            const Column col = shapeColumn(heightNoise[i], contNoise[i], aridNoise[i], duneNoise[i]);
+            const Column col = shapeColumn(heightNoise[i], contNoise[i], aridNoise[i], duneNoise[i],
+                                           baseX + x, baseZ + z, m_seed);
             heights[z][x] = col.h;
             desertW[z][x] = col.desert;
             hMin = std::min(hMin, col.h);
@@ -682,7 +710,7 @@ void TerrainGenerator::placeTrees(Chunk& chunk, ChunkPos pos) const {
             return;
         const BlockId cur = chunk.get(lx, ly, lz);
         // wood overwrites air/leaves; leaves only fill air (so trunks stay solid)
-        if (cur == blocks::Air || (id == blocks::Wood && cur == blocks::Leaves))
+        if (cur == blocks::Air || (blocks::isLogBlock(id) && blocks::isLeafBlock(cur)))
             chunk.set(lx, ly, lz, id);
     };
 
@@ -694,8 +722,14 @@ void TerrainGenerator::placeTrees(Chunk& chunk, ChunkPos pos) const {
     for (int cz = cz0; cz <= cz1; ++cz)
         for (int cx = cx0; cx <= cx1; ++cx) {
             const std::uint32_t hsh = cellHash(cx * 1013 + m_seed, cz * 79 + m_seed);
-            if ((hsh & 255u) > 110u)
-                continue; // ~43% of cells grow a tree
+            // Forests and meadows: a broad density field decides how many cells grow a tree, from
+            // open grassland (about 1 in 8) to dense woodland (about 1 in 2). It used to be a flat
+            // 43% everywhere, which reads as one endless orchard.
+            const float forestM = valueNoise(float(cx * kTreeCell) * 0.0045f,
+                                             float(cz * kTreeCell) * 0.0045f, m_seed + 71);
+            const int treeLimit = 30 + int(smooth01(0.30f, 0.70f, forestM) * 105.0f);
+            if (int(hsh & 255u) > treeLimit)
+                continue;
             const int tx = cx * kTreeCell + int((hsh >> 8) % kTreeCell);
             const int tz = cz * kTreeCell + int((hsh >> 13) % kTreeCell);
             const Column col = column(tx, tz);
@@ -718,9 +752,25 @@ void TerrainGenerator::placeTrees(Chunk& chunk, ChunkPos pos) const {
                 continue;
             }
 
+            // Species: cold high ground grows spruce, the lowlands oak and birch, and a coarse region
+            // hash keeps stands together (a spruce forest, an oak grove) instead of salt and pepper.
+            const std::uint32_t region = cellHash((cx >> 3) * 31 + m_seed, (cz >> 3) * 17);
+            const float regionR = float(region & 1023u) / 1024.0f;
+            const float cold = smooth01(100.0f, 160.0f, float(surf));
+            int species; // 0 spruce, 1 oak, 2 birch
+            if (regionR < cold * 0.9f)
+                species = 0;
+            else
+                species = (region >> 10) % 100u < 62u ? 1 : 2;
+            if ((rv >> 17) % 6u == 0u) // a few strays keep a stand from looking planted
+                species = int((rv >> 19) % 3u);
+            const BlockId logId = species == 0 ? blocks::SpruceWood
+                                  : (species == 2 ? blocks::BirchWood : blocks::Wood);
+            const BlockId leafId = species == 0 ? blocks::SpruceLeaves
+                                   : (species == 2 ? blocks::BirchLeaves : blocks::Leaves);
             const auto leaf = [&](int wx, int wy, int wz, int holePerMille) {
                 if (int(voxelHash(wx, wy, wz) % 1000) >= holePerMille)
-                    put(wx, wy, wz, blocks::Leaves);
+                    put(wx, wy, wz, leafId);
             };
             // A clump of leaves centred anywhere — the piece that lets a canopy be built
             // out of parts hanging off branch ends instead of one ellipsoid sitting on the
@@ -743,26 +793,19 @@ void TerrainGenerator::placeTrees(Chunk& chunk, ChunkPos pos) const {
                     ex = tx + int(std::lround(std::cos(ang) * float(t)));
                     ez = tz + int(std::lround(std::sin(ang) * float(t)));
                     ey = fromY + (t * rise + len - 1) / len;
-                    put(ex, ey, ez, blocks::Wood);
+                    put(ex, ey, ez, logId);
                 }
                 return glm::ivec3{ex, ey, ez};
             };
 
-            // Species comes from a coarse region hash, not per tree, so the world grows
-            // pine stands and oak groves instead of salt-and-pepper mixing every cell.
-            const std::uint32_t region = cellHash((cx >> 3) * 31 + m_seed, (cz >> 3) * 17);
-            int species = int(region % 3u);
-            if ((rv >> 17) % 5u == 0u) // a few strays keep a stand from looking planted
-                species = int((rv >> 19) % 3u);
-
             if (species == 0) {
-                // PINE: tall bare lower trunk, then narrow tiers with GAPS between them.
+                // SPRUCE: tall bare lower trunk, then narrow tiers with GAPS between them.
                 // The gaps are the whole silhouette — a continuous cone just reads as a
                 // green triangle, which is what the old spruce was.
                 const int trunk = 9 + int(rv % 6u); // 9..14
                 for (int i = 1; i <= trunk; ++i)
-                    put(tx, surf + i, tz, blocks::Wood);
-                put(tx, surf + trunk + 1, tz, blocks::Leaves); // tip
+                    put(tx, surf + i, tz, logId);
+                put(tx, surf + trunk + 1, tz, leafId); // tip
                 const int bare = trunk / 3 + 1;                // no branches down here
                 for (int wy = surf + trunk; wy > surf + bare; --wy) {
                     const int fromTop = surf + trunk - wy;
@@ -787,7 +830,7 @@ void TerrainGenerator::placeTrees(Chunk& chunk, ChunkPos pos) const {
                 // asymmetric by construction rather than by punching holes in a ball.
                 const int trunk = 5 + int(rv % 3u); // 5..7
                 for (int i = 1; i <= trunk; ++i)
-                    put(tx, surf + i, tz, blocks::Wood);
+                    put(tx, surf + i, tz, logId);
                 const int n = 3 + int((rv >> 5) & 1u);              // 3..4 limbs
                 const float base = float(rv >> 9 & 63u) * 0.0981f;  // random fan rotation
                 for (int b = 0; b < n; ++b) {
@@ -808,7 +851,7 @@ void TerrainGenerator::placeTrees(Chunk& chunk, ChunkPos pos) const {
                 // reads as vertical lines. Deliberately the sparsest of the three.
                 const int trunk = 7 + int(rv % 4u); // 7..10
                 for (int i = 1; i <= trunk; ++i)
-                    put(tx, surf + i, tz, blocks::Wood);
+                    put(tx, surf + i, tz, logId);
                 const int topY = surf + trunk;
                 for (int b = 0; b < 2; ++b) {
                     const std::uint32_t bh = voxelHash(tx, 40 + b, tz);

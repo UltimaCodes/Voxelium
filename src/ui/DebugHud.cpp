@@ -481,6 +481,11 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
             ImGui::Checkbox("taa", &fx.taa);
             ImGui::SameLine();
             ImGui::Checkbox("motion blur", &fx.motionBlur);
+            ImGui::Checkbox("far horizon", &fx.farTerrain);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("a coarse copy of the terrain out to ~5 km past the loaded\n"
+                                  "chunks, so mountains far away are visible instead of the\n"
+                                  "world ending in haze. costs almost nothing.");
             ImGui::BeginDisabled(!fx.clouds);
             ImGui::SetNextItemWidth(-125.0f);
             ImGui::SliderFloat("cloud shadow", &fx.cloudShadow, 0.0f, 1.0f, "%.2f");
