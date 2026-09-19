@@ -25,6 +25,7 @@ BedMix mixAmbience(const AmbienceState& s) {
         // The deep rumble stays, quietly — it is the only thing that still reads as "there
         // is a world outside this" once the rest is gone.
         m.deep = 0.25f;
+        m.reef = std::clamp(s.reef, 0.0f, 1.0f);
         return m;
     }
 
@@ -36,6 +37,7 @@ BedMix mixAmbience(const AmbienceState& s) {
     const float cave = enclosed * below;
 
     m.cave = cave;
+    m.drips = cave * 0.85f;
     // A separate sub-bass layer that keeps coming up as you descend, so a deep shaft is not
     // just the same cave loop louder.
     m.deep = cave * smoothstep(20.0f, 70.0f, s.depth);
@@ -64,6 +66,25 @@ BedMix mixAmbience(const AmbienceState& s) {
     m.night *= duck;
 
     m.water = std::clamp(s.nearWater, 0.0f, 1.0f) * (0.35f + 0.65f * outside);
+
+    // The living world. All of it is outdoors, so it goes with `outside` the way day and night
+    // do, and rain washes out the quiet ones. Each answers to a different part of the day:
+    // gulls, birds and cicadas are daytime, frogs are the night shift.
+    const float open = std::clamp(s.skyAccess, 0.0f, 1.0f);
+    const float dayPart = smoothstep(0.2f, 0.55f, s.daylight);
+    const float nightPart = 1.0f - smoothstep(0.02f, 0.30f, s.daylight);
+    const float dry = 1.0f - 0.8f * m.rain;
+    const float coast = std::clamp(s.coast, 0.0f, 1.0f);
+    const float forest = std::clamp(s.forest, 0.0f, 1.0f);
+    const float desert = std::clamp(s.desert, 0.0f, 1.0f);
+    m.surf = coast * outside * (0.45f + 0.55f * open);
+    m.gulls = coast * outside * dayPart * dry;
+    m.birds = forest * outside * dayPart * dry;
+    m.leaves = forest * open * (0.4f + 0.6f * smoothstep(8.0f, 80.0f, -s.depth));
+    m.desertWind = desert * outside;
+    m.cicadas = std::clamp(desert * 0.9f + forest * 0.4f, 0.0f, 1.0f) * outside * dayPart * dry;
+    m.frogs = std::clamp(s.nearWater, 0.0f, 1.0f) * (0.3f + 0.7f * forest) * outside *
+              nightPart * dry;
     return m;
 }
 
@@ -97,6 +118,15 @@ void applyAmbience(AudioEngine& audio, const BedMix& mix, float master) {
     audio.setBed("amb_underwater", mix.underwater * k);
     audio.setBed("amb_rain", mix.rain * k);
     audio.setBed("amb_water", mix.water * k);
+    audio.setBed("amb_surf", mix.surf * k);
+    audio.setBed("amb_gulls", mix.gulls * k);
+    audio.setBed("amb_birds", mix.birds * k);
+    audio.setBed("amb_leaves", mix.leaves * k);
+    audio.setBed("amb_desert", mix.desertWind * k);
+    audio.setBed("amb_cicadas", mix.cicadas * k);
+    audio.setBed("amb_frogs", mix.frogs * k);
+    audio.setBed("amb_drips", mix.drips * k);
+    audio.setBed("amb_reef", mix.reef * k);
     audio.endUnsetBeds();
 }
 

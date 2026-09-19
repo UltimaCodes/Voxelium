@@ -16,6 +16,12 @@ struct AmbienceState {
     float precip = 0.0f;     // weather intensity, 0..1
     float nearWater = 0.0f;  // 0..1, how much water surrounds the ear
     bool underwater = false; // camera eye submerged
+    // Where the ear is standing, as 0..1 weights. Fed from the generator's biome function and
+    // from what is physically around the listener, so the mix stays a pure function of state.
+    float coast = 0.0f;   // open sea and the sand around it
+    float desert = 0.0f;
+    float forest = 0.0f;  // leaf cover around the ear
+    float reef = 0.0f;    // coral, kelp and seagrass around the eye, only heard submerged
 };
 
 // Gain per bed, 0..1. Named rather than an array because the names ARE the clip names in
@@ -29,6 +35,15 @@ struct BedMix {
     float underwater = 0.0f;
     float rain = 0.0f;
     float water = 0.0f;
+    float surf = 0.0f;    // waves on a beach or open water
+    float gulls = 0.0f;
+    float birds = 0.0f;
+    float leaves = 0.0f;  // wind in a canopy
+    float desertWind = 0.0f;
+    float cicadas = 0.0f;
+    float frogs = 0.0f;
+    float drips = 0.0f;   // caves
+    float reef = 0.0f;    // clicks and bubbles, layered on the underwater bed
 };
 
 // Deterministic, no clock, no engine. Every gain is a function of the state passed in.

@@ -124,7 +124,7 @@ private:
     // a slot. It is not a budget: a cave mouth at dawn in the rain beside a lake genuinely
     // wants day, night, wind, cave, deep, rain and water audible at once, and the whole
     // point of crossfading is that those overlap.
-    static constexpr int kBeds = 8;
+    static constexpr int kBeds = 20;
     // Beds crossfade over roughly a second and a half. Fast enough that walking into a cave
     // mouth feels like a threshold, slow enough that skimming a doorway does not pump.
     static constexpr float kBedFadePerSec = 0.65f;

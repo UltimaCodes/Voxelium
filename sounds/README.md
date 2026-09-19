@@ -19,10 +19,16 @@ bundled is listed below with its source.
 | `amb_night` | [Crickets Ambient Noise](https://opengameart.org/content/crickets-ambient-noise-loopable) | Wolfgang_ (rec. Ted Kerr) | CC0 |
 | `amb_day` | [Forest Ambience](https://opengameart.org/content/forest-ambience) | TinyWorlds | CC0 |
 | `step_grass*`, `break_grass*`, `break_sand*`, `break_dirt*`, `break_snow*` | derived from the Fantozzi footsteps above (filtered and re-levelled) | — | CC0 |
+| `amb_surf`, `amb_gulls`, `amb_birds`, `amb_desert`, `amb_cicadas`, `amb_leaves`, `amb_frogs`, `amb_drips`, `amb_reef` | synthesised from noise and oscillators by [`scripts/gen_ambience.py`](../scripts/gen_ambience.py) - nothing sampled, so nothing to license | this repo | CC0 |
 
 The bundled clips were converted from their original `ogg`/`mp3` to 16-bit mono 48 kHz wav,
 trimmed, peak-normalised and faded at both ends. The beds additionally have their tail
 crossfaded back over their head so the loop point is seamless.
+
+The nine synthesised beds (surf, gulls, birds, desert wind, cicadas, leaf rustle, frogs, cave
+drips, reef) are deterministic - `python scripts/gen_ambience.py` rewrites them byte for byte -
+so if you would rather have recordings, delete the file and drop your own in under the same
+name; the ambience director asks for them by name and stays quiet for any that are missing.
 
 The soft materials — grass, sand, dirt, snow — have no dedicated recording in any of these
 packs. Their break sounds are the bundled footsteps, filtered per material. That is not a
@@ -39,8 +45,8 @@ process, so playing a sound never touches the disk. The decodes run across the j
 a large folder does not stall the loading screen.
 
 Keep clips short. They are all resident at once, uncompressed, as 32-bit float mono at
-48 kHz — about **192 KB per second of audio**. The bundled set is 135 files and **22.9 MB**
-of PCM, and two thirds of that is the eight looping beds. If that matters to you, the beds
+48 kHz — about **192 KB per second of audio**. The bundled set is 144 files and **72 MB**
+of PCM, and most of that is the seventeen looping beds. If that matters to you, the beds
 are the thing to shorten.
 
 ## Naming
