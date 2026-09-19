@@ -5,12 +5,18 @@
 layout(std430, binding = 0) readonly buffer Quads { uvec4 quads[]; };
 layout(std430, binding = 1) readonly buffer Offsets { vec4 uOffsets[]; };
 
-layout(location = 0) uniform mat4 uViewProj; // light view-proj, camera-relative space
+layout(location = 0) uniform mat4 uViewProj; // light view-proj, camera-relative space (0..3)
+// The plane perpendicular to the light, in world units. Leaf gaps are keyed to where a ray
+// crosses THIS plane, so every layer of a thick canopy makes the same decision for it.
+layout(location = 4) uniform vec3 uLightX;
+layout(location = 5) uniform vec3 uLightY;
+layout(location = 6) uniform vec2 uCamLightXY; // camera position projected onto the same axes
 
 // Cutout blocks (leaves) have to be alpha-tested in the shadow pass too, or a canopy full
 // of holes still casts a solid slab of shadow. That needs the texture coords and the layer
 // down here, which a depth-only pass would otherwise never carry.
 out vec2 vUv;
+out vec2 vGap;
 flat out uint vLayer;
 
 const int kTri[6] = int[6](0, 1, 2, 0, 2, 3);
@@ -39,6 +45,7 @@ void main() {
     // grass self-shadowing at cascade resolution is noise rather than detail anyway.
     if (dir >= 6u) {
         vUv = vec2(0.0);
+        vGap = vec2(0.0);
         vLayer = 0u;
         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
         return;
@@ -53,7 +60,9 @@ void main() {
     else if (dir == 4u) pos += vec3(uv.x, uv.y, 1.0);
     else                pos += vec3(uv.x, uv.y, 0.0);
 
+    vec3 world = pos + uOffsets[gl_DrawID].xyz;
     vUv = uv;
+    vGap = vec2(dot(world, uLightX), dot(world, uLightY)) + uCamLightXY;
     vLayer = texLayer(q.y & 255u, dir);
-    gl_Position = uViewProj * vec4(pos + uOffsets[gl_DrawID].xyz, 1.0);
+    gl_Position = uViewProj * vec4(world, 1.0);
 }

@@ -3,6 +3,7 @@
 #include "render/QualityPreset.hpp"
 
 #include "core/Log.hpp"
+#include "mesh/QuadFormat.hpp"
 #include "render/Camera.hpp"
 #include "world/Chunk.hpp" // lamp hue count, for the colour picker's tooltip
 
@@ -165,8 +166,8 @@ void DebugHud::diagnostics(const FrameStats& stats, const FlyCamera& camera) {
                 double(stats.quadBytes) / (1024.0 * 1024.0));
     ImGui::Text("gpu drew %d chunks   arena %.1f / %.0f MB (%d free blocks)",
                 stats.gpuChunksDrawn,
-                double(stats.arenaUsedQuads) * 8.0 / (1024.0 * 1024.0),
-                double(stats.arenaCapQuads) * 8.0 / (1024.0 * 1024.0),
+                double(stats.arenaUsedQuads) * double(sizeof(PackedQuad)) / (1024.0 * 1024.0),
+                double(stats.arenaCapQuads) * double(sizeof(PackedQuad)) / (1024.0 * 1024.0),
                 stats.arenaFreeBlocks);
     ImGui::Text("gpu: shadow %.2f   scene %.2f   post %.2f ms", double(stats.gpuShadowMs),
                 double(stats.gpuSceneMs), double(stats.gpuPostMs));
@@ -486,6 +487,8 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
             ImGui::EndDisabled();
             ImGui::SetNextItemWidth(-125.0f);
             ImGui::SliderFloat("leaf glow", &fx.leafSss, 0.0f, 2.0f, "%.2f");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("canopy light", &fx.canopyLight, 0.0f, 0.6f, "%.2f");
             ImGui::SetNextItemWidth(-125.0f);
             ImGui::SliderFloat("surface relief", &fx.relief, 0.0f, 2.0f, "%.2f");
 

@@ -25,12 +25,21 @@ public:
     // up"). the far cascade is the cost (vertex-bound — every quad drawn per cascade),
     // which is the price of consistent shadows without terrain LOD; per-cascade culling
     // keeps it bounded and each cascade is texel-snapped so nothing swims.
-    // Cascade far distances. The last one is where shadows stop entirely, and it used to
-    // sit at 220 while full-detail terrain now runs to 12 chunks (384 blocks) — so the
-    // ground ahead of you was simply unshadowed until you walked into range, which reads
-    // as the shadows following you around. 420 puts the edge past the detailed band, and
-    // the existing fade over the last 10% hides the cut instead of stepping into it.
-    static constexpr float kSplits[kCascades] = {32.0f, 110.0f, 420.0f};
+    // Cascade far distances. The last one is where shadows stop entirely. It sat at a fixed
+    // 420 (past the 384-block detailed band), which left everything beyond it flat-lit no
+    // matter how far you could see - a visible ring of shadowed ground around the player.
+    // It now follows the render distance up to kFarMax; past that the texels are too coarse
+    // to be worth it and the fog has taken over anyway. The last 10% fades out rather than
+    // cutting.
+    static constexpr float kFarMin = 420.0f;
+    static constexpr float kFarMax = 760.0f;
+    glm::vec3 splits() const { return m_splits; }
+    // How far the far cascade should reach. Changing it invalidates every cascade, since the
+    // old contents were rendered at a different texel scale.
+    void setViewDistance(float blocks);
+    // Share of a leaf canopy that lets sun straight through (see shadow.frag). Baked into the
+    // cascades, so a change redraws them.
+    void setLeafGap(float gap);
 
     bool init(unsigned int shadowProgram, int resolution = kDefaultResolution);
     int resolution() const { return m_resolution; }
@@ -78,6 +87,10 @@ private:
     unsigned int m_fbo = 0;
     glm::mat4 m_vp[kCascades] = {};
     glm::vec3 m_texelWorld{0.0f};
+    glm::vec3 m_splits{32.0f, 110.0f, kFarMin};
+    glm::vec3 m_lightX{1.0f, 0.0f, 0.0f}, m_lightY{0.0f, 1.0f, 0.0f};
+    glm::vec2 m_camLightXY{0.0f};
+    float m_leafGap = 0.22f;
 
     // --- cascade caching -------------------------------------------------------------
     // A cascade's depth map only depends on its WORLD-space light frustum. Anchoring that

@@ -61,9 +61,10 @@ bool PostFx::reloadPrograms(std::string_view defines) {
         submitProgram(fs, shaderDir / "lumdown.frag", defines),
         submitProgram(fs, shaderDir / "expose.frag", defines),
         submitProgram(fs, shaderDir / "apply_ao.frag", defines),
+        submitProgram(fs, shaderDir / "cloudmap.frag", defines),
     };
-    unsigned int built[12];
-    for (int i = 0; i < 12; ++i)
+    unsigned int built[13];
+    for (int i = 0; i < 13; ++i)
         built[i] = resolveProgram(jobs[i]);
     for (const unsigned int p : built) {
         if (p == 0) { // leave the working set alone rather than half-swapping it
@@ -76,7 +77,8 @@ bool PostFx::reloadPrograms(std::string_view defines) {
     // Only now is it safe to drop the old set.
     const unsigned int old[] = {m_progSsao,    m_progBlur,  m_progComposite, m_progBloomDown,
                                 m_progBloomUp, m_progFinal, m_progTaa,       m_progSsgi,
-                                m_progMotion,  m_progLumDown, m_progExpose,  m_progApplyAo};
+                                m_progMotion,  m_progLumDown, m_progExpose,  m_progApplyAo,
+                                m_progCloudMap};
     for (const unsigned int p : old)
         if (p)
             glDeleteProgram(p);
@@ -93,8 +95,13 @@ bool PostFx::reloadPrograms(std::string_view defines) {
     m_progLumDown = built[9];
     m_progExpose = built[10];
     m_progApplyAo = built[11];
+    m_progCloudMap = built[12];
     if (m_vao == 0)
         glCreateVertexArrays(1, &m_vao);
+    if (m_cloudTex == 0) {
+        m_cloudTex = makeTex2D(GL_R8, kCloudMapRes, kCloudMapRes, GL_LINEAR, 6);
+        m_cloudFbo = makeFbo(m_cloudTex);
+    }
     return true;
 }
 
@@ -102,10 +109,32 @@ void PostFx::shutdown() {
     destroyTargets();
     const GLuint progs[] = {m_progSsao,  m_progBlur,    m_progComposite, m_progBloomDown,
                             m_progBloomUp, m_progFinal, m_progTaa,       m_progSsgi,
-                            m_progMotion, m_progLumDown, m_progExpose,   m_progApplyAo};
+                            m_progMotion, m_progLumDown, m_progExpose,   m_progApplyAo,
+                            m_progCloudMap};
     for (const GLuint p : progs)
         glDeleteProgram(p);
+    glDeleteFramebuffers(1, &m_cloudFbo);
+    glDeleteTextures(1, &m_cloudTex);
     glDeleteVertexArrays(1, &m_vao);
+}
+
+void PostFx::updateCloudMap(const glm::dvec3& camPos, float time) {
+    constexpr float kTexel = kCloudMapSpan / float(kCloudMapRes);
+    m_cloudOrigin = {std::floor(float(camPos.x) / kTexel) * kTexel - kCloudMapSpan * 0.5f,
+                     std::floor(float(camPos.z) / kTexel) * kTexel - kCloudMapSpan * 0.5f};
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_cloudFbo);
+    glViewport(0, 0, kCloudMapRes, kCloudMapRes);
+    glUseProgram(m_progCloudMap);
+    glProgramUniform2fv(m_progCloudMap, 0, 1, &m_cloudOrigin.x);
+    glProgramUniform1f(m_progCloudMap, 1, kCloudMapSpan);
+    glProgramUniform1f(m_progCloudMap, 2, time);
+    glBindVertexArray(m_vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glGenerateTextureMipmap(m_cloudTex); // the shader blurs by picking a coarser level
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_CULL_FACE);
 }
 
 void PostFx::destroyTargets() {
@@ -294,8 +323,7 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform1f(m_progComposite, 32, p.daylight);
     glProgramUniformMatrix4fv(m_progComposite, 6, 3, GL_FALSE,
                               &p.shadows->cascadeVp()[0][0][0]);
-    const glm::vec3 splits{ShadowMap::kSplits[0], ShadowMap::kSplits[1],
-                           ShadowMap::kSplits[2]};
+    const glm::vec3 splits = p.shadows->splits();
     glProgramUniform3fv(m_progComposite, 18, 1, &splits.x);
     glProgramUniform1f(m_progComposite, 19, p.underwater ? 1.0f : 0.0f);
     glProgramUniform1f(m_progComposite, 20, p.toggles.clouds ? 1.0f : 0.0f);

@@ -7,6 +7,7 @@
 #include <glad/gl.h>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <algorithm>
 #include <cmath>
 
 namespace vx {
@@ -90,6 +91,21 @@ void ShadowMap::invalidate() {
     ++m_forcedCount;
 }
 
+void ShadowMap::setViewDistance(float blocks) {
+    const float far = std::clamp(blocks, kFarMin, kFarMax);
+    if (std::abs(far - m_splits.z) < 8.0f)
+        return; // not worth redrawing the far cascade over a few blocks
+    m_splits.z = far;
+    m_forceAll = true;
+}
+
+void ShadowMap::setLeafGap(float gap) {
+    if (std::abs(gap - m_leafGap) < 1e-3f)
+        return;
+    m_leafGap = gap;
+    m_forceAll = true;
+}
+
 void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& forward,
                        const glm::vec3& sunL, float fovYRad, float aspect) {
     // light basis: looking along -sunL
@@ -98,13 +114,16 @@ void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& forward,
         std::abs(lz.y) > 0.95 ? glm::dvec3(1.0, 0.0, 0.0) : glm::dvec3(0.0, 1.0, 0.0);
     const glm::dvec3 lx = glm::normalize(glm::cross(upRef, lz));
     const glm::dvec3 ly = glm::cross(lz, lx);
+    m_lightX = glm::vec3(lx);
+    m_lightY = glm::vec3(ly);
+    m_camLightXY = glm::vec2(float(glm::dot(lx, cameraPos)), float(glm::dot(ly, cameraPos)));
 
     const float tanH = std::tan(fovYRad * 0.5f);
     const float tanW = tanH * aspect;
 
     for (int c = 0; c < kCascades; ++c) {
-        const float nearD = c == 0 ? 0.1f : kSplits[c - 1];
-        const float farD = kSplits[c];
+        const float nearD = c == 0 ? 0.1f : m_splits[c - 1];
+        const float farD = m_splits[c];
         // bounding sphere of the frustum slice, inflated by the drift we allow before
         // re-anchoring, so a cached cascade still covers what it needs to
         const float tc = (nearD + farD) * 0.5f;
@@ -158,6 +177,10 @@ void ShadowMap::render(Renderer& renderer, const glm::ivec3& cameraChunk,
     glDepthFunc(GL_LESS);
     glClearDepth(1.0);
     glCullFace(GL_FRONT); // closed voxel shells: front-culling trades acne for nothing
+    glProgramUniform3fv(m_shadowProgram, 4, 1, &m_lightX.x);
+    glProgramUniform3fv(m_shadowProgram, 5, 1, &m_lightY.x);
+    glProgramUniform2fv(m_shadowProgram, 6, 1, &m_camLightXY.x);
+    glProgramUniform1f(m_shadowProgram, 7, m_leafGap);
 
     for (int c = 0; c < kCascades; ++c) {
         if (!m_dirty[c])

@@ -44,10 +44,12 @@ layout(location = 27) uniform float uLeafSss;    // leaf translucency strength, 
 layout(location = 28) uniform float uRelief;     // derived surface relief, 0 = off
 layout(location = 29) uniform float uDaylight;   // 1 full day, 0 after dusk
 layout(location = 30) uniform float uWetness;    // 0 dry .. 1 soaked (#29)
+layout(location = 31) uniform vec3 uCloudMapXf;  // cloud map: world XZ of its corner, 1 / span
 
 #include "clouds.glsl"
 
 layout(binding = 0) uniform sampler2DArray uBlockTex;
+layout(binding = 6) uniform sampler2D uCloudMap; // coverage field, see cloudmap.frag
 layout(binding = 1) uniform sampler2DArrayShadow uShadowMap;
 layout(binding = 5) uniform sampler2DArray uShadowDepth; // raw depth, for the PCSS blocker search
 
@@ -139,11 +141,20 @@ float sampleCascade(vec3 pos, vec3 N, int c) {
     float searchR = 3.0 / VX_SHADOW_RES;
     float blockerSum = 0.0;
     int blockerN = 0;
+    // Taps per cascade. The far two cover texels that are already blocks wide, so extra taps
+    // there resolve nothing the eye can see; the near one is where the penumbra is looked at.
+    // Shadow sampling was ~40% of the scene pass at 16+16 taps everywhere.
 #if   VX_QUALITY <= 1
-    const int kBlockerTaps = 8;
+    const int kBlk[3] = int[3](5, 3, 3);
+    const int kPcf[3] = int[3](8, 5, 4);
+#elif VX_QUALITY == 3
+    const int kBlk[3] = int[3](16, 10, 6);
+    const int kPcf[3] = int[3](16, 12, 8);
 #else
-    const int kBlockerTaps = 16;
+    const int kBlk[3] = int[3](8, 5, 4);
+    const int kPcf[3] = int[3](12, 8, 6);
 #endif
+    const int kBlockerTaps = kBlk[c];
     for (int i = 0; i < kBlockerTaps; ++i) {
         float d = texture(uShadowDepth, vec3(uv + rot * kPoisson[i] * searchR, float(c))).r;
         if (d < receiver - depthBias) {
@@ -165,9 +176,10 @@ float sampleCascade(vec3 pos, vec3 N, int c) {
 
     float depth = receiver - depthBias;
     float sum = 0.0;
-    for (int i = 0; i < 16; ++i)
+    const int kPcfTaps = kPcf[c];
+    for (int i = 0; i < kPcfTaps; ++i)
         sum += texture(uShadowMap, vec4(uv + rot * kPoisson[i] * radius, float(c), depth));
-    return sum / 16.0;
+    return sum / float(kPcfTaps);
 }
 
 float sunShadow(vec3 pos, vec3 N) {
@@ -180,12 +192,40 @@ float sunShadow(vec3 pos, vec3 N) {
     float sh = sampleCascade(pos, N, c);
     // cross-fade into the next cascade near the split so there's no lighting seam
     float splitEnd = c == 0 ? uCascadeSplit.x : (c == 1 ? uCascadeSplit.y : uCascadeSplit.z);
-    float blendStart = splitEnd * 0.82;
+    float blendStart = splitEnd * 0.9;
     if (c < 2 && d > blendStart)
         sh = mix(sh, sampleCascade(pos, N, c + 1), (d - blendStart) / (splitEnd - blendStart));
     // and fade shadows out at the very edge of the last cascade instead of a hard cut
     sh = mix(sh, 1.0, smoothstep(uCascadeSplit.z * 0.9, uCascadeSplit.z, d));
     return sh;
+}
+
+// How much sunlight gets through the cloud layer to worldPos, 1 = clear. The coverage field
+// is rendered once a frame into uCloudMap (cloudmap.frag), so this is three filtered fetches
+// along the sun ray instead of the per-fragment fbm it used to be.
+float cloudSunlight(vec3 worldPos, vec3 sunDir) {
+    if (sunDir.y <= 0.05 || worldPos.y >= kCloudBase)
+        return 1.0;
+    // A run of terrace steps shares one lateral sample instead of jittering block to block:
+    // 1/sunDir.y turns a single block of height into a big sideways jump at a low sun.
+    float shadowY = round(worldPos.y / 24.0) * 24.0;
+    float shade = 0.0;
+    float weight = 0.0;
+    float edge = 1.0;
+    for (int i = 0; i < 3; ++i) {
+        float f = 0.15 + 0.35 * float(i); // spread through the slab, away from its feathered ends
+        float t = (mix(kCloudBase, kCloudTop, f) - shadowY) / sunDir.y;
+        vec2 uv = (worldPos.xz + sunDir.xz * t - uCloudMapXf.xy) * uCloudMapXf.z;
+        // the layer's own density profile as the tap weight, so its thin base and top do not
+        // count as much as the solid middle
+        float w = smoothstep(0.0, 0.22, f) * (1.0 - smoothstep(0.55, 1.0, f)) + 0.08;
+        shade += w * textureLod(uCloudMap, uv, 1.5).r;
+        weight += w;
+        edge = min(edge, min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y)));
+    }
+    float lit = 1.0 - 0.6 * (shade / weight);
+    // a very low sun throws the ray off the map; fade to clear instead of smearing the border
+    return mix(1.0, lit, smoothstep(0.0, 0.08, edge));
 }
 
 void main() {
@@ -225,7 +265,7 @@ void main() {
     // +0.7 ms scene / +1.0 ms frame, and the overwhelming majority of fragments in any view
     // are far ones.
     vec3 Nl = N;
-    float reliefFade = 1.0 - smoothstep(20.0, 34.0, length(vWorldRel));
+    float reliefFade = 1.0 - smoothstep(14.0, 28.0, length(vWorldRel));
     if (uRelief > 0.0 && vDir < 6u && reliefFade > 0.01) {
         vec2 ts = 1.0 / vec2(textureSize(uBlockTex, 0).xy);
         const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
@@ -253,17 +293,17 @@ void main() {
         // past the first block.
         vec2 cellMin = floor(vUv);
         vec2 cellMax = cellMin + 1.0;
-        vec2 uvL = vec2(max(vUv.x - ts.x, cellMin.x), vUv.y);
-        vec2 uvR = vec2(min(vUv.x + ts.x, cellMax.x), vUv.y);
-        vec2 uvD = vec2(vUv.x, max(vUv.y - ts.y, cellMin.y));
-        vec2 uvU = vec2(vUv.x, min(vUv.y + ts.y, cellMax.y));
-        float hl = dot(texture(uBlockTex, vec3(uvL, float(vLayer))).rgb, kLuma);
-        float hr = dot(texture(uBlockTex, vec3(uvR, float(vLayer))).rgb, kLuma);
-        float hd = dot(texture(uBlockTex, vec3(uvD, float(vLayer))).rgb, kLuma);
-        float hu = dot(texture(uBlockTex, vec3(uvU, float(vLayer))).rgb, kLuma);
-        // Scaled by the texture size so the slope is resolution independent, and clamped so
-        // a high-contrast tile cannot flip the normal through the surface.
-        vec2 slope = clamp(vec2(hl - hr, hd - hu) * uRelief * 2.5 * reliefFade, -0.9, 0.9);
+        // One-sided differences off the texel already fetched above: two extra fetches
+        // instead of four. Stepping toward the far side of the cell (and flipping the sign)
+        // when the near side would leave it keeps the edge texels from falling back to zero.
+        vec2 dir = vec2(vUv.x + ts.x > cellMax.x ? -1.0 : 1.0, vUv.y + ts.y > cellMax.y ? -1.0 : 1.0);
+        float h0 = dot(texel.rgb, kLuma);
+        float hx = dot(texture(uBlockTex, vec3(vUv.x + dir.x * ts.x, vUv.y, float(vLayer))).rgb, kLuma);
+        float hy = dot(texture(uBlockTex, vec3(vUv.x, vUv.y + dir.y * ts.y, float(vLayer))).rgb, kLuma);
+        // Scaled to match the two-texel central difference this replaced, and clamped so a
+        // high-contrast tile cannot flip the normal through the surface.
+        vec2 slope = clamp(vec2((h0 - hx) * dir.x, (h0 - hy) * dir.y) * 2.0 * uRelief * 2.5 * reliefFade,
+                           -0.9, 0.9);
         Nl = normalize(N + kTangent[vDir] * slope.x + kBitangent[vDir] * slope.y);
     }
 
@@ -283,8 +323,10 @@ void main() {
     float skyL = clamp(vLight.a + dither * (1.0 / 15.0), 0.0, 1.0);
 
     float ndl = max(dot(Nl, uSunL), 0.0);
-    float shadow = ndl > 0.0 ? sunShadow(vWorldRel, N) : 0.0;
     float skyAccess = skyL * skyL; // voxel sky light gates how much sun reaches here
+    // Nothing below ~1.4% reaches a sealed-in fragment anyway (direct is scaled by skyAccess),
+    // so caves and canopy interiors skip the whole PCSS lookup.
+    float shadow = (ndl > 0.0 && skyL > 0.12) ? sunShadow(vWorldRel, N) : 0.0;
 
     // warm strong sun vs cool dim sky ambient — the contrast is what keeps the scene
     // from going milky once tonemapped. the small floor stops fully-enclosed faces
@@ -293,8 +335,7 @@ void main() {
     // to a cloud you can actually see overhead. Only the direct sun term is affected —
     // ambient is sky light, which a cloud scatters rather than blocks.
     float clouded = uCloudShadow > 0.0
-                        ? mix(1.0, cloudSunlight(uCamPos + vWorldRel, uSunL, uTimeSky),
-                              uCloudShadow)
+                        ? mix(1.0, cloudSunlight(uCamPos + vWorldRel, uSunL), uCloudShadow)
                         : 1.0;
     // Emitters: layer 4 is glow, 15..39 the 25 lamp swatches. Needed in two places below,
     // so it is worked out once here rather than written out twice and allowed to disagree.
@@ -302,6 +343,10 @@ void main() {
         (uEmissive > 0.0 && (vLayer == 4u || (vLayer >= 15u && vLayer <= 39u))) ? 1.0 : 0.0;
 
     vec3 direct = uSunColor * (ndl * shadow * skyAccess * clouded);
+    // A cloud does not delete the light it blocks, it scatters it. Under one the ground gets
+    // a wide, soft, shadowless source instead of a hole in the sun, which is why real cloud
+    // shadows are gentle and why ours read as harsh dark patches when they only subtracted.
+    vec3 cloudFill = uSunColor * ((1.0 - clouded) * 0.4 * skyAccess * mix(0.65, 1.0, ndl));
 
     // How hard sky access gates the ambient fill. Was a tight 0.10 daytime floor, raised to
     // 0.4 in response to repeated "hard black" reports — but that turned out to be
@@ -433,7 +478,7 @@ void main() {
     // since `shadow` is already doing the real work here and this is only damping residual
     // corner noise, not the thing that makes a genuine notch look recessed.
     float directShade = mix(0.7, 1.0, vShade);
-    vec3 shading = direct * directShade + ambient * ambShade + torch * ownShade;
+    vec3 shading = direct * directShade + (ambient + cloudFill) * ambShade + torch * ownShade;
     // Hard backstop, not another adjustment to one contributing term: owner report, several
     // rounds running, is that ANY hard black reads as broken, regardless of which path
     // produced it (AO, the sky-access gate, a genuinely enclosed notch with no sun and

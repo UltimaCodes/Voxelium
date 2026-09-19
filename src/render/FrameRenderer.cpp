@@ -110,6 +110,9 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     rc.postfx.resize(rw, rh);
 
     if (timers) timers->shadow.begin();
+    // shadows follow the render distance (fog end), not a fixed ring around the player
+    rc.shadows.setViewDistance(fogEnd < 1e8f ? fogEnd : ShadowMap::kFarMin);
+    rc.shadows.setLeafGap(fx.canopyLight);
     if (fx.shadows) {
         // The shadow pass alpha-tests cutout blocks now, so it needs the block texture bound
         // BEFORE it runs — it used to be bound further down for the scene pass only, and a
@@ -123,6 +126,9 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     if (timers) timers->shadow.end();
 
     if (timers) timers->scene.begin();
+    const bool cloudShadows = fx.clouds && fx.cloudShadow > 0.0f;
+    if (cloudShadows)
+        rc.postfx.updateCloudMap(camera.position, time);
     rc.postfx.beginScene();
     glClearColor(0.42f, 0.68f, 1.05f, 1.0f); // HDR sky
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -136,7 +142,10 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     // enough for it well past any distance the terrain generator covers.
     const glm::vec3 camPosF(camera.position);
     glProgramUniform3fv(rc.drawProgram, 24, 1, &camPosF.x);
-    glProgramUniform1f(rc.drawProgram, 25, fx.clouds ? fx.cloudShadow : 0.0f);
+    glProgramUniform1f(rc.drawProgram, 25, cloudShadows ? fx.cloudShadow : 0.0f);
+    const glm::vec3 cloudXf = rc.postfx.cloudMapXf();
+    glProgramUniform3fv(rc.drawProgram, 31, 1, &cloudXf.x);
+    glBindTextureUnit(6, rc.postfx.cloudMapTex());
     glProgramUniform1f(rc.drawProgram, 26, time);
     glProgramUniform1f(rc.drawProgram, 27, fx.leafSss);
     glProgramUniform1f(rc.drawProgram, 28, fx.relief);
@@ -148,8 +157,7 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     glProgramUniform1f(rc.drawProgram, 5, fx.shadows ? 1.0f : 0.0f);
     glProgramUniformMatrix4fv(rc.drawProgram, 6, 3, GL_FALSE,
                               &rc.shadows.cascadeVp()[0][0][0]);
-    const glm::vec3 splits{ShadowMap::kSplits[0], ShadowMap::kSplits[1],
-                           ShadowMap::kSplits[2]};
+    const glm::vec3 splits = rc.shadows.splits();
     glProgramUniform3fv(rc.drawProgram, 18, 1, &splits.x);
     const glm::vec3 texel = rc.shadows.cascadeTexelWorld();
     glProgramUniform3fv(rc.drawProgram, 19, 1, &texel.x);

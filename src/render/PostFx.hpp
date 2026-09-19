@@ -58,6 +58,9 @@ struct FxToggles {
     float cloudShadow = 0.6f;
     // Leaf translucency: light coming THROUGH a backlit canopy rather than off it.
     float leafSss = 0.8f;
+    // Share of a leaf canopy that lets sun straight through to the ground, as columns of
+    // light rather than per-block holes (see shadow.frag). 0 = only the texture's own holes.
+    float canopyLight = 0.22f;
     // Surface relief derived from the albedo's luminance — no authored normal maps, and no
     // room in the quad for tangent data. Costs four texture samples per opaque fragment.
     float relief = 0.6f;
@@ -129,6 +132,15 @@ public:
     // apply_ao.frag. Uses the snapshot captureOpaqueForWater() just took as the emitter-check
     // input, so it must run after that call, not before.
     void applyOpaqueSsao(bool enabled, const glm::vec2& projScale, float nearPlane);
+
+    // Re-renders the cloud coverage texture around the camera. Call before the opaque pass;
+    // terrain samples it (unit 6) for cloud shadows. Origin is snapped to whole texels so
+    // the sample grid never shimmers as the camera moves.
+    void updateCloudMap(const glm::dvec3& camPos, float time);
+    unsigned int cloudMapTex() const { return m_cloudTex; }
+    // xy = world XZ of the map's corner, z = 1 / span
+    glm::vec3 cloudMapXf() const { return {m_cloudOrigin.x, m_cloudOrigin.y, 1.0f / kCloudMapSpan}; }
+
     unsigned int sceneCopyTex() const { return m_sceneCopy; }
     unsigned int depthTex() const { return m_depth; }
     int width() const { return m_width; }
@@ -172,8 +184,15 @@ private:
     unsigned int m_progSsao = 0, m_progBlur = 0, m_progComposite = 0, m_progApplyAo = 0;
     unsigned int m_progBloomDown = 0, m_progBloomUp = 0, m_progFinal = 0;
     unsigned int m_progTaa = 0, m_progSsgi = 0, m_progMotion = 0;
-    unsigned int m_progLumDown = 0, m_progExpose = 0;
+    unsigned int m_progLumDown = 0, m_progExpose = 0, m_progCloudMap = 0;
     unsigned int m_vao = 0;
+
+    // 6 blocks a texel: the field's finest surviving octave is ~150 blocks across, so
+    // nothing finer than that is worth storing.
+    static constexpr int kCloudMapRes = 512;
+    static constexpr float kCloudMapSpan = 3072.0f;
+    unsigned int m_cloudTex = 0, m_cloudFbo = 0;
+    glm::vec2 m_cloudOrigin{0.0f};
 
     unsigned int m_hdrFbo = 0, m_hdrColor = 0, m_depth = 0;
     unsigned int m_sceneCopy = 0; // opaque snapshot for water SSR

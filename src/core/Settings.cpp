@@ -37,7 +37,7 @@ struct Bound {
 };
 
 // Every setting the engine persists. Adding one is a row here and nothing else.
-constexpr std::size_t kSettingCount = 46;
+constexpr std::size_t kSettingCount = 47;
 
 // Binds the schema to a live set of values. Non-const because load writes through it; save
 // binds a local copy for the same reason, which is cheaper than a second const walk and
@@ -66,6 +66,7 @@ std::array<Bound, kSettingCount> bind(FxToggles& fx, bool& vsync, bool& caveCull
         {"scotopic", T::Float, &fx.scotopic, 0.0f, 1.0f},
         {"cloudShadow", T::Float, &fx.cloudShadow, 0.0f, 1.0f},
         {"leafSss", T::Float, &fx.leafSss, 0.0f, 2.0f},
+        {"canopyLight", T::Float, &fx.canopyLight, 0.0f, 0.6f},
         {"relief", T::Float, &fx.relief, 0.0f, 2.0f},
         {"saturation", T::Float, &fx.saturation, 0.0f, 2.0f},
         {"contrast", T::Float, &fx.contrast, 0.5f, 1.8f},

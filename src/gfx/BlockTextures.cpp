@@ -121,8 +121,10 @@ Rgba genWoodTop(int x, int y) {
 Rgba genLeaves(int x, int y) {
     // clustered blobs of lighter/darker green
     float cluster = h01(x / 3, y / 3, 12);
-    float n = 0.7f + 0.5f * cluster + 0.12f * h01(x, y, 13);
-    Rgba c = shade(0.22f, 0.44f, 0.18f, n);
+    float n = 0.76f + 0.5f * cluster + 0.12f * h01(x, y, 13);
+    // Lit tops read as near-black next to the grass at 0.22/0.44/0.18. Lifted a little so a
+    // sunlit canopy is visibly lit; the darker clusters still carry the depth.
+    Rgba c = shade(0.25f, 0.49f, 0.19f, n);
     // Punch gaps. Leaves are a cutout block: the holes are what you see through, what light
     // comes through, and what makes the shadow dappled instead of a solid slab. Driven off a
     // different hash than the colour so the holes do not line up with the shading, and
