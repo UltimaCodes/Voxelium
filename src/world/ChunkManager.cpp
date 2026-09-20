@@ -1056,15 +1056,16 @@ void ChunkManager::collectDrawInfo(std::vector<ChunkDrawInfo>& out,
     m_visDirty = true;
 }
 
+// The flood over a dense grid of the loaded chunks. It used to look every neighbour up in the
+// hash map (about six lookups per visible chunk, ~1 ms at radius 24) on every frame the chunk set
+// changed, which during streaming is every frame. One pass over the loaded chunks fills the grid;
+// the flood then only reads it.
 void ChunkManager::rebuildVisibility(ChunkPos cameraChunk) {
-    ++m_floodStamp;
     m_visBits.assign(std::size_t(std::max(1, (m_metaCount + 31) / 32)), 0u);
-    const auto markVisible = [&](Entry& e) {
-        e.floodStamp = m_floodStamp;
+    const auto markVisible = [&](const Entry& e) {
         if (e.metaIndex >= 0)
             m_visBits[std::size_t(e.metaIndex) >> 5] |= 1u << (e.metaIndex & 31);
     };
-
     const auto camIt = m_chunks.find(cameraChunk);
     if (camIt == m_chunks.end()) {
         // camera outside the loaded world — draw everything rather than nothing
@@ -1072,8 +1073,25 @@ void ChunkManager::rebuildVisibility(ChunkPos cameraChunk) {
         return;
     }
 
+    const int span = 2 * radius + 1;
+    const std::size_t cells = std::size_t(span) * std::size_t(span) * std::size_t(kWorldChunksY);
+    m_floodGrid.assign(cells, nullptr);
+    m_floodSeen.assign(cells, 0);
+    const int x0 = m_center.x - radius, z0 = m_center.z - radius;
+    const auto cellOf = [&](const ChunkPos& p) -> std::size_t {
+        const int gx = p.x - x0, gz = p.z - z0;
+        if (gx < 0 || gx >= span || gz < 0 || gz >= span || p.y < 0 || p.y >= kWorldChunksY)
+            return std::size_t(-1);
+        return (std::size_t(p.y) * std::size_t(span) + std::size_t(gx)) * std::size_t(span) + std::size_t(gz);
+    };
+    for (const auto& item : m_chunks)
+        if (const std::size_t c = cellOf(item.first); c != std::size_t(-1))
+            m_floodGrid[c] = &item.second;
+
     m_floodQueue.clear();
     markVisible(camIt->second);
+    if (const std::size_t c = cellOf(cameraChunk); c != std::size_t(-1))
+        m_floodSeen[c] = 1;
     m_floodQueue.push_back({cameraChunk, -1, 0, camIt->second.connectivity});
 
     static constexpr int kStep[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
@@ -1087,6 +1105,65 @@ void ChunkManager::rebuildVisibility(ChunkPos cameraChunk) {
             if (node.dirMask & (1u << (d ^ 1)))
                 continue;
             // continue only through a face pair this chunk's air actually connects
+            if (node.entryFace >= 0 && !facesConnected(node.connectivity, node.entryFace, d))
+                continue;
+            const ChunkPos next{node.pos.x + kStep[d][0], node.pos.y + kStep[d][1],
+                                node.pos.z + kStep[d][2]};
+            const std::size_t c = cellOf(next);
+            if (c == std::size_t(-1) || m_floodSeen[c] || m_floodGrid[c] == nullptr)
+                continue;
+            m_floodSeen[c] = 1;
+            const Entry& e = *m_floodGrid[c];
+            markVisible(e);
+            m_floodQueue.push_back({next, std::int8_t(d ^ 1),
+                                    std::uint8_t(node.dirMask | (1u << d)), e.connectivity});
+        }
+    }
+}
+
+bool ChunkManager::floodMatchesReference(ChunkPos cameraChunk, double* gridMs, double* hashMs) {
+    const auto t0 = Clock::now();
+    rebuildVisibility(cameraChunk);
+    const double g = msSince(t0);
+    const std::vector<std::uint32_t> mine = m_visBits;
+    std::vector<std::uint32_t> ref;
+    const auto t1 = Clock::now();
+    floodByHash(cameraChunk, ref);
+    const double h = msSince(t1);
+    if (gridMs != nullptr)
+        *gridMs += g;
+    if (hashMs != nullptr)
+        *hashMs += h;
+    return mine == ref;
+}
+
+void ChunkManager::floodByHash(ChunkPos cameraChunk, std::vector<std::uint32_t>& out) {
+    ++m_floodStamp;
+    out.assign(std::size_t(std::max(1, (m_metaCount + 31) / 32)), 0u);
+    const auto markVisible = [&](Entry& e) {
+        e.floodStamp = m_floodStamp;
+        if (e.metaIndex >= 0)
+            out[std::size_t(e.metaIndex) >> 5] |= 1u << (e.metaIndex & 31);
+    };
+
+    const auto camIt = m_chunks.find(cameraChunk);
+    if (camIt == m_chunks.end()) {
+        // camera outside the loaded world — draw everything rather than nothing
+        std::fill(out.begin(), out.end(), 0xFFFFFFFFu);
+        return;
+    }
+
+    m_floodQueue.clear();
+    markVisible(camIt->second);
+    m_floodQueue.push_back({cameraChunk, -1, 0, camIt->second.connectivity});
+
+    static constexpr int kStep[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                        {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+    for (std::size_t head = 0; head < m_floodQueue.size(); ++head) {
+        const FloodNode node = m_floodQueue[head]; // copy: pushes may reallocate
+        for (int d = 0; d < 6; ++d) {
+            if (node.dirMask & (1u << (d ^ 1)))
+                continue;
             if (node.entryFace >= 0 && !facesConnected(node.connectivity, node.entryFace, d))
                 continue;
             const ChunkPos next{node.pos.x + kStep[d][0], node.pos.y + kStep[d][1],

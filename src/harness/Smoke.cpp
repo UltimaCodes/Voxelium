@@ -1266,6 +1266,32 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                 return 1;
         }
 
+        // Visibility flood: the dense-grid version has to agree, bit for bit, with the hash-map one it
+        // replaced, from the camera's own chunk and from a spread of others around it.
+        {
+            const int cy0 = std::clamp(int(std::floor(camera.position.y / vx::kChunkSize)), 0, vx::kWorldChunksY - 1);
+            const int cx0 = int(std::floor(camera.position.x / vx::kChunkSize));
+            const int cz0 = int(std::floor(camera.position.z / vx::kChunkSize));
+            int agree = 0, total = 0;
+            double gridMs = 0.0, hashMs = 0.0;
+            for (int dz = -4; dz <= 4; dz += 4)
+                for (int dx = -4; dx <= 4; dx += 4)
+                    for (int dy = -1; dy <= 1; ++dy) {
+                        const int cy = cy0 + dy;
+                        if (cy < 0 || cy >= vx::kWorldChunksY)
+                            continue;
+                        ++total;
+                        agree += world.floodMatchesReference({cx0 + dx, cy, cz0 + dz}, &gridMs, &hashMs) ? 1 : 0;
+                    }
+            const bool floodOk = total > 0 && agree == total;
+            VX_INFO("visibility flood: grid version matches the hash reference from %d of %d vantage "
+                    "points (radius %d: %.3f ms a flood against %.3f ms for the hash version) -> %s",
+                    agree, total, world.radius, total > 0 ? gridMs / total : 0.0,
+                    total > 0 ? hashMs / total : 0.0, floodOk ? "PASS" : "FAIL");
+            if (!floodOk)
+                return 1;
+        }
+
         // Lightning: a storm strikes now and then and the thunder follows the flash; a clear sky
         // never does either. Run on the real particle pool, so a bolt's few hundred particles
         // per strike are also proven to fit and to expire.

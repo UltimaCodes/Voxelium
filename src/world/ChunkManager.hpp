@@ -170,6 +170,11 @@ public:
         m_dirty = false;
         return was;
     }
+    // Runs the dense-grid flood and the hash-map reference from `cameraChunk` and says whether
+    // they agree bit for bit. Test only: the game only ever runs the grid one.
+    bool floodMatchesReference(ChunkPos cameraChunk, double* gridMs = nullptr,
+                               double* hashMs = nullptr);
+
     // How close to the camera, in blocks, the nearest chunk changed since the last call (the
     // shadow cascades only need redrawing where the change is, not everywhere). Infinite if
     // nothing did.
@@ -309,6 +314,9 @@ private:
     void processEvictions(Renderer& renderer, JobSystem& jobs);
     void rebuildArena(Renderer& renderer);
     void rebuildVisibility(ChunkPos cameraChunk);
+    // The same flood written against the hash map, kept as the reference the dense-grid one is
+    // checked against (--smoke). Fills `out` instead of m_visBits.
+    void floodByHash(ChunkPos cameraChunk, std::vector<std::uint32_t>& out);
     void remeshNow(Renderer& renderer, ChunkPos pos);
     const Chunk* voxelsAt(ChunkPos pos) const;
 
@@ -421,6 +429,11 @@ private:
     // visibility flood state
     std::vector<std::uint32_t> m_visBits;
     std::vector<FloodNode> m_floodQueue;
+    // The flood's lookup table: every loaded chunk within the radius, by position, so a step is an
+    // array read instead of a hash lookup. Rebuilt per flood (one pass over the loaded chunks) and
+    // reused, so it costs nothing after the first.
+    std::vector<const Entry*> m_floodGrid;
+    std::vector<std::uint8_t> m_floodSeen;
     ChunkPos m_lastFloodCenter{INT32_MIN, 0, INT32_MIN};
     std::uint32_t m_floodStamp = 0;
     int m_metaCount = 0;
