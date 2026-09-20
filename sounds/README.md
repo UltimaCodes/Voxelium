@@ -19,16 +19,25 @@ bundled is listed below with its source.
 | `amb_night` | [Crickets Ambient Noise](https://opengameart.org/content/crickets-ambient-noise-loopable) | Wolfgang_ (rec. Ted Kerr) | CC0 |
 | `amb_day` | [Forest Ambience](https://opengameart.org/content/forest-ambience) | TinyWorlds | CC0 |
 | `step_grass*`, `break_grass*`, `break_sand*`, `break_dirt*`, `break_snow*` | derived from the Fantozzi footsteps above (filtered and re-levelled) | — | CC0 |
-| `amb_surf`, `amb_gulls`, `amb_birds`, `amb_desert`, `amb_cicadas`, `amb_leaves`, `amb_frogs`, `amb_drips`, `amb_reef` | synthesised from noise and oscillators by [`scripts/gen_ambience.py`](../scripts/gen_ambience.py) - nothing sampled, so nothing to license | this repo | CC0 |
+| `amb_surf` | [Beach Ocean Waves](https://opengameart.org/content/beach-ocean-waves) - four wave recordings, shuffled and chained | jasinski (submitted by qubodup) | CC0 |
+| `amb_gulls` | [Solo Seagull Sound Effects](https://opengameart.org/content/solo-seagull-sound-effects) - seven ambient calls and one big one, scattered over a quiet floor | Rango Mango | CC0 |
+| `amb_drips` | [Dripping water loop](https://opengameart.org/content/dripping-water-loop) | Independent.nu (submitted by qubodup) | CC0 |
+| `amb_cicadas` | [Swamp Environment Audio](https://opengameart.org/content/swamp-environment-audio) - the cicada and bug loops, layered at different lengths | LokiF | CC0 |
+| `amb_birds`, `amb_desert`, `amb_leaves`, `amb_frogs`, `amb_reef` | synthesised from noise and oscillators by [`scripts/gen_ambience.py`](../scripts/gen_ambience.py) - nothing sampled, so nothing to license | this repo | CC0 |
 
 The bundled clips were converted from their original `ogg`/`mp3` to 16-bit mono 48 kHz wav,
 trimmed, peak-normalised and faded at both ends. The beds additionally have their tail
 crossfaded back over their head so the loop point is seamless.
 
-The nine synthesised beds (surf, gulls, birds, desert wind, cicadas, leaf rustle, frogs, cave
-drips, reef) are deterministic - `python scripts/gen_ambience.py` rewrites them byte for byte -
-so if you would rather have recordings, delete the file and drop your own in under the same
-name; the ambience director asks for them by name and stays quiet for any that are missing.
+The four recorded beds (surf, gulls, drips, cicadas) are built from the sources above by
+[`scripts/build_ambience_recordings.py`](../scripts/build_ambience_recordings.py): the recordings are short
+one-shots and loops, so each is assembled into a bed (waves chained with crossfades in a shuffled order, gull
+calls scattered over near silence, insect loops layered at lengths that never line up), its tail crossfaded
+over its head so it loops without a click, and scaled to the loudness of the synthesised bed it replaced so
+the mix keeps its balance. The five that are still synthesised (birds, desert wind, leaf rustle, frogs, reef)
+are deterministic - `python scripts/gen_ambience.py` rewrites them byte for byte - and are the ones most worth
+replacing with recordings. To do that, drop your own in under the same name; the ambience director asks for
+them by name and stays quiet for any that are missing.
 
 The soft materials — grass, sand, dirt, snow — have no dedicated recording in any of these
 packs. Their break sounds are the bundled footsteps, filtered per material. That is not a

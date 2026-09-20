@@ -330,19 +330,24 @@ def reef():
     return normalise(loopify(x, secs), rms=0.05)
 
 
+# surf, gulls, cicadas and drips used to be generated here too. They are recordings now
+# (scripts/build_ambience_recordings.py), and the synthesised versions stay in this file only as
+# the fallback if those wavs are ever deleted: pass their names explicitly to regenerate one.
 BEDS = {
-    "amb_surf": surf,
-    "amb_gulls": gulls,
     "amb_birds": birds,
     "amb_desert": desert,
-    "amb_cicadas": cicadas,
     "amb_leaves": leaves,
     "amb_frogs": frogs,
-    "amb_drips": drips,
     "amb_reef": reef,
+}
+FALLBACK_BEDS = {
+    "amb_surf": surf,
+    "amb_gulls": gulls,
+    "amb_cicadas": cicadas,
+    "amb_drips": drips,
 }
 
 if __name__ == "__main__":
     want = sys.argv[1:] or list(BEDS)
     for name in want:
-        write(name, BEDS[name]())
+        write(name, {**BEDS, **FALLBACK_BEDS}[name]())

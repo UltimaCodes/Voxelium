@@ -114,8 +114,9 @@ also muffled by solid blocks between them and your ear, one raycast per sound, w
 slider.
 
 everything bundled is **CC0** or made here, with its source listed in `sounds/README.md` —
-the biome beds are synthesized by `scripts/gen_ambience.py`, so there's no third-party audio
-in them. no clip is required — delete any of them and the engine just stays quiet for that one. drop your own
+surf, gulls, cave drips and cicadas are real CC0 recordings assembled into loops by
+`scripts/build_ambience_recordings.py`, and the rest of the biome beds are synthesized by
+`scripts/gen_ambience.py`. no clip is required — delete any of them and the engine just stays quiet for that one. drop your own
 in and they take over; the naming rules are in that same file.
 
 ## worlds
