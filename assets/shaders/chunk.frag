@@ -44,6 +44,7 @@ layout(location = 27) uniform float uLeafSss;    // leaf translucency strength, 
 layout(location = 28) uniform float uRelief;     // derived surface relief, 0 = off
 layout(location = 29) uniform float uDaylight;   // 1 full day, 0 after dusk
 layout(location = 30) uniform float uWetness;    // 0 dry .. 1 soaked (#29)
+layout(location = 34) uniform float uSnowCover;  // how much of the sky-facing ground has snow on it (33 is uCloudBias)
 layout(location = 31) uniform vec3 uCloudMapXf;  // cloud map: world XZ of its corner, 1 / span
 
 #include "clouds.glsl"
@@ -304,6 +305,17 @@ void main() {
     if ((vDir >= 6u || isCutoutLayer(vLayer)) && texel.a < 0.5)
         discard;
     vec3 albedo = texel.rgb * natTint * natWarm;
+    // Snow settles on whatever faces the sky and only where the sky reaches it: a roof or a canopy
+    // overhead catches it and the ground beneath stays bare. The edge is broken up with noise so
+    // it drifts and patches instead of being a clean contour.
+    if (uSnowCover > 0.001 && vDir < 6u) {
+        vec3 sw = uCamPos + vWorldRel;
+        float up = smoothstep(0.55, 0.9, N.y);
+        float open = vLight.a * vLight.a;
+        float drift = vnoise(sw.xz * 0.8 + sw.y * 0.3);
+        float amt = smoothstep(0.30, 0.70, uSnowCover * up * open * 1.05 + (drift - 0.5) * 0.7 * up);
+        albedo = mix(albedo, vec3(0.90, 0.93, 0.98), amt);
+    }
 
     // Grass side faces (layer 3) get the grass colour blended over their top edge. Without
     // it a terraced hillside alternates green tops with brown risers every single block,

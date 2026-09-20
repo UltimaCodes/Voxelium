@@ -104,6 +104,7 @@ struct FxToggles {
     // ordinary distance fog. Dust over the desert, cool blue over the sea, a green damp in forest.
     float biomeTint[3] = {1.0f, 1.0f, 1.0f};
     float biomeHaze = 0.0f;
+    float snowCover = 0.0f; // runtime, 0..1: how much of the sky-facing ground has snow on it
     float mist = 0.0f;      // 0..1, pulls the fog in (dawn, over water)
     float farInner = -1.0f; // runtime: radius the far horizon skips; < 0 means "the fog end", as in the game
     // Shader quality tier, 0 Low .. 3 Ultra. Injected as VX_QUALITY and baked into the

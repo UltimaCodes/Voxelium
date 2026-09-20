@@ -234,6 +234,7 @@ int main(int argc, char** argv) {
     vx::WeatherDirector weatherDirector;
     vx::Lightning lightning;
     float stormLevel = 0.0f;
+    float snowCover = 0.0f; // fills while it snows, melts when it stops (faster below the snow line)
     glm::vec3 airTint(1.0f); // eased toward the biome's colour, so crossing a border is not a pop
     float airHaze = 0.0f;
     vx::FarTerrain farTerrain;
@@ -965,6 +966,13 @@ int main(int argc, char** argv) {
                 stormLevel = std::clamp((fx.precip - 0.7f) / 0.3f, 0.0f, 1.0f) * (1.0f - fx.snow);
             }
             ambience.precip = fx.precip;
+            {
+                const float snowing = (fx.snow > 0.5f && fx.precip > 0.05f) ? fx.precip : 0.0f;
+                const float melt = camera.position.y < 140.0 ? 0.03f : 0.008f;
+                snowCover += float(dt) * (snowing > 0.0f ? snowing * 0.02f : -melt);
+                snowCover = std::clamp(snowCover, 0.0f, 1.0f);
+                fx.snowCover = snowCover;
+            }
             // The air follows the biome around the camera. Each biome pulls the colour its way and
             // adds a little haze; all of it eases in over a few seconds because the biome weights
             // it reads are a five-point sample that steps as the sample points cross a border.
@@ -1239,6 +1247,7 @@ int main(int argc, char** argv) {
             }
             weatherDirector.reset();
             lightning.reset();
+            snowCover = 0.0f;
             farTerrain.reset();
             int newSeed = 0;
             const char* title = "voxelium";

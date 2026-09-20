@@ -164,6 +164,7 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     glProgramUniform1f(rc.drawProgram, 29, sky.daylight);
     // Wetness follows the rain, and snow does not wet anything — it settles.
     glProgramUniform1f(rc.drawProgram, 30, fx.precip * (1.0f - fx.snow));
+    glProgramUniform1f(rc.drawProgram, 34, fx.snowCover);
     glProgramUniform1f(rc.drawProgram, 5, fx.shadows ? 1.0f : 0.0f);
     glProgramUniformMatrix4fv(rc.drawProgram, 6, 3, GL_FALSE,
                               &rc.shadows.cascadeVp()[0][0][0]);

@@ -110,6 +110,8 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
             fx.biomeTint[i] = t[i];
         fx.biomeHaze = a == "desert" ? 0.17f : (a == "sea" ? 0.07f : 0.04f);
     }
+    if (const char* sc = std::getenv("VX_TOUR_SNOWCOVER"))
+        fx.snowCover = std::clamp(float(std::atof(sc)), 0.0f, 1.0f);
     if (const char* ms = std::getenv("VX_TOUR_MIST"))
         fx.mist = std::clamp(float(std::atof(ms)), 0.0f, 1.0f);
 
