@@ -26,6 +26,7 @@
 #include "render/Renderer.hpp"
 #include "render/Weather.hpp"
 #include "render/FarTerrain.hpp"
+#include "ui/MenuBackdrop.hpp"
 #include "render/WeatherDirector.hpp"
 #include "render/Wildlife.hpp"
 #include "render/ShadowMap.hpp"
@@ -240,6 +241,37 @@ int main(int argc, char** argv) {
     RenderContext rc{renderer,   shadowMap,    postfx,   overlay,  &particles,
                      &weather,   &wildlife,    &farTerrain, drawProgram, waterProgram, blockTex};
 
+    // A quality change is the one setting that is not free: the sample counts are baked into the
+    // programs, so the tier has to be recompiled rather than branched on. The binary cache makes
+    // the second visit to a preset cheap (#15: 349 ms cold for the whole set, 56 ms warm), and
+    // nothing about the world is touched - the arena, the meta buffers and every uploaded chunk
+    // stay exactly where they are, so switching preset does not re-stream anything. Shared by the
+    // settings window in the game and the one on the title screen.
+    const auto applyQualityChange = [&](int qualityBefore, int shadowResBefore) {
+        if (fx.quality == qualityBefore && fx.shadowRes == shadowResBefore)
+            return;
+        vx::initShaderCache("saves/shadercache");
+        const std::string defines = vx::qualityDefines(fx.quality, fx.shadowRes);
+        WorldPrograms next = buildWorldPrograms(defines);
+        if (next.ok() && postfx.reloadPrograms(defines)) {
+            glDeleteProgram(rc.drawProgram);
+            glDeleteProgram(rc.waterProgram);
+            renderer.setPrograms(next.draw, next.cull);
+            rc.drawProgram = next.draw;
+            rc.waterProgram = next.water;
+            shadowMap.resize(next.shadow, fx.shadowRes);
+            shadowMap.invalidate();
+            postfx.invalidateTaaHistory();
+            VX_INFO("quality: tier %d, shadow map %d", fx.quality, fx.shadowRes);
+        } else {
+            // Keep running on what already works rather than half-swapping the set.
+            VX_ERROR("quality: rebuild failed, staying on tier %d", qualityBefore);
+            fx.quality = qualityBefore;
+            fx.shadowRes = shadowResBefore;
+        }
+        vx::shutdownShaderCache();
+    };
+
     vx::DebugHud hud;
     if (!hud.init(window->handle()))
         return 1;
@@ -249,6 +281,11 @@ int main(int argc, char** argv) {
     // real world save
     vx::WorldStore worldStore("saves");
     std::filesystem::path saveDir = worldStore.liveDir();
+    // Made before the title screen: the terrain previewed behind it is built on these workers.
+    auto jobs = std::make_unique<vx::JobSystem>();
+    VX_INFO("job system: %d workers", jobs->workerCount());
+    vx::MenuBackdrop menuBackdrop;
+
     // Every launch is a new world unless the title screen below loads one. The live one is
     // scratch either way — keeping it means saving it under a name from the ESC menu, which
     // is what makes "new seed each time" safe.
@@ -269,33 +306,134 @@ int main(int argc, char** argv) {
         // the way every earlier launch did.
         vx::DebugHud::TitleUi title;
         title.saved = worldStore.list();
+        const auto rollSeed = [] {
+            return int(std::chrono::steady_clock::now().time_since_epoch().count() ^
+                       std::chrono::system_clock::now().time_since_epoch().count()) &
+                   0x7FFFFFFF;
+        };
+        // 0 for an empty or unreadable field; the caller falls back to the rolled seed
+        const auto parseSeed = [](const char* text, int fallback) {
+            if (!text[0])
+                return fallback;
+            const long long v = std::strtoll(text, nullptr, 10);
+            return int((v < 0 ? -v : v) & 0x7FFFFFFF);
+        };
+        std::snprintf(title.seedText, sizeof(title.seedText), "%d", rollSeed());
+        if (const char* fixed = std::getenv("VX_MENU_SEED")) // harness: a seed to look at, not a random one
+            std::snprintf(title.seedText, sizeof(title.seedText), "%s", fixed);
+        int rolledSeed = std::atoi(title.seedText);
+        // The menu is a real scene, so it runs at the display's rate rather than flat out.
+        window->setVsync(true);
+        // The terrain behind the menu is the seed being shown: the one typed, or the world
+        // selected on the saved page. Changing it waits for a pause in typing, then rebuilds.
+        std::unique_ptr<vx::TerrainGenerator> previewGen;
+        bool settingsPage = false;     // the settings window is showing
+        vx::DebugHud::WorldUi noWorld; // the window wants one; there is no world to save or load yet
+        int previewSeed = 0, pendingSeed = 0;
+        double pendingSince = 0.0;
+        double lastFrame = glfwGetTime();
         bool loaded = false;
         while (!window->shouldClose()) {
             window->pollEvents();
+            const double nowT = glfwGetTime();
+            const float dtT = float(std::min(nowT - lastFrame, 0.1));
+            lastFrame = nowT;
             hud.beginFrame();
             hud.titleScreen(title);
+            if (title.page == 3) {
+                bool open = true, unusedQuit = false;
+                const int qualityBefore = fx.quality;
+                const int shadowResBefore = fx.shadowRes;
+                hud.settings(open, vsync, caveCull, savedRadius, savedFov, fx, unusedQuit, noWorld,
+                             /*titleMode=*/true);
+                applyQualityChange(qualityBefore, shadowResBefore);
+                if (!open)
+                    title.page = 1;
+                settingsPage = true;
+            } else if (settingsPage) {
+                // leaving the page commits what was changed, the same as closing it in the game
+                vx::Settings::save(settingsFile, fx, vsync, caveCull, savedRadius, savedFov);
+                settingsPage = false;
+            }
+            if (title.rerollRequested) {
+                title.rerollRequested = false;
+                rolledSeed = rollSeed();
+                std::snprintf(title.seedText, sizeof(title.seedText), "%d", rolledSeed);
+            }
+            if (title.deleteRequested) {
+                title.deleteRequested = false;
+                if (!title.selected.empty())
+                    worldStore.remove(title.selected);
+                title.saved = worldStore.list();
+                title.selected.clear();
+                title.deleteArmed.clear();
+                if (title.saved.empty())
+                    title.page = 1;
+                else
+                    title.selected = title.saved.front().name;
+            }
+
+            int wantSeed = parseSeed(title.seedText, rolledSeed);
+            if (title.page == 2)
+                for (const vx::WorldStore::Entry& e : title.saved)
+                    if (e.name == title.selected)
+                        wantSeed = e.seed;
+            if (!previewGen || wantSeed != previewSeed) {
+                if (wantSeed != pendingSeed || !previewGen) {
+                    pendingSeed = wantSeed;
+                    pendingSince = nowT;
+                }
+                if (!previewGen || nowT - pendingSince > 0.35) {
+                    farTerrain.reset(); // waits for a build that is still reading the old one
+                    previewGen = std::make_unique<vx::TerrainGenerator>(wantSeed);
+                    previewSeed = wantSeed;
+                }
+            }
+            // black while the terrain is being built, easing out once it is there
+            title.fade = farTerrain.ready() ? std::max(0.0f, title.fade - dtT * 2.2f) : 1.0f;
+
             int fbw = 0, fbh = 0;
             window->framebufferSize(fbw, fbh);
             if (fbw > 0 && fbh > 0) {
                 glViewport(0, 0, fbw, fbh);
-                glClearColor(0.07f, 0.09f, 0.14f, 1.0f);
-                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                if (previewGen)
+                    menuBackdrop.draw(rc, *jobs, *previewGen, fbw, fbh, nowT);
+                else {
+                    glClearColor(0.07f, 0.09f, 0.14f, 1.0f);
+                    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                }
             }
             hud.render();
+            // VX_MENU_SHOT=<frame>[,<page>] writes menu_shot.bmp on that frame and exits: the only
+            // offscreen look at the title screen (VX_MENU_PAGE=2 opens the saved-worlds page).
+            if (const char* ms = std::getenv("VX_MENU_SHOT")) {
+                static int menuFrame = 0;
+                if (++menuFrame == std::atoi(ms) && std::atoi(ms) > 0 && fbw > 0 && fbh > 0) {
+                    std::vector<std::uint8_t> px(std::size_t(fbw) * fbh * 3);
+                    glReadPixels(0, 0, fbw, fbh, GL_BGR, GL_UNSIGNED_BYTE, px.data());
+                    vx::writeBmp24("menu_shot.bmp", fbw, fbh, px);
+                    farTerrain.quiesce();
+                    hud.shutdown();
+                    return 0;
+                }
+                if (menuFrame == 5 && std::getenv("VX_MENU_PLAY"))
+                    title.newWorldRequested = true; // harness: carry on into the loading screen
+                if (menuFrame == 1 && std::getenv("VX_MENU_PAGE")) {
+                    title.page = std::atoi(std::getenv("VX_MENU_PAGE"));
+                    if (title.page == 2 && !title.saved.empty())
+                        title.selected = title.saved.front().name;
+                }
+            }
             window->swapBuffers();
             if (title.quitRequested) {
+                farTerrain.quiesce();
                 hud.shutdown();
                 return 0;
             }
             if (title.newWorldRequested) {
-                worldSeed = title.seedText[0] ? std::atoi(title.seedText)
-                                              : int(std::chrono::steady_clock::now()
-                                                        .time_since_epoch()
-                                                        .count() ^
-                                                    std::chrono::system_clock::now()
-                                                        .time_since_epoch()
-                                                        .count()) &
-                                                    0x7FFFFFFF;
+                if (settingsPage)
+                    vx::Settings::save(settingsFile, fx, vsync, caveCull, savedRadius, savedFov);
+                worldSeed = parseSeed(title.seedText, rolledSeed);
                 worldStore.clearLive();
                 break;
             }
@@ -305,6 +443,11 @@ int main(int argc, char** argv) {
             }
             title.loadRequested = false; // load() failed (deleted mid-screen?) — stay put
         }
+        // the preview generator is about to go; a build still reading it must finish first. The
+        // mesh it made is kept: the world about to start has the same seed, so it is the same
+        // terrain and the loading screen and the game carry on from it.
+        farTerrain.quiesce();
+        previewGen.reset();
         if (window->shouldClose())
             return 0;
         VX_INFO(loaded ? "world loaded, seed %d" : "world seed %d (save it from the ESC "
@@ -316,8 +459,6 @@ int main(int argc, char** argv) {
     // job can touch world's chunks or queues during teardown
     auto world = std::make_unique<vx::ChunkManager>(saveDir, worldSeed);
     auto light = std::make_unique<vx::LightEngine>(*world);
-    auto jobs = std::make_unique<vx::JobSystem>();
-    VX_INFO("job system: %d workers", jobs->workerCount());
 
     vx::FlyCamera camera;
     // Spawn ON the ground, not at a fixed altitude. y was hardcoded to 110, which is inside
@@ -450,9 +591,15 @@ int main(int argc, char** argv) {
                 hud.beginFrame();
                 hud.loadingScreen(p, title, phase);
                 glViewport(0, 0, fbw, fbh);
-                glClearColor(0.07f, 0.09f, 0.14f, 1.0f);
-                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                menuBackdrop.draw(rc, *jobs, world->generator(), fbw, fbh, glfwGetTime());
                 hud.render();
+                // VX_LOAD_SHOT=<n> writes load_shot.bmp on the n-th loading frame and exits
+                if (const char* ls = std::getenv("VX_LOAD_SHOT"); ls != nullptr && f == std::atoi(ls)) {
+                    std::vector<std::uint8_t> px(std::size_t(fbw) * fbh * 3);
+                    glReadPixels(0, 0, fbw, fbh, GL_BGR, GL_UNSIGNED_BYTE, px.data());
+                    vx::writeBmp24("load_shot.bmp", fbw, fbh, px);
+                    std::exit(0);
+                }
                 window->swapBuffers();
             }
         }
@@ -470,8 +617,7 @@ int main(int argc, char** argv) {
                 hud.beginFrame();
                 hud.loadingScreen(1.0f, title, "ready");
                 glViewport(0, 0, fbw, fbh);
-                glClearColor(0.07f, 0.09f, 0.14f, 1.0f);
-                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                menuBackdrop.draw(rc, *jobs, world->generator(), fbw, fbh, glfwGetTime());
                 hud.render();
                 window->swapBuffers();
             }
@@ -1018,34 +1164,7 @@ int main(int argc, char** argv) {
         if (!settingsOpen)
             worldUi.saved.clear();
 
-        // A quality change is the one setting that is not free: the sample counts are baked
-        // into the programs, so the tier has to be recompiled rather than branched on. The
-        // binary cache makes the second visit to a preset cheap (#15: 349 ms cold for the
-        // whole set, 56 ms warm), and nothing about the world is touched — the arena, the
-        // meta buffers and every uploaded chunk stay exactly where they are, so switching
-        // preset does not re-stream anything.
-        if (fx.quality != qualityBefore || fx.shadowRes != shadowResBefore) {
-            vx::initShaderCache("saves/shadercache");
-            const std::string defines = vx::qualityDefines(fx.quality, fx.shadowRes);
-            WorldPrograms next = buildWorldPrograms(defines);
-            if (next.ok() && postfx.reloadPrograms(defines)) {
-                glDeleteProgram(rc.drawProgram);
-                glDeleteProgram(rc.waterProgram);
-                renderer.setPrograms(next.draw, next.cull);
-                rc.drawProgram = next.draw;
-                rc.waterProgram = next.water;
-                shadowMap.resize(next.shadow, fx.shadowRes);
-                shadowMap.invalidate();
-                postfx.invalidateTaaHistory();
-                VX_INFO("quality: tier %d, shadow map %d", fx.quality, fx.shadowRes);
-            } else {
-                // Keep running on what already works rather than half-swapping the set.
-                VX_ERROR("quality: rebuild failed, staying on tier %d", qualityBefore);
-                fx.quality = qualityBefore;
-                fx.shadowRes = shadowResBefore;
-            }
-            vx::shutdownShaderCache();
-        }
+        applyQualityChange(qualityBefore, shadowResBefore);
 
         if (worldUi.saveRequested) {
             worldUi.saveRequested = false;

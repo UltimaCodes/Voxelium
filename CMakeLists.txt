@@ -52,6 +52,8 @@ add_executable(voxelium
     src/render/FarTerrain.cpp
     src/render/WeatherDirector.cpp
     src/ui/DebugHud.cpp
+    src/ui/MenuScreens.cpp
+    src/ui/MenuBackdrop.cpp
     src/world/Chunk.cpp
     src/world/ChunkManager.cpp
     src/world/MeshBufferPool.cpp

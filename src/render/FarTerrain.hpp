@@ -47,6 +47,8 @@ public:
               const glm::vec3& sunColor, const glm::vec3& skyAmbient, float innerRadius);
 
     bool ready() const { return m_haveMesh; }
+    // Waits for a build in flight, so the generator it reads can be destroyed.
+    void quiesce() { waitIdle(); }
 
 private:
     struct Vertex {

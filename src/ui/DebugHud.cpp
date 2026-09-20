@@ -12,6 +12,8 @@
 #include <imgui_impl_opengl3.h>
 
 #include <algorithm>
+#include <filesystem>
+#include <initializer_list>
 
 namespace vx {
 
@@ -89,6 +91,25 @@ bool DebugHud::init(GLFWwindow* window) {
     ImGui::GetIO().IniFilename = nullptr; // don't scatter imgui.ini files around
     ImGui::StyleColorsDark();
     applyTheme();
+
+    // The built-in font stays the default for every debug window. The title and loading screens
+    // ask for these two by name and fall back to it if the machine does not have them: a display
+    // face for the wordmark and menu, and a plain UI face for body text.
+    ImGuiIO& io = ImGui::GetIO();
+    io.Fonts->AddFontDefault();
+    const auto load = [&](std::initializer_list<const char*> paths) -> ImFont* {
+        for (const char* path : paths) {
+            std::error_code ec;
+            if (std::filesystem::exists(path, ec))
+                if (ImFont* f = io.Fonts->AddFontFromFileTTF(path))
+                    return f;
+        }
+        return nullptr;
+    };
+    m_fontDisplay = load({"C:/Windows/Fonts/bahnschrift.ttf", "C:/Windows/Fonts/seguisb.ttf",
+                          "C:/Windows/Fonts/segoeuib.ttf", "C:/Windows/Fonts/arialbd.ttf"});
+    m_fontUi = load({"C:/Windows/Fonts/segoeui.ttf", "C:/Windows/Fonts/calibri.ttf",
+                     "C:/Windows/Fonts/arial.ttf"});
 
     if (!ImGui_ImplGlfw_InitForOpenGL(window, true)) {
         VX_ERROR("ImGui GLFW backend init failed");
@@ -240,175 +261,54 @@ bool DebugHud::lampPicker(bool& open, int& swatch) {
     return picked;
 }
 
-void DebugHud::loadingScreen(float progress, const char* title, const char* phase) {
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->Pos);
-    ImGui::SetNextWindowSize(vp->Size);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0)); // the gradient below is the bg
-    ImGui::Begin("##loading", nullptr,
-                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
-                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
-
-    ImDrawList* dl = ImGui::GetBackgroundDrawList();
-    const ImVec2 p0 = vp->Pos;
-    const ImVec2 p1 = ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y);
-    // Vertical gradient in the engine's own sky colours rather than a flat charcoal panel:
-    // it is the first thing anyone sees, and a dead grey rectangle reads as a hang.
-    const ImU32 top = IM_COL32(18, 24, 38, 255);
-    const ImU32 bot = IM_COL32(38, 46, 58, 255);
-    dl->AddRectFilledMultiColor(p0, p1, top, top, bot, bot);
-
-    const float cx = vp->Pos.x + vp->Size.x * 0.5f;
-    const float cy = vp->Pos.y + vp->Size.y * 0.5f;
-    const float barW = std::min(520.0f, vp->Size.x * 0.55f);
-    const float barH = 6.0f;
-    const float barX = cx - barW * 0.5f;
-    const float barY = cy + 18.0f;
-
-    // title, tracked out a little by drawing it once per character
-    {
-        const float scale = 2.4f;
-        ImFont* font = ImGui::GetFont();
-        const float fs = ImGui::GetFontSize() * scale;
-        float w = 0.0f;
-        for (const char* c = title; *c; ++c)
-            w += font->CalcTextSizeA(fs, FLT_MAX, 0.0f, c, c + 1).x + 3.0f;
-        float x = cx - w * 0.5f;
-        for (const char* c = title; *c; ++c) {
-            dl->AddText(nullptr, fs, ImVec2(x, cy - 46.0f), IM_COL32(226, 232, 240, 255), c,
-                        c + 1);
-            x += font->CalcTextSizeA(fs, FLT_MAX, 0.0f, c, c + 1).x + 3.0f;
-        }
-    }
-
-    // track, then fill, then a soft leading edge so it reads as moving even when a long
-    // phase (a big light settle) holds the number still for a second
-    const float t = std::clamp(progress, 0.0f, 1.0f);
-    dl->AddRectFilled(ImVec2(barX, barY), ImVec2(barX + barW, barY + barH),
-                      IM_COL32(255, 255, 255, 28), barH * 0.5f);
-    if (t > 0.0f) {
-        const float fillW = std::max(barH, barW * t);
-        dl->AddRectFilled(ImVec2(barX, barY), ImVec2(barX + fillW, barY + barH),
-                          IM_COL32(126, 196, 255, 255), barH * 0.5f);
-        const float pulse = 0.55f + 0.45f * std::sin(float(ImGui::GetTime()) * 3.2f);
-        dl->AddCircleFilled(ImVec2(barX + fillW, barY + barH * 0.5f), barH * 1.5f,
-                            IM_COL32(190, 226, 255, int(90.0f * pulse)));
-    }
-
-    char pct[16];
-    std::snprintf(pct, sizeof(pct), "%d%%", int(t * 100.0f + 0.5f));
-    const ImVec2 ps = ImGui::CalcTextSize(pct);
-    dl->AddText(ImVec2(barX + barW - ps.x, barY - ps.y - 8.0f), IM_COL32(226, 232, 240, 220),
-                pct);
-    const ImVec2 fs2 = ImGui::CalcTextSize(phase);
-    dl->AddText(ImVec2(barX, barY - fs2.y - 8.0f), IM_COL32(160, 174, 192, 220), phase);
-
-    ImGui::End();
-    ImGui::PopStyleColor();
-}
-
-void DebugHud::titleScreen(TitleUi& ui) {
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->Pos);
-    ImGui::SetNextWindowSize(vp->Size);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0)); // the gradient below is the bg
-    // NoInputs, same as loadingScreen's background window: this one only ever draws the
-    // gradient and the tracked-out title text, both via the background draw list, never an
-    // actual widget. Without NoInputs it is still a real, full-viewport interactive window
-    // sitting UNDER ##titlepanel below, and it was silently eating every click meant for
-    // that panel's buttons — nothing in this window to click, but ImGui didn't know that.
-    ImGui::Begin("##title", nullptr,
-                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
-                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
-
-    // Same sky-gradient background as the loading screen it hands off to, so the title
-    // screen doesn't read as a different, bolted-on app in front of the game.
-    ImDrawList* dl = ImGui::GetBackgroundDrawList();
-    const ImVec2 p0 = vp->Pos;
-    const ImVec2 p1 = ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y);
-    dl->AddRectFilledMultiColor(p0, p1, IM_COL32(18, 24, 38, 255), IM_COL32(18, 24, 38, 255),
-                                IM_COL32(38, 46, 58, 255), IM_COL32(38, 46, 58, 255));
-
-    const float cx = vp->Pos.x + vp->Size.x * 0.5f;
-    {
-        const char* title = "VOXELIUM";
-        const float scale = 3.2f;
-        ImFont* font = ImGui::GetFont();
-        const float fs = ImGui::GetFontSize() * scale;
-        float w = 0.0f;
-        for (const char* c = title; *c; ++c)
-            w += font->CalcTextSizeA(fs, FLT_MAX, 0.0f, c, c + 1).x + 4.0f;
-        float x = cx - w * 0.5f;
-        const float titleY = vp->Pos.y + vp->Size.y * 0.22f;
-        for (const char* c = title; *c; ++c) {
-            dl->AddText(nullptr, fs, ImVec2(x, titleY), IM_COL32(226, 232, 240, 255), c, c + 1);
-            x += font->CalcTextSizeA(fs, FLT_MAX, 0.0f, c, c + 1).x + 4.0f;
-        }
-    }
-
-    // One panel, centred, holding both "start something new" and "open something existing" —
-    // a player picks one or the other, never both, so there is no reason to split them across
-    // separate screens the way a bigger menu system might.
-    const float panelW = std::min(420.0f, vp->Size.x * 0.5f);
-    ImGui::SetNextWindowPos(ImVec2(cx, vp->Pos.y + vp->Size.y * 0.42f), ImGuiCond_Always,
-                            ImVec2(0.5f, 0.0f));
-    ImGui::SetNextWindowSize(ImVec2(panelW, 0.0f));
-    ImGui::Begin("##titlepanel", nullptr,
-                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
-                     ImGuiWindowFlags_NoBringToFrontOnFocus);
-
-    ImGui::TextDisabled("new world");
-    ImGui::SetNextItemWidth(-96.0f);
-    ImGui::InputTextWithHint("##seed", "seed (blank = random)", ui.seedText,
-                             sizeof(ui.seedText), ImGuiInputTextFlags_CharsDecimal);
-    ImGui::SameLine();
-    if (ImGui::Button("play", ImVec2(88.0f, 0.0f)))
-        ui.newWorldRequested = true;
-
-    if (!ui.saved.empty()) {
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-        ImGui::TextDisabled("continue a saved world");
-        if (ImGui::BeginListBox("##titleworlds", ImVec2(-1.0f, 140.0f))) {
-            for (const WorldStore::Entry& w : ui.saved) {
-                char label[128];
-                std::snprintf(label, sizeof(label), "%s   seed %d   %zu KB", w.name.c_str(),
-                              w.seed, w.bytes / 1024);
-                if (ImGui::Selectable(label, ui.selected == w.name))
-                    ui.selected = w.name;
-            }
-            ImGui::EndListBox();
-        }
-        ImGui::BeginDisabled(ui.selected.empty());
-        if (ImGui::Button("load", ImVec2(88.0f, 0.0f)))
-            ui.loadRequested = true;
-        ImGui::EndDisabled();
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    if (ImGui::Button("quit", ImVec2(88.0f, 0.0f)))
-        ui.quitRequested = true;
-
-    ImGui::End();
-    ImGui::End();
-    ImGui::PopStyleColor();
-}
-
 void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, float& fovDeg,
-                        FxToggles& fx, bool& quit, WorldUi& worlds) {
+                        FxToggles& fx, bool& quit, WorldUi& worlds, bool titleMode) {
     if (!open)
         return;
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(vp->GetCenter().x, vp->GetCenter().y), ImGuiCond_Always,
-                            ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(430.0f, 480.0f), ImGuiCond_Always);
+    float titleScale = 1.0f;
+    if (titleMode) {
+        // the same column the title's own panels use (see MenuScreens.cpp), so switching between
+        // "new world" and "settings" does not move the furniture
+        const float scale = std::clamp(vp->Size.y / 900.0f, 0.75f, 1.6f);
+        const float margin = std::max(48.0f, vp->Size.x * 0.07f);
+        const float px = vp->Pos.x + std::max(vp->Size.x * 0.50f, margin + 420.0f * scale);
+        const float pw = std::min(560.0f * scale, vp->Pos.x + vp->Size.x - margin - px);
+        ImGui::SetNextWindowPos(ImVec2(px, vp->Pos.y + vp->Size.y * 0.20f), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(pw, std::min(vp->Size.y * 0.66f, 620.0f * scale)),
+                                 ImGuiCond_Always);
+        titleScale = scale;
+    } else {
+        ImGui::SetNextWindowPos(ImVec2(vp->GetCenter().x, vp->GetCenter().y), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(430.0f, 480.0f), ImGuiCond_Always);
+    }
+    // On the title screen it wears the same glass as the other panels, with a heading instead of
+    // a title bar, and its text is a little larger than the debug windows'.
+    if (titleMode)
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                            ImVec2(26.0f * titleScale, 22.0f * titleScale));
     ImGui::Begin("settings", nullptr,
-                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                     ImGuiWindowFlags_NoCollapse);
+                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                     (titleMode ? (ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBackground) : 0));
+    if (titleMode) {
+        const ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
+        ImDrawList* gl = ImGui::GetWindowDrawList();
+        const float r = 14.0f * titleScale;
+        gl->AddRectFilled(wp, ImVec2(wp.x + ws.x, wp.y + ws.y), IM_COL32(8, 12, 20, 168), r);
+        gl->AddRect(wp, ImVec2(wp.x + ws.x, wp.y + ws.y), IM_COL32(255, 255, 255, 26), r, 0, 1.0f);
+        gl->AddLine(ImVec2(wp.x + r, wp.y + 0.5f), ImVec2(wp.x + ws.x - r, wp.y + 0.5f),
+                    IM_COL32(255, 255, 255, 41), 1.0f);
+        ImGui::PushFont(m_fontDisplay, 36.0f * titleScale);
+        ImGui::TextUnformatted("Settings");
+        ImGui::PopFont();
+        const ImVec2 hp = ImGui::GetCursorScreenPos();
+        gl->AddRectFilled(ImVec2(hp.x, hp.y + 2.0f), ImVec2(hp.x + 56.0f * titleScale, hp.y + 4.5f),
+                          IM_COL32(126, 196, 255, 255), 1.0f);
+        ImGui::Dummy(ImVec2(0.0f, 12.0f * titleScale));
+        ImGui::PushFont(m_fontUi, std::max(15.0f, 17.0f * titleScale));
+    }
 
     // Tabs rather than one long column (#51). The old menu was a flat run of seven sections
     // with world save/load buried between "lighting" and "post", which is not where anyone
@@ -607,7 +507,7 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("world")) {
+        if (!titleMode && ImGui::BeginTabItem("world")) {
             ImGui::Text("seed %d", worlds.seed);
             ImGui::TextDisabled("(this world is not kept unless you save it)");
             ImGui::Spacing();
@@ -713,13 +613,22 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     }
 
     ImGui::Separator();
-    if (ImGui::Button("resume", ImVec2(195.0f, 30.0f)))
-        open = false;
-    ImGui::SameLine();
-    if (ImGui::Button("quit", ImVec2(195.0f, 30.0f)))
-        quit = true;
+    if (titleMode) {
+        if (ImGui::Button("back", ImVec2(-1.0f, 30.0f)))
+            open = false;
+    } else {
+        if (ImGui::Button("resume", ImVec2(195.0f, 30.0f)))
+            open = false;
+        ImGui::SameLine();
+        if (ImGui::Button("quit", ImVec2(195.0f, 30.0f)))
+            quit = true;
+    }
 
+    if (titleMode)
+        ImGui::PopFont();
     ImGui::End();
+    if (titleMode)
+        ImGui::PopStyleVar();
 }
 
 void DebugHud::render() {

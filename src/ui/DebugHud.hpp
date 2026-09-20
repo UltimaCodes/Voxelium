@@ -8,6 +8,7 @@
 #include <vector>
 
 struct GLFWwindow;
+struct ImFont;
 
 namespace vx {
 
@@ -77,8 +78,10 @@ public:
         std::vector<WorldStore::Entry> saved;    // filled by the caller each frame
     };
 
+    // titleMode is the same window opened from the title screen: no world tab (there is no world
+    // yet) and a Back button in place of resume/quit, laid out in the title's right-hand column.
     void settings(bool& open, bool& vsync, bool& caveCull, int& radius, float& fovDeg,
-                  FxToggles& fx, bool& quit, WorldUi& worlds);
+                  FxToggles& fx, bool& quit, WorldUi& worlds, bool titleMode = false);
 
     // Shown before any world exists, once at launch. Separate from WorldUi/settings() above:
     // that panel always assumes a live world already exists (it can save/replace it), where
@@ -86,11 +89,16 @@ public:
     // place a SPECIFIC seed can be entered at all — the in-game "new world" button has never
     // taken one, it only ever rolls a random one.
     struct TitleUi {
-        char seedText[32] = ""; // blank = random, entered here or nowhere
+        char seedText[32] = ""; // pre-filled with a rolled seed; the terrain behind the menu is this
+        int page = 1;           // 1 = new world, 2 = saved worlds, 3 = settings (drawn by DebugHud::settings)
+        float fade = 1.0f;      // 1 hides the backdrop (while its terrain is being built), eased by the caller
         bool newWorldRequested = false;
         bool loadRequested = false;
         bool quitRequested = false;
+        bool rerollRequested = false;
+        bool deleteRequested = false; // deletes `selected`; the caller does it and refreshes `saved`
         std::string selected;
+        std::string deleteArmed; // the world whose delete button has been pressed once
         std::vector<WorldStore::Entry> saved; // filled by the caller each frame
     };
     // Caller drives its own frame loop (poll/clear/swap) until one of the UI's *Requested
@@ -110,6 +118,11 @@ private:
     int m_cursor = 0;
     bool m_visible = true;
     bool m_initialized = false;
+    // Faces for the title and loading screens, loaded from the system fonts if they exist; null
+    // means "keep whatever font is current", which is the built-in one.
+    ImFont* m_fontDisplay = nullptr;
+    ImFont* m_fontUi = nullptr;
+    double m_titleStart = -1.0;
 
     // decimated readout: the raw numbers change every frame and are unreadable, so the
     // displayed frame/gpu/fps values only refresh a few times a second (averaged over the

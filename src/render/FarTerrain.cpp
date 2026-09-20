@@ -202,6 +202,7 @@ void FarTerrain::draw(const glm::mat4& viewProj, const glm::dvec3& cam, const gl
     glProgramUniform3fv(m_prog, 8, 1, &sunColor.x);
     glProgramUniform3fv(m_prog, 9, 1, &skyAmbient.x);
     glProgramUniform1f(m_prog, 10, float(kSpacing));
+    glProgramUniform2f(m_prog, 12, float(m_origin.x), float(m_origin.y));
     glProgramUniform1i(m_prog, 11, kCells);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_ssbo);
     glBindVertexArray(m_vao);

@@ -27,6 +27,7 @@ public:
     // and those are underground).
     void generate(Chunk& chunk, ChunkPos pos, bool detailed = true) const;
     int surfaceHeight(int wx, int wz) const; // for spawn placement
+    int seed() const { return m_seed; }
 
     // What the ground at a column is, as 0..1 weights: open sea (deeper is higher), the sandy
     // band around it, and desert. Pure function of the seed, same as everything here, so the

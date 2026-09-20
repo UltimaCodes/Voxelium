@@ -176,7 +176,8 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     // The horizon: the coarse world past the streamed chunks. Opaque, drawn after the chunks so
     // depth keeps the real terrain in front of it.
     if (rc.farTerrain && fx.farTerrain && farEnd > fogEnd && fogEnd < 1e8f)
-        rc.farTerrain->draw(cam.viewProj, camera.position, sunL, sky.color, sky.ambient, fogEnd);
+        rc.farTerrain->draw(cam.viewProj, camera.position, sunL, sky.color, sky.ambient,
+                            fx.farInner >= 0.0f ? fx.farInner : fogEnd);
 
     // Creatures go in with the opaque scene, not after the water: a fish under a lake has to be
     // seen THROUGH it, refracted and absorbed like the seabed, and the snapshot the water pass
