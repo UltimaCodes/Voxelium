@@ -107,6 +107,11 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     // A flash of lightning lights the ground from the whole sky, not from the sun: it lifts the
     // ambient (which the chunks, the far terrain and the water all read), not the direct light.
     sky.ambient += glm::vec3(0.60f, 0.68f, 0.95f) * (0.4f * fx.flash);
+    // and the light itself takes on the colour of the air it came through: warm and dusty over
+    // sand, a touch cool over the sea
+    const glm::vec3 biome(fx.biomeTint[0], fx.biomeTint[1], fx.biomeTint[2]);
+    sky.color *= glm::mix(glm::vec3(1.0f), biome, 0.7f);
+    sky.sunColor *= glm::mix(glm::vec3(1.0f), biome, 0.7f);
     // Everything that SHADES takes the celestial direction, so the cascades, NdotL and every
     // specular lobe follow the moon after dusk. The sky pass is handed the true sun
     // separately — see SkyLight.

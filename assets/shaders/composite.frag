@@ -51,6 +51,8 @@ layout(location = 30) uniform vec3 uLightL;        // toward sun by day, moon by
 layout(location = 31) uniform vec3 uLightColor;    // radiance of uLightL
 layout(location = 32) uniform float uDaylight;     // 1 full day, 0 after dusk
 layout(location = 34) uniform float uFlash;        // lightning, 0..1 (33 is uCloudBias, in clouds.glsl)
+layout(location = 35) uniform vec3 uBiomeTint;     // the air of this place: multiplies the haze colour
+layout(location = 36) uniform float uBiomeHaze;    // and thickens it, 0..~0.2
 layout(location = 27) uniform float uFlare;        // lens flare strength, 0 = off
 layout(location = 28) uniform vec3 uCamPos;        // camera world position (clouds are world-anchored)
 // location 29 (uContact) retired - screen-space contact shadows removed entirely (owner
@@ -498,8 +500,11 @@ void main() {
         // distance fog: melt the far edge of the loaded world into the sky, so the render
         // boundary reads as haze/horizon instead of a hard cut
         float fog = smoothstep(uFog.x, uFog.y, dist);
+        // biome haze: a layer of dust, salt or damp on top of the distance fog, coming in over the
+        // first few hundred blocks so it is what the middle distance looks like, not the horizon
+        fog = 1.0 - (1.0 - fog) * (1.0 - uBiomeHaze * smoothstep(40.0, 700.0, dist));
         if (fog > 0.001)
-            color = mix(color, skyWithClouds(dir), fog);
+            color = mix(color, skyWithClouds(dir) * uBiomeTint, fog);
     }
 
     outColor = vec4(color + flare, 1.0);

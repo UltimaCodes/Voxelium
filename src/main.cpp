@@ -234,6 +234,8 @@ int main(int argc, char** argv) {
     vx::WeatherDirector weatherDirector;
     vx::Lightning lightning;
     float stormLevel = 0.0f;
+    glm::vec3 airTint(1.0f); // eased toward the biome's colour, so crossing a border is not a pop
+    float airHaze = 0.0f;
     vx::FarTerrain farTerrain;
     if (!farTerrain.init(shaders))
         return 1;
@@ -963,6 +965,26 @@ int main(int argc, char** argv) {
                 stormLevel = std::clamp((fx.precip - 0.7f) / 0.3f, 0.0f, 1.0f) * (1.0f - fx.snow);
             }
             ambience.precip = fx.precip;
+            // The air follows the biome around the camera. Each biome pulls the colour its way and
+            // adds a little haze; all of it eases in over a few seconds because the biome weights
+            // it reads are a five-point sample that steps as the sample points cross a border.
+            {
+                const glm::vec3 desertAir(1.10f, 0.97f, 0.80f), seaAir(0.90f, 1.00f, 1.08f),
+                    forestAir(0.95f, 1.04f, 0.96f);
+                const float coastOnly = ambience.coast * (1.0f - ambience.desert);
+                glm::vec3 want(1.0f);
+                want *= glm::mix(glm::vec3(1.0f), desertAir, ambience.desert);
+                want *= glm::mix(glm::vec3(1.0f), seaAir, coastOnly);
+                want *= glm::mix(glm::vec3(1.0f), forestAir, ambience.forest * (1.0f - ambience.desert));
+                const float wantHaze = 0.17f * ambience.desert + 0.07f * coastOnly + 0.04f * ambience.forest;
+                const float k = std::min(1.0f, float(dt) * 0.35f);
+                airTint += (want - airTint) * k;
+                airHaze += (wantHaze - airHaze) * k;
+                fx.biomeTint[0] = airTint.x;
+                fx.biomeTint[1] = airTint.y;
+                fx.biomeTint[2] = airTint.z;
+                fx.biomeHaze = airHaze;
+            }
             ambience.underwater = eyeUnderwater;
             // A coarse count of the water around the ear, so standing by a lake is audibly
             // different from standing in a field. Sampled on a lattice rather than swept:

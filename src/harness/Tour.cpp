@@ -100,6 +100,16 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
         fx.precip = std::clamp(float(std::atof(pr)), 0.0f, 1.0f);
     if (const char* sn = std::getenv("VX_TOUR_SNOW"))
         fx.snow = std::clamp(float(std::atof(sn)), 0.0f, 1.0f);
+    // VX_TOUR_AIR=desert|sea|forest sets the biome air the game would settle on there
+    if (const char* air = std::getenv("VX_TOUR_AIR")) {
+        const std::string a = air;
+        const float t[3] = {a == "desert" ? 1.10f : (a == "sea" ? 0.90f : 0.95f),
+                            a == "desert" ? 0.97f : (a == "sea" ? 1.00f : 1.04f),
+                            a == "desert" ? 0.80f : (a == "sea" ? 1.08f : 0.96f)};
+        for (int i = 0; i < 3; ++i)
+            fx.biomeTint[i] = t[i];
+        fx.biomeHaze = a == "desert" ? 0.17f : (a == "sea" ? 0.07f : 0.04f);
+    }
     if (const char* ms = std::getenv("VX_TOUR_MIST"))
         fx.mist = std::clamp(float(std::atof(ms)), 0.0f, 1.0f);
 
