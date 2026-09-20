@@ -47,10 +47,23 @@ bool FarTerrain::init(const std::filesystem::path& shaderDir) {
     return true;
 }
 
-void FarTerrain::shutdown() {
-    // a build in flight writes into this object; let it finish before it goes away
-    while (m_building.load(std::memory_order_acquire))
+// A build reads the terrain generator and writes into this object, so neither may change or go
+// away underneath it. m_building is not the right thing to wait on: it stays set after the job
+// has finished until update() consumes the result, so waiting on it hangs if nobody ever does
+// (which is exactly the situation at shutdown).
+void FarTerrain::waitIdle() {
+    const auto start = std::chrono::steady_clock::now();
+    while (m_jobRunning.load(std::memory_order_acquire)) {
+        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(10)) {
+            VX_ERROR("far terrain: build did not finish in 10 s, not waiting any longer");
+            return;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+}
+
+void FarTerrain::shutdown() {
+    waitIdle();
     if (m_prog)
         glDeleteProgram(m_prog);
     if (m_ssbo)
@@ -62,6 +75,10 @@ void FarTerrain::shutdown() {
 }
 
 void FarTerrain::reset() {
+    // The caller is about to replace the generator (a new world), which a running build must not
+    // be reading while it happens.
+    waitIdle();
+    m_building.store(false, std::memory_order_release);
     m_haveMesh = false;
     m_centre = glm::dvec2(1e18);
     m_stagingReady.store(false, std::memory_order_release);
@@ -160,12 +177,14 @@ void FarTerrain::update(const TerrainGenerator& gen, JobSystem& jobs, const glm:
     const std::int64_t oz =
         std::int64_t(std::floor(cam.z / kSpacing)) * kSpacing - std::int64_t(kHalfExtent);
     m_building.store(true, std::memory_order_release);
+    m_jobRunning.store(true, std::memory_order_release);
     m_jobEpoch.store(m_seedEpoch, std::memory_order_relaxed);
     const TerrainGenerator* g = &gen;
     jobs.submit([this, g, ox, oz] {
         build(*g, ox, oz, m_staging);
         m_stagingOrigin = glm::dvec2(double(ox), double(oz));
         m_stagingReady.store(true, std::memory_order_release);
+        m_jobRunning.store(false, std::memory_order_release); // last: nothing here after this
     });
 }
 

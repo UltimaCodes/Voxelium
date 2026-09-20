@@ -60,8 +60,15 @@ std::uint32_t voxelHash(int x, int y, int z) {
     return h;
 }
 
-std::uint32_t cellHash(int x, int z) {
-    std::uint32_t h = std::uint32_t(x) * 0x27D4EB2Fu ^ std::uint32_t(z) * 0x165667B1u;
+// Seeds run up to 2^31-1 and are offset per noise layer, multiplied into hashes and added to
+// world coordinates. Done in int that overflows (undefined behaviour) for most seeds; these do
+// the same arithmetic in unsigned, which wraps to exactly the bits the int version produced on
+// every platform this ships on, so existing worlds are unchanged.
+int seedOff(int seed, int k) { return int(std::uint32_t(seed) + std::uint32_t(k)); }
+std::uint32_t wrapMul(int a, std::uint32_t k) { return std::uint32_t(a) * k; }
+
+std::uint32_t cellHash(std::uint32_t x, std::uint32_t z) {
+    std::uint32_t h = x * 0x27D4EB2Fu ^ z * 0x165667B1u;
     h ^= h >> 15;
     h *= 0x2C1B3C6Du;
     h ^= h >> 12;
@@ -88,7 +95,10 @@ float valueNoise(float x, float z, int salt) {
     const float fx = x - float(ix), fz = z - float(iz);
     const float sx = fx * fx * (3.0f - 2.0f * fx), sz = fz * fz * (3.0f - 2.0f * fz);
     const auto at = [&](int cx, int cz) {
-        return float(cellHash(cx + salt * 7919, cz - salt * 104729) & 0xFFFFu) / 65535.0f;
+        return float(cellHash(std::uint32_t(cx) + wrapMul(salt, 7919u),
+                              std::uint32_t(cz) - wrapMul(salt, 104729u)) &
+                     0xFFFFu) /
+               65535.0f;
     };
     const float a = at(ix, iz), b = at(ix + 1, iz), c = at(ix, iz + 1), d = at(ix + 1, iz + 1);
     return (a + (b - a) * sx) + ((c + (d - c) * sx) - (a + (b - a) * sx)) * sz;
@@ -269,18 +279,18 @@ TerrainGenerator::Column TerrainGenerator::shapeColumn(float heightNoise, float 
     // bays, spits and sandbars, and a finer one breaks them into ragged steps.
     const float shore = 1.0f - smooth01(2.0f, 9.0f, std::abs(raw - float(kSeaLevel)));
     if (shore > 0.0f)
-        raw += ((valueNoise(float(wx) * 0.045f, float(wz) * 0.045f, seed + 61) - 0.5f) * 4.0f +
-                (valueNoise(float(wx) * 0.19f, float(wz) * 0.19f, seed + 67) - 0.5f) * 1.6f) * shore;
+        raw += ((valueNoise(float(wx) * 0.045f, float(wz) * 0.045f, seedOff(seed, 61)) - 0.5f) * 4.0f +
+                (valueNoise(float(wx) * 0.19f, float(wz) * 0.19f, seedOff(seed, 67)) - 0.5f) * 1.6f) * shore;
     return {std::clamp(int(raw), 8, kWorldHeight - 8), desert};
 }
 
 TerrainGenerator::Column TerrainGenerator::column(int wx, int wz) const {
     float hn = 0.0f, c = 0.0f, a = 0.0f, d = 0.0f;
     m_height->GenUniformGrid2D(&hn, float(wx), float(wz), 1, 1, 1.0f, 1.0f, m_seed);
-    m_continent->GenUniformGrid2D(&c, float(wx), float(wz), 1, 1, 1.0f, 1.0f, m_seed + 1);
-    m_arid->GenUniformGrid2D(&a, float(wx), float(wz), 1, 1, 1.0f, 1.0f, m_seed + 5);
+    m_continent->GenUniformGrid2D(&c, float(wx), float(wz), 1, 1, 1.0f, 1.0f, seedOff(m_seed, 1));
+    m_arid->GenUniformGrid2D(&a, float(wx), float(wz), 1, 1, 1.0f, 1.0f, seedOff(m_seed, 5));
     if (a > 0.14f) // the dune field only matters where it can show
-        m_dune->GenUniformGrid2D(&d, float(wx), float(wz), 1, 1, 1.0f, 1.0f, m_seed + 6);
+        m_dune->GenUniformGrid2D(&d, float(wx), float(wz), 1, 1, 1.0f, 1.0f, seedOff(m_seed, 6));
     return shapeColumn(hn, c, a, d, wx, wz, m_seed);
 }
 
@@ -300,7 +310,7 @@ TerrainGenerator::BiomeSample TerrainGenerator::biomeAt(int wx, int wz) const {
 TerrainGenerator::FarSample TerrainGenerator::farSample(int wx, int wz) const {
     const Column col = column(wx, wz);
     return {col.h, col.desert,
-            smooth01(0.30f, 0.70f, valueNoise(float(wx) * 0.0045f, float(wz) * 0.0045f, m_seed + 71))};
+            smooth01(0.30f, 0.70f, valueNoise(float(wx) * 0.0045f, float(wz) * 0.0045f, seedOff(m_seed, 71)))};
 }
 
 void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const {
@@ -316,15 +326,15 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
     m_height->GenUniformGrid2D(heightNoise, float(baseX), float(baseZ), kChunkSize,
                                kChunkSize, 1.0f, 1.0f, m_seed);
     m_continent->GenUniformGrid2D(contNoise, float(baseX), float(baseZ), kChunkSize,
-                                  kChunkSize, 1.0f, 1.0f, m_seed + 1);
+                                  kChunkSize, 1.0f, 1.0f, seedOff(m_seed, 1));
     m_arid->GenUniformGrid2D(aridNoise, float(baseX), float(baseZ), kChunkSize, kChunkSize,
-                             1.0f, 1.0f, m_seed + 5);
+                             1.0f, 1.0f, seedOff(m_seed, 5));
     float aridMax = -1.0f;
     for (const float a : aridNoise)
         aridMax = std::max(aridMax, a);
     if (aridMax > 0.14f)
         m_dune->GenUniformGrid2D(duneNoise, float(baseX), float(baseZ), kChunkSize, kChunkSize,
-                                 1.0f, 1.0f, m_seed + 6);
+                                 1.0f, 1.0f, seedOff(m_seed, 6));
     else
         std::fill(std::begin(duneNoise), std::end(duneNoise), 0.0f);
 
@@ -378,7 +388,7 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
             // patches of gravel on the sea floor break up an otherwise flat sheet of sand
             const bool gravelBed = seabed && h < kSeaLevel - 5 &&
                                    valueNoise(float(baseX + x) * 0.05f, float(baseZ + z) * 0.05f,
-                                              m_seed + 53) > 0.66f;
+                                              seedOff(m_seed, 53)) > 0.66f;
             const int top = std::min(h - baseY, kChunkSize - 1);
             for (int y = 0; y <= top; ++y) {
                 const int wy = baseY + y;
@@ -435,13 +445,13 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
         // grid order: x + y * size + z * size * size
         m_cheese->GenUniformGrid3D(cheeseBuf.data(), float(baseX), float(baseY), float(baseZ),
                                    kChunkSize, kChunkSize, kChunkSize, 1.0f, 1.0f, 1.0f,
-                                   m_seed + 2);
+                                   seedOff(m_seed, 2));
         m_wormA->GenUniformGrid3D(wormABuf.data(), float(baseX), float(baseY), float(baseZ),
                                   kChunkSize, kChunkSize, kChunkSize, 1.0f, 1.0f, 1.0f,
-                                  m_seed + 3);
+                                  seedOff(m_seed, 3));
         m_wormB->GenUniformGrid3D(wormBBuf.data(), float(baseX), float(baseY), float(baseZ),
                                   kChunkSize, kChunkSize, kChunkSize, 1.0f, 1.0f, 1.0f,
-                                  m_seed + 4);
+                                  seedOff(m_seed, 4));
         for (int z = 0; z < kChunkSize; ++z)
             for (int y = 0; y < kChunkSize; ++y)
                 for (int x = 0; x < kChunkSize; ++x) {
@@ -523,10 +533,10 @@ void TerrainGenerator::decorateSea(Chunk& chunk, int baseX, int baseY, int baseZ
                                    int h) const {
     const int wx = baseX + x, wz = baseZ + z;
     const int depth = kSeaLevel - h;
-    const std::uint32_t hh = cellHash(wx * 3 + m_seed, wz * 5 - m_seed);
-    const float reefM = valueNoise(float(wx) * 0.022f, float(wz) * 0.022f, m_seed + 31);
-    const float kelpM = valueNoise(float(wx) * 0.017f, float(wz) * 0.017f, m_seed + 37);
-    const float grassM = valueNoise(float(wx) * 0.031f, float(wz) * 0.031f, m_seed + 41);
+    const std::uint32_t hh = cellHash(wrapMul(wx, 3u) + std::uint32_t(m_seed), wrapMul(wz, 5u) - std::uint32_t(m_seed));
+    const float reefM = valueNoise(float(wx) * 0.022f, float(wz) * 0.022f, seedOff(m_seed, 31));
+    const float kelpM = valueNoise(float(wx) * 0.017f, float(wz) * 0.017f, seedOff(m_seed, 37));
+    const float grassM = valueNoise(float(wx) * 0.031f, float(wz) * 0.031f, seedOff(m_seed, 41));
 
     // only ever replaces water, so a plant can never overwrite terrain or another plant
     const auto put = [&](int wy, BlockId id) {
@@ -538,7 +548,7 @@ void TerrainGenerator::decorateSea(Chunk& chunk, int baseX, int baseY, int baseZ
     if (depth >= 3 && depth <= 20 && reefM > 0.58f) {
         const float strength = std::min((reefM - 0.58f) / 0.30f, 1.0f); // 0 at the rim, 1 at the heart
         // colonies are 4-block cells of one species, so a reef is patchwork, not confetti
-        const int colony = int(cellHash(wx / 4 + m_seed, wz / 4 + 17) % 5u);
+        const int colony = int(cellHash(std::uint32_t(wx / 4) + std::uint32_t(m_seed), std::uint32_t(wz / 4) + 17u) % 5u);
         if (float(hh & 255u) < 40.0f + 110.0f * strength) {
             // never up through the surface: a coral head poking out of the sea reads as a
             // stray coloured tile floating on the waves
@@ -594,7 +604,7 @@ void TerrainGenerator::placeFoliage(Chunk& chunk, ChunkPos pos, const int (*heig
                 continue;
             if (chunk.get(x, y, z) != blocks::Air)
                 continue; // a tree trunk or a cave mouth already owns this cell
-            const std::uint32_t h = cellHash(wx * 7 + m_seed, wz * 13);
+            const std::uint32_t h = cellHash(wrapMul(wx, 7u) + std::uint32_t(m_seed), wrapMul(wz, 13u));
             const std::uint32_t roll = h % 100u;
             const bool isDesert = desert[z][x] > 0.42f + 0.16f * float(cellHash(wx, wz) & 255u) / 255.0f;
 
@@ -721,12 +731,12 @@ void TerrainGenerator::placeTrees(Chunk& chunk, ChunkPos pos) const {
 
     for (int cz = cz0; cz <= cz1; ++cz)
         for (int cx = cx0; cx <= cx1; ++cx) {
-            const std::uint32_t hsh = cellHash(cx * 1013 + m_seed, cz * 79 + m_seed);
+            const std::uint32_t hsh = cellHash(wrapMul(cx, 1013u) + std::uint32_t(m_seed), wrapMul(cz, 79u) + std::uint32_t(m_seed));
             // Forests and meadows: a broad density field decides how many cells grow a tree, from
             // open grassland (about 1 in 8) to dense woodland (about 1 in 2). It used to be a flat
             // 43% everywhere, which reads as one endless orchard.
             const float forestM = valueNoise(float(cx * kTreeCell) * 0.0045f,
-                                             float(cz * kTreeCell) * 0.0045f, m_seed + 71);
+                                             float(cz * kTreeCell) * 0.0045f, seedOff(m_seed, 71));
             const int treeLimit = 30 + int(smooth01(0.30f, 0.70f, forestM) * 105.0f);
             if (int(hsh & 255u) > treeLimit)
                 continue;
@@ -754,7 +764,7 @@ void TerrainGenerator::placeTrees(Chunk& chunk, ChunkPos pos) const {
 
             // Species: cold high ground grows spruce, the lowlands oak and birch, and a coarse region
             // hash keeps stands together (a spruce forest, an oak grove) instead of salt and pepper.
-            const std::uint32_t region = cellHash((cx >> 3) * 31 + m_seed, (cz >> 3) * 17);
+            const std::uint32_t region = cellHash(wrapMul(cx >> 3, 31u) + std::uint32_t(m_seed), wrapMul(cz >> 3, 17u));
             const float regionR = float(region & 1023u) / 1024.0f;
             const float cold = smooth01(100.0f, 160.0f, float(surf));
             int species; // 0 spruce, 1 oak, 2 birch

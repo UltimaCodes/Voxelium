@@ -203,25 +203,39 @@ bool save(const std::filesystem::path& file, const FxToggles& fx, bool vsync, bo
     if (file.has_parent_path())
         std::filesystem::create_directories(file.parent_path(), ec);
 
-    std::ofstream out(file, std::ios::trunc);
-    if (!out) {
-        VX_ERROR("settings: could not write %s", file.string().c_str());
+    // Written beside the real file and renamed over it, so a crash or power cut mid-save leaves
+    // the old settings intact instead of a truncated file (same approach as the region files).
+    const std::filesystem::path tmp = file.string() + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::trunc);
+        if (!out) {
+            VX_ERROR("settings: could not write %s", tmp.string().c_str());
+            return false;
+        }
+
+        // Local copy purely so the one schema definition can be reused: bind() needs somewhere
+        // writable to point at, and FxToggles is small enough that copying it beats maintaining
+        // a second const walk that could drift from this one.
+        FxToggles copy = fx;
+        bool v = vsync, cc = caveCull;
+        int r = radius;
+        float f = fovDeg;
+        const auto schema = bind(copy, v, cc, r, f);
+
+        out << "# Voxelium settings. Delete this file to go back to defaults.\n";
+        for (const Bound& b : schema)
+            writeFrom(out, b);
+        if (!out) {
+            VX_ERROR("settings: write to %s failed", tmp.string().c_str());
+            return false;
+        }
+    }
+    std::filesystem::rename(tmp, file, ec);
+    if (ec) {
+        VX_ERROR("settings: could not replace %s: %s", file.string().c_str(), ec.message().c_str());
         return false;
     }
-
-    // Local copy purely so the one schema definition can be reused: bind() needs somewhere
-    // writable to point at, and FxToggles is small enough that copying it beats maintaining
-    // a second const walk that could drift from this one.
-    FxToggles tmp = fx;
-    bool v = vsync, cc = caveCull;
-    int r = radius;
-    float f = fovDeg;
-    const auto schema = bind(tmp, v, cc, r, f);
-
-    out << "# Voxelium settings. Delete this file to go back to defaults.\n";
-    for (const Bound& b : schema)
-        writeFrom(out, b);
-    return bool(out);
+    return true;
 }
 
 int keyCount() { return int(kSettingCount); }

@@ -67,7 +67,9 @@ private:
     // hand-off from the worker
     std::vector<Vertex> m_staging;
     glm::dvec2 m_stagingOrigin{0.0};
-    std::atomic<bool> m_building{false};
+    std::atomic<bool> m_building{false};    // a build is owed or in flight, until update() consumes it
+    std::atomic<bool> m_jobRunning{false};  // the worker is (or is about to be) inside build()
+    void waitIdle();
     std::atomic<bool> m_stagingReady{false};
     std::uint32_t m_seedEpoch = 0; // bumped by reset(), so a stale job's result is dropped
     std::atomic<std::uint32_t> m_jobEpoch{0};
