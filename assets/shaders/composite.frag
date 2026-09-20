@@ -50,6 +50,7 @@ layout(location = 26) uniform vec2 uFog;           // (start, end) distance; hug
 layout(location = 30) uniform vec3 uLightL;        // toward sun by day, moon by night
 layout(location = 31) uniform vec3 uLightColor;    // radiance of uLightL
 layout(location = 32) uniform float uDaylight;     // 1 full day, 0 after dusk
+layout(location = 34) uniform float uFlash;        // lightning, 0..1 (33 is uCloudBias, in clouds.glsl)
 layout(location = 27) uniform float uFlare;        // lens flare strength, 0 = off
 layout(location = 28) uniform vec3 uCamPos;        // camera world position (clouds are world-anchored)
 // location 29 (uContact) retired - screen-space contact shadows removed entirely (owner
@@ -283,7 +284,8 @@ vec4 clouds(vec3 dir) {
         // and the cloud band measured brighter than the sky it sat in. Faded with daylight,
         // keeping 12% so moonlit cloud still reads as shape rather than a hole in the stars.
         vec3 lightCol = uLightColor * lit * phase +
-                        vec3(0.30, 0.36, 0.46) * 0.55 * mix(0.12, 1.0, uDaylight);
+                        vec3(0.30, 0.36, 0.46) * 0.55 * mix(0.12, 1.0, uDaylight) +
+                        vec3(0.80, 0.88, 1.10) * (0.6 * uFlash); // the cloud itself lights up
         float extinction = d * 0.055 * stepLen;
         float absorbed = 1.0 - exp(-extinction);
         scattered += transmittance * absorbed * lightCol * sunTint;
@@ -302,6 +304,7 @@ vec4 clouds(vec3 dir) {
 
 vec3 skyWithClouds(vec3 dir) {
     vec3 s = skyColor(dir);
+    s += vec3(0.55, 0.65, 0.95) * uFlash * 0.2 * (0.45 + 0.55 * clamp(dir.y * 2.0, 0.0, 1.0));
     if (uCloudsOn > 0.5) {
         vec4 c = clouds(dir);
         s = mix(s, c.rgb, c.a);

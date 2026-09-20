@@ -186,6 +186,68 @@ void Particles::spawnLanding(const glm::dvec3& at, int texLayer, int blockId) {
     }
 }
 
+void Particles::spawnBolt(const glm::dvec3& top, const glm::dvec3& bottom, std::uint32_t seed,
+                          float thickness) {
+    std::uint32_t rs = seed ^ 0x9E3779B9u;
+    const auto r01 = [&rs]() {
+        rs = rs * 1664525u + 1013904223u;
+        return float(rs >> 8) / float(1 << 24);
+    };
+    // one polyline by midpoint displacement: each pass halves the segments and knocks every new
+    // midpoint sideways by less than the last, which is what gives a bolt its kinks at every scale
+    const auto jagged = [&](const glm::dvec3& a, const glm::dvec3& b, glm::dvec3* pts, int segs,
+                            double amp) {
+        pts[0] = a;
+        pts[segs] = b;
+        for (int step = segs / 2; step >= 1; step /= 2) {
+            for (int i = step; i < segs; i += 2 * step) {
+                glm::dvec3 mid = (pts[i - step] + pts[i + step]) * 0.5;
+                mid.x += double(r01() - 0.5f) * 2.0 * amp;
+                mid.z += double(r01() - 0.5f) * 2.0 * amp;
+                pts[i] = mid;
+            }
+            amp *= 0.55;
+        }
+    };
+    const auto lay = [&](const glm::dvec3* pts, int segs, float width, float bright) {
+        const float spacing = std::max(0.35f, width * 0.7f);
+        for (int i = 0; i < segs; ++i) {
+            const glm::dvec3 d = pts[i + 1] - pts[i];
+            const int n = std::max(1, int(float(glm::length(d)) / spacing));
+            for (int k = 0; k < n; ++k) {
+                Particle& p = fresh();
+                p.pos = pts[i] + d * (double(k) / double(n));
+                p.vel = glm::vec3(0.0f);
+                p.life = 0.20f + 0.08f * r01();
+                p.invLife = 1.0f / p.life;
+                p.size = width * (0.8f + 0.4f * r01());
+                p.layer = -1;
+                p.gravity = 0.0f;
+                p.tint = glm::vec3(4.5f, 5.2f, 7.6f) * bright * (0.8f + 0.4f * r01());
+                p.maxAlpha = 1.0f;
+                p.solid = true; // a bolt is mostly against the sky, which the composite repaints
+            }
+        }
+    };
+
+    constexpr int kSegs = 64;
+    glm::dvec3 pts[kSegs + 1];
+    const double len = glm::length(top - bottom);
+    jagged(top, bottom, pts, kSegs, len * 0.10);
+    lay(pts, kSegs, thickness, 1.0f);
+
+    // forks: shorter, thinner, dimmer lines leaving the main one on the way down
+    for (int f = 0; f < 3; ++f) {
+        const int at = 10 + int(r01() * 38.0f);
+        const glm::dvec3 from = pts[at];
+        const glm::dvec3 to = from + glm::dvec3((r01() - 0.5f) * len * 0.35, -len * 0.22 * (0.5 + r01()),
+                                                (r01() - 0.5f) * len * 0.35);
+        glm::dvec3 branch[17];
+        jagged(from, to, branch, 16, len * 0.04);
+        lay(branch, 16, thickness * 0.55f, 0.55f);
+    }
+}
+
 // Highest solid or water cell in the column between two heights, top down.
 bool Particles::groundBelow(const ChunkManager& w, int x, int z, int fromY, int toY, int& outY,
                             int& outBlock) const {
@@ -346,26 +408,36 @@ void Particles::draw(const glm::mat4& viewProj, const glm::dvec3& cameraPos,
                      unsigned int blockTexArray) {
     if (m_live == 0)
         return;
-    for (int i = 0; i < m_live; ++i) {
-        const Particle& p = m_pool[i];
-        const glm::vec3 rel(p.pos - cameraPos);
-        // fade out over the last third of the life rather than popping
-        const float t = p.life * p.invLife;
-        const float alpha = std::min(1.0f, t * 3.0f) * p.maxAlpha;
-        GpuParticle& g = m_map[i];
-        g.x = rel.x;
-        g.y = rel.y;
-        g.z = rel.z;
-        g.size = p.size;
-        if (p.layer < 0) {
-            g.r = 0.62f;
-            g.g = 0.80f;
-            g.b = 0.95f;
-        } else {
-            g.r = g.g = g.b = 1.0f; // tint comes from the block texture
+    // Two batches in one buffer: the ordinary ones (blended, no depth write) first, then the ones
+    // that must write depth so the composite pass does not paint the sky over them.
+    int out = 0;
+    int plainEnd = 0;
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int i = 0; i < m_live; ++i) {
+            const Particle& p = m_pool[i];
+            if (p.solid != (pass == 1))
+                continue;
+            const glm::vec3 rel(p.pos - cameraPos);
+            // fade out over the last third of the life rather than popping
+            const float t = p.life * p.invLife;
+            const float alpha = std::min(1.0f, t * 3.0f) * p.maxAlpha;
+            GpuParticle& g = m_map[out++];
+            g.x = rel.x;
+            g.y = rel.y;
+            g.z = rel.z;
+            g.size = p.size;
+            if (p.layer < 0) {
+                g.r = p.tint.r;
+                g.g = p.tint.g;
+                g.b = p.tint.b;
+            } else {
+                g.r = g.g = g.b = 1.0f; // tint comes from the block texture
+            }
+            g.a = alpha;
+            g.layer = float(p.layer);
         }
-        g.a = alpha;
-        g.layer = float(p.layer);
+        if (pass == 0)
+            plainEnd = out;
     }
 
     glProgramUniformMatrix4fv(m_prog, 0, 1, GL_FALSE, glm::value_ptr(viewProj));
@@ -379,7 +451,12 @@ void Particles::draw(const glm::mat4& viewProj, const glm::dvec3& cameraPos,
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE); // debris must not write depth or it fights the water pass
-    glDrawArrays(GL_TRIANGLES, 0, m_live * 6);
+    if (plainEnd > 0)
+        glDrawArrays(GL_TRIANGLES, 0, plainEnd * 6);
+    if (out > plainEnd) {
+        glDepthMask(GL_TRUE);
+        glDrawArrays(GL_TRIANGLES, plainEnd * 6, (out - plainEnd) * 6);
+    }
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
 }

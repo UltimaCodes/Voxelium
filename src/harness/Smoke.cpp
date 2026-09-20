@@ -20,6 +20,7 @@
 #include "platform/Window.hpp"
 #include "render/Camera.hpp"
 #include "render/FrameRenderer.hpp"
+#include "render/Lightning.hpp"
 #include "render/Overlay.hpp"
 #include "render/Particles.hpp"
 #include "render/PostFx.hpp"
@@ -1262,6 +1263,42 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
 
             au.shutdown();
             if (!bedOk || !stormOk)
+                return 1;
+        }
+
+        // Lightning: a storm strikes now and then and the thunder follows the flash; a clear sky
+        // never does either. Run on the real particle pool, so a bolt's few hundred particles
+        // per strike are also proven to fit and to expire.
+        if (rc.particles) {
+            int thunderStorm = 0, thunderClear = 0, liveMax = 0;
+            float maxFlash = 0.0f;
+            {
+                vx::Lightning storm;
+                for (int f = 0; f < 6000; ++f) { // five minutes at 20 Hz
+                    const auto c = storm.update(0.05f, 1.0f, {0.0, 80.0, 0.0}, {0.0f, -1.0f},
+                                                world.generator(), *rc.particles);
+                    thunderStorm += c.thunder ? 1 : 0;
+                    maxFlash = std::max(maxFlash, storm.flash());
+                    rc.particles->update(0.05f);
+                    liveMax = std::max(liveMax, rc.particles->liveCount());
+                }
+            }
+            {
+                vx::Lightning calm;
+                for (int f = 0; f < 6000; ++f)
+                    thunderClear += calm.update(0.05f, 0.0f, {0.0, 80.0, 0.0}, {0.0f, -1.0f},
+                                                world.generator(), *rc.particles).thunder ? 1 : 0;
+            }
+            rc.particles->update(10.0f); // let the last bolt expire
+            const int leftover = rc.particles->liveCount();
+            const bool lightningOk = thunderStorm >= 8 && thunderStorm <= 70 && thunderClear == 0 &&
+                                     maxFlash > 0.8f && liveMax < vx::Particles::kCapacity && leftover == 0;
+            VX_INFO("lightning: %d thunder cues in 5 min of storm (want 8..70), %d in clear sky "
+                    "(want 0), peak flash %.2f (want > 0.8), at most %d particles live, %d left "
+                    "after expiry (want 0) -> %s",
+                    thunderStorm, thunderClear, double(maxFlash), liveMax, leftover,
+                    lightningOk ? "PASS" : "FAIL");
+            if (!lightningOk)
                 return 1;
         }
 

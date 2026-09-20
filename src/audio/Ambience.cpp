@@ -89,6 +89,8 @@ BedMix mixAmbience(const AmbienceState& s) {
 }
 
 bool StormSounds::update(AudioEngine& audio, float precip, float skyAccess, float dt) {
+    if (!selfSchedule)
+        return false;
     if (precip < kMinPrecip) {
         m_next = 9.0f; // leaving a storm resets the wait, so re-entering one is not instant
         return false;

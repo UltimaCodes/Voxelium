@@ -246,6 +246,19 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
             }
             VX_INFO("tour particles: %d live (%s)", rc.particles->liveCount(), pm);
         }
+        // VX_TOUR_BOLT=<distance> puts a lightning bolt that far ahead of yaw 0 (the -Z direction);
+        // VX_TOUR_FLASH=<0..1> lights the scene as if it had just struck. Particles are not stepped
+        // in the tour, so the bolt stays.
+        if (const char* bd = std::getenv("VX_TOUR_BOLT"); bd != nullptr && rc.particles != nullptr) {
+            const float dist = std::max(60.0f, float(std::atof(bd)));
+            const int gx = int(camera.position.x), gz = int(camera.position.z - double(dist));
+            const int ground = std::max(world.generator().surfaceHeight(gx, gz), vx::kSeaLevelForSpawn);
+            rc.particles->spawnBolt({camera.position.x, 440.0, camera.position.z - double(dist)},
+                                    {camera.position.x, double(ground) + 1.0, camera.position.z - double(dist)},
+                                    12345u, 0.35f + dist * 0.0022f);
+        }
+        if (const char* fl = std::getenv("VX_TOUR_FLASH"))
+            fx.flash = std::clamp(float(std::atof(fl)), 0.0f, 1.0f);
         // VX_TOUR_FAR=1 turns the far horizon on: the haze then reaches out over it, and the mesh
         // is built (on a worker, like the game) and waited for before the shots.
         float tourFogEnd = 1e9f, tourFarEnd = 0.0f;

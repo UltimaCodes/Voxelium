@@ -103,7 +103,10 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
                   (halton(idx, 3) - 0.5f) * 2.0f / float(rh)};
     }
     const CameraFrame cam = buildCameraFrame(camera, fbW, fbH, jitter);
-    const SkyLight sky = computeSky(fx.timeOfDay);
+    SkyLight sky = computeSky(fx.timeOfDay);
+    // A flash of lightning lights the ground from the whole sky, not from the sun: it lifts the
+    // ambient (which the chunks, the far terrain and the water all read), not the direct light.
+    sky.ambient += glm::vec3(0.60f, 0.68f, 0.95f) * (0.4f * fx.flash);
     // Everything that SHADES takes the celestial direction, so the cascades, NdotL and every
     // specular lobe follow the moon after dusk. The sky pass is handed the true sun
     // separately — see SkyLight.

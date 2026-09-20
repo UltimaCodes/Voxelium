@@ -60,6 +60,10 @@ public:
     // Returns true on the frames it actually fired, which is what --smoke counts.
     bool update(AudioEngine& audio, float precip, float skyAccess, float dt);
 
+    // Off when something else decides when thunder happens (the game's lightning schedules it
+    // from the strikes, so it arrives after the flash). On by default: --smoke counts on it.
+    bool selfSchedule = true;
+
 private:
     // Nothing until it is genuinely coming down. Light drizzle with thunder in it reads as
     // a bug rather than as atmosphere.

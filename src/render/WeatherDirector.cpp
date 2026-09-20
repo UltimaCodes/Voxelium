@@ -80,6 +80,11 @@ WeatherDirector::Out WeatherDirector::update(float dt, float camY, float desert,
     // sunrise is at 0.25; the mist is up before it and burns off over the following hour
     const float dawn = smoothstep(0.19f, 0.25f, timeOfDay) * (1.0f - smoothstep(0.29f, 0.38f, timeOfDay));
     const float wet = (0.35f + 0.65f * coast) * dawn + 0.3f * m_now.precip;
+    // only the hard rain (a front that came in above 0.62) storms, and only once it is well under way
+    const float stormTarget = (m_phase == Phase::Falling && m_targetPrecip > 0.62f)
+                                  ? smoothstep(0.5f, 0.9f, m_now.precip)
+                                  : 0.0f;
+    m_now.storm += (stormTarget - m_now.storm) * std::min(1.0f, 0.4f * dt);
     m_now.mist = std::clamp(wet, 0.0f, 1.0f) * (1.0f - smoothstep(0.3f, 0.6f, desert));
     return m_now;
 }

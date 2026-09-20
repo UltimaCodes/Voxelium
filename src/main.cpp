@@ -26,6 +26,7 @@
 #include "render/Renderer.hpp"
 #include "render/Weather.hpp"
 #include "render/FarTerrain.hpp"
+#include "render/Lightning.hpp"
 #include "ui/MenuBackdrop.hpp"
 #include "render/WeatherDirector.hpp"
 #include "render/Wildlife.hpp"
@@ -231,6 +232,8 @@ int main(int argc, char** argv) {
         return 1;
     vx::Wildlife wildlife;
     vx::WeatherDirector weatherDirector;
+    vx::Lightning lightning;
+    float stormLevel = 0.0f;
     vx::FarTerrain farTerrain;
     if (!farTerrain.init(shaders))
         return 1;
@@ -643,6 +646,7 @@ int main(int argc, char** argv) {
     vx::PlayerSounds playerSounds;
     vx::AmbienceState ambience;
     vx::StormSounds storm;
+    storm.selfSchedule = false; // thunder now follows the lightning, after its own delay
     // How blocked the path from a sound to the ear is, 0 clear .. 1 solid. One DDA per sound
     // EVENT, which is far cheaper than it sounds — the crosshair already runs this same
     // raycast every single frame. A break heard through a wall should not arrive at full
@@ -949,11 +953,14 @@ int main(int argc, char** argv) {
                                                       fx.timeOfDay);
                 fx.precip = w.precip;
                 fx.snow = w.snow;
+                stormLevel = w.storm;
                 fx.cloudBias = w.cloudBias;
                 fx.mist = w.mist;
             } else {
                 fx.cloudBias = 0.0f;
                 fx.mist = 0.0f;
+                // set by hand, a hard enough downpour still storms
+                stormLevel = std::clamp((fx.precip - 0.7f) / 0.3f, 0.0f, 1.0f) * (1.0f - fx.snow);
             }
             ambience.precip = fx.precip;
             ambience.underwater = eyeUnderwater;
@@ -1019,6 +1026,15 @@ int main(int argc, char** argv) {
             pa.time = float(now);
             pa.underwater = eyeUnderwater;
             particles.emitAmbient(float(dt), *world, camera.position, pa);
+        }
+        {
+            const glm::vec3 fwd = camera.forward();
+            const auto cue = lightning.update(float(dt), stormLevel, camera.position,
+                                              glm::vec2(fwd.x, fwd.z), world->generator(), particles);
+            fx.flash = lightning.flash();
+            if (cue.thunder)
+                audio.play("thunder", cue.volume * (0.25f + 0.75f * std::clamp(ambience.skyAccess, 0.0f, 1.0f)),
+                           cue.pitch, vx::AudioEngine::Bus::Ambient);
         }
         particles.update(float(dt), &*world);
         {
@@ -1200,6 +1216,7 @@ int main(int argc, char** argv) {
                 renderer.endFrame();
             }
             weatherDirector.reset();
+            lightning.reset();
             farTerrain.reset();
             int newSeed = 0;
             const char* title = "voxelium";

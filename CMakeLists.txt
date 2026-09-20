@@ -50,6 +50,7 @@ add_executable(voxelium
     src/render/Weather.cpp
     src/render/Wildlife.cpp
     src/render/FarTerrain.cpp
+    src/render/Lightning.cpp
     src/render/WeatherDirector.cpp
     src/ui/DebugHud.cpp
     src/ui/MenuScreens.cpp

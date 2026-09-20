@@ -49,6 +49,11 @@ public:
     void spawnFootstep(const glm::dvec3& at, int texLayer, int blockId = 0);
     // A heavier version for landing from a jump or fall.
     void spawnLanding(const glm::dvec3& at, int texLayer, int blockId = 0);
+    // A lightning bolt from `top` down to `bottom`: a jagged line of very bright particles with a
+    // few forks, gone in about a fifth of a second. `thickness` is the width in blocks (the
+    // caller scales it with distance so a bolt stays visible at range).
+    void spawnBolt(const glm::dvec3& top, const glm::dvec3& bottom, std::uint32_t seed,
+                   float thickness);
 
     // Wind-blown sand over deserts and beaches, and rain splashing off whatever it lands on.
     // Cheap enough to call every frame: it spawns a handful of particles and does a few block
@@ -75,9 +80,11 @@ private:
         float bounce = 0.0f;  // fraction of speed kept off a surface
         float growth = 0.0f;  // size gained per second (a puff spreads as it thins)
         float maxAlpha = 1.0f;
+        glm::vec3 tint{0.62f, 0.80f, 0.95f}; // flat colour for layer < 0, HDR for a bolt
         float wind = 0.0f;    // how hard the wind pushes it
         bool collide = false;
         bool resting = false;
+        bool solid = false; // writes depth: the composite pass paints sky over anything that does not
     };
     // What the shader reads: camera-relative centre + size, then tint + alpha.
     struct GpuParticle {

@@ -24,6 +24,7 @@ public:
         float snow = 0.0f;      // 0 rain .. 1 snow
         float cloudBias = 0.0f; // 0 as normal .. ~0.22 fully overcast
         float mist = 0.0f;      // 0 clear .. 1 thick; the renderer pulls the fog in with it
+        float storm = 0.0f;     // 0 .. 1, only in the worst downpours: lightning and thunder
     };
 
     // desert and coast are 0..1 biome weights at the camera; timeOfDay is the sky's 0..1 clock.

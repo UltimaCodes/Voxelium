@@ -98,6 +98,7 @@ struct FxToggles {
     bool farTerrain = true;
     // Runtime only, never saved: filled in each frame by whatever is directing the sky.
     float cloudBias = 0.0f; // extra cloud cover, 0..~0.22
+    float flash = 0.0f;     // lightning, 0..1, decays in a fraction of a second
     float mist = 0.0f;      // 0..1, pulls the fog in (dawn, over water)
     float farInner = -1.0f; // runtime: radius the far horizon skips; < 0 means "the fog end", as in the game
     // Shader quality tier, 0 Low .. 3 Ultra. Injected as VX_QUALITY and baked into the

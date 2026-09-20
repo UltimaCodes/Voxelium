@@ -323,6 +323,7 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform3fv(m_progComposite, 31, 1, &p.lightColor.x);
     glProgramUniform1f(m_progComposite, 32, p.daylight);
     glProgramUniform1f(m_progComposite, 33, p.toggles.cloudBias);
+    glProgramUniform1f(m_progComposite, 34, p.toggles.flash);
     glProgramUniformMatrix4fv(m_progComposite, 6, 3, GL_FALSE,
                               &p.shadows->cascadeVp()[0][0][0]);
     const glm::vec3 splits = p.shadows->splits();
