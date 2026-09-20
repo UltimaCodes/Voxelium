@@ -218,6 +218,94 @@ void Wildlife::spawnSchool(const ChunkManager& w, const glm::dvec3& cam, const E
     }
 }
 
+// Crabs live on sand at the edge of the water. Each keeps to its own bit of beach: it scuttles a
+// few steps sideways, stops, turns, goes again, and turns back at the first step that would leave
+// the sand or wet its feet.
+void Wildlife::spawnCrab(const ChunkManager& w, const glm::dvec3& cam) {
+    const float ang = rnd() * 2.0f * kPi, r = 4.0f + rnd() * 24.0f;
+    const int x = int(std::floor(cam.x + std::cos(ang) * r));
+    const int z = int(std::floor(cam.z + std::sin(ang) * r));
+    const int y = floorBelow(w, x, z, int(cam.y) + 8, 20);
+    if (y == INT_MIN)
+        return;
+    const BlockId ground = w.blockAtWorld({x, y, z});
+    if ((ground != blocks::BeachSand && ground != blocks::Sand) || blocks::opaque(w.blockAtWorld({x, y + 1, z})) ||
+        blocks::isWater(w.blockAtWorld({x, y + 1, z})))
+        return;
+    Critter* c = acquire();
+    if (!c)
+        return;
+    c->kind = Crab;
+    c->size = 0.62f + rnd() * 0.25f;
+    c->pos = {double(x) + 0.5, double(y) + 1.0 + double(c->size) * 0.10, double(z) + 0.5};
+    const float shade = 0.75f + rnd() * 0.35f;
+    c->color = rnd() < 0.7f ? glm::vec3(0.85f, 0.30f, 0.16f) * shade : glm::vec3(0.72f, 0.55f, 0.34f) * shade;
+    c->aux = rnd() * 6.28f;              // heading
+    c->aux2 = float(y + 1);              // top of the sand under it
+    c->aux3 = rnd() * 1.5f;              // time to the next stop or start
+    c->vel = glm::vec3(std::cos(c->aux), 0.0f, std::sin(c->aux)) * 0.01f; // heading, at rest
+    c->phase = rnd() * 6.28f;
+}
+
+bool Wildlife::findWater(const ChunkManager& w, const glm::dvec3& cam, float rMin, float rMax,
+                         int minDepth, int& x, int& z, int& surface, int& floor) {
+    const float ang = rnd() * 2.0f * kPi, r = rMin + rnd() * (rMax - rMin);
+    x = int(std::floor(cam.x + std::cos(ang) * r));
+    z = int(std::floor(cam.z + std::sin(ang) * r));
+    surface = INT_MIN;
+    for (int y = int(cam.y) + 12; y >= int(cam.y) - 34; --y) {
+        const BlockId b = w.blockAtWorld({x, y, z});
+        if (blocks::opaque(b))
+            return false;
+        if (blocks::isWater(b)) {
+            surface = y;
+            break;
+        }
+    }
+    if (surface == INT_MIN)
+        return false;
+    floor = floorBelow(w, x, z, surface, 40);
+    return floor != INT_MIN && surface - floor >= minDepth;
+}
+
+void Wildlife::spawnTurtle(const ChunkManager& w, const glm::dvec3& cam) {
+    int x = 0, z = 0, surface = 0, floor = 0;
+    if (!findWater(w, cam, 8.0f, 36.0f, 4, x, z, surface, floor))
+        return;
+    Critter* c = acquire();
+    if (!c)
+        return;
+    c->kind = Turtle;
+    c->size = 0.75f + rnd() * 0.25f;
+    c->pos = {double(x) + 0.5, double(floor) + 1.4 + double(rnd()) * std::max(double(surface - floor) - 3.0, 0.5),
+              double(z) + 0.5};
+    c->aux = rnd() * 6.28f;
+    c->color = glm::vec3(0.36f, 0.50f, 0.28f) * (0.8f + rnd() * 0.4f);
+    c->phase = rnd() * 6.28f;
+    c->vel = glm::vec3(std::cos(c->aux), 0.0f, std::sin(c->aux)) * 0.7f;
+    c->aux2 = float(surface);
+    c->aux3 = float(floor);
+}
+
+void Wildlife::spawnJelly(const ChunkManager& w, const glm::dvec3& cam) {
+    int x = 0, z = 0, surface = 0, floor = 0;
+    if (!findWater(w, cam, 4.0f, 30.0f, 4, x, z, surface, floor))
+        return;
+    Critter* c = acquire();
+    if (!c)
+        return;
+    c->kind = Jelly;
+    c->size = 0.5f + rnd() * 0.3f;
+    c->pos = {double(x) + 0.5, double(floor) + 1.5 + double(rnd()) * std::max(double(surface - floor) - 3.5, 0.5),
+              double(z) + 0.5};
+    c->aux = rnd() * 6.28f;
+    // bright enough (HDR) that the bloom takes them up after dark
+    c->color = (rnd() < 0.5f ? glm::vec3(1.0f, 0.42f, 0.78f) : glm::vec3(0.40f, 0.85f, 1.0f)) * 1.5f;
+    c->phase = rnd() * 6.28f;
+    c->aux2 = float(surface);
+    c->aux3 = float(floor);
+}
+
 void Wildlife::spawnLeaf(const ChunkManager& w, const glm::dvec3& cam) {
     const float ang = rnd() * 2.0f * kPi, r = 2.0f + rnd() * 13.0f;
     const int x = int(std::floor(cam.x + std::cos(ang) * r));
@@ -317,6 +405,7 @@ void Wildlife::update(float dt, const ChunkManager& world, const glm::dvec3& cam
     const bool outdoors = !env.underwater && env.skyAccess > 0.55f;
     const bool day = env.daylight > 0.5f;
     int wantButterfly = 0, wantFirefly = 0, wantGull = 0, wantMote = 0;
+    int wantCrab = 0, wantTurtle = 0, wantJelly = 0;
     if (outdoors && day && env.precip < 0.3f && env.desert < 0.5f && env.coast < 0.75f)
         wantButterfly = 8 + int(env.forest * 6.0f);
     if (outdoors && env.daylight < 0.22f && env.precip < 0.5f && env.desert < 0.6f)
@@ -327,6 +416,14 @@ void Wildlife::update(float dt, const ChunkManager& world, const glm::dvec3& cam
         wantMote = 55;
     else if (outdoors && env.daylight > 0.35f && env.precip < 0.5f)
         wantMote = 34;
+    if (!env.underwater && env.skyAccess > 0.4f && env.coast > 0.35f && env.desert < 0.6f && env.precip < 0.5f)
+        wantCrab = 3 + int(5.0f * env.coast);
+    if (env.nearWater > 0.12f && (env.coast > 0.25f || env.reef > 0.1f) && env.precip < 0.7f)
+        wantTurtle = env.underwater ? 3 : 2;
+    // they show best at night, but are there by day too when you are down among them
+    if ((env.daylight < 0.45f || env.underwater) && env.nearWater > 0.12f &&
+        (env.reef > 0.12f || env.coast > 0.4f))
+        wantJelly = env.underwater ? 12 : 8;
     int wantSchools = env.underwater ? 7 : (env.nearWater > 0.08f ? 4 : 0);
     if (env.reef > 0.2f)
         wantSchools += 2;
@@ -439,6 +536,68 @@ void Wildlife::update(float dt, const ChunkManager& world, const glm::dvec3& cam
                 c.phase += dt * (8.0f + sp * 5.0f);
                 break;
             }
+            case Crab: {
+                const bool moving = glm::length(c.vel) > 0.05f;
+                c.aux3 -= dt;
+                if (c.aux3 <= 0.0f) {
+                    if (moving) { // stop
+                        c.vel = glm::vec3(std::cos(c.aux), 0.0f, std::sin(c.aux)) * 0.01f;
+                        c.aux3 = 0.6f + 1.8f * rnd();
+                    } else { // set off again, a little off the last heading
+                        c.aux += (rnd() - 0.5f) * 2.4f;
+                        c.vel = glm::vec3(std::cos(c.aux), 0.0f, std::sin(c.aux)) * 1.3f;
+                        c.aux3 = 0.5f + 1.3f * rnd();
+                    }
+                }
+                if (moving) {
+                    const glm::dvec3 next = c.pos + glm::dvec3(c.vel) * double(dt);
+                    const int nx = int(std::floor(next.x)), nz = int(std::floor(next.z));
+                    const int g = floorBelow(world, nx, nz, int(std::floor(c.pos.y)) + 1, 3);
+                    const BlockId under = g == INT_MIN ? blocks::Air : world.blockAtWorld({nx, g, nz});
+                    const bool sand = under == blocks::BeachSand || under == blocks::Sand;
+                    const bool clear = g != INT_MIN && !blocks::opaque(world.blockAtWorld({nx, g + 1, nz})) &&
+                                       !blocks::isWater(world.blockAtWorld({nx, g + 1, nz}));
+                    if (sand && clear) {
+                        c.pos.x = next.x;
+                        c.pos.z = next.z;
+                        c.aux2 = float(g + 1);
+                    } else { // the edge of the sand: about face
+                        c.aux += kPi + (rnd() - 0.5f) * 0.8f;
+                        c.vel = glm::vec3(std::cos(c.aux), 0.0f, std::sin(c.aux)) * 1.3f;
+                    }
+                }
+                c.pos.y += (double(c.aux2) + double(c.size) * 0.10 - c.pos.y) * double(std::min(1.0f, dt * 12.0f));
+                c.phase += dt * (moving ? 24.0f : 1.5f);
+                if (dist2 > 46.0 * 46.0 || wantCrab == 0)
+                    c.life = std::min(c.life, 0.6f);
+                break;
+            }
+            case Turtle:
+            case Jelly: {
+                const bool turtle = c.kind == Turtle;
+                c.aux += (rnd() - 0.5f) * (turtle ? 0.9f : 1.6f) * dt;
+                const float spd = turtle ? 0.6f + 0.25f * std::sin(c.age * 0.5f) : 0.22f;
+                c.vel.x = std::cos(c.aux) * spd;
+                c.vel.z = std::sin(c.aux) * spd;
+                // turtles hold a depth and bob; jellyfish drift up and down through the water
+                const float top = c.aux2 - 1.2f, bottom = c.aux3 + 1.2f;
+                if (turtle)
+                    c.vel.y = (0.5f * (top + bottom) + 0.6f * std::sin(c.age * 0.4f + c.phase) - float(c.pos.y)) * 0.6f;
+                else
+                    c.vel.y = std::sin(c.age * 0.7f + c.phase) * 0.45f;
+                const glm::dvec3 next = c.pos + glm::dvec3(c.vel) * double(dt);
+                if (isWetAt(world, next) && !isSolidAt(world, next)) {
+                    c.pos = next;
+                } else {
+                    c.aux += 2.6f;
+                    c.vel.y = 0.0f;
+                }
+                // a turtle beats its flippers in strokes with glides between; a jellyfish pulses
+                c.phase += dt * (turtle ? 1.6f + 3.0f * std::max(0.0f, std::sin(c.age * 0.45f)) : 2.4f);
+                if (dist2 > 52.0 * 52.0 || (turtle ? wantTurtle == 0 : wantJelly == 0))
+                    c.life = std::min(c.life, 0.6f);
+                break;
+            }
             case Leaf: {
                 c.phase += dt * 3.2f;
                 c.vel.x = std::sin(c.age * 1.7f + c.aux) * 0.55f;
@@ -487,6 +646,12 @@ void Wildlife::update(float dt, const ChunkManager& world, const glm::dvec3& cam
             spawnGull(world, cam);
         if (schools < wantSchools)
             spawnSchool(world, cam, env);
+        if (count(Crab) < wantCrab)
+            spawnCrab(world, cam);
+        if (count(Turtle) < wantTurtle)
+            spawnTurtle(world, cam);
+        if (count(Jelly) < wantJelly)
+            spawnJelly(world, cam);
         for (int k = 0; k < 3; ++k)
             if (count(Mote) < wantMote)
                 spawnMote(cam, env);
@@ -515,22 +680,26 @@ void Wildlife::update(float dt, const ChunkManager& world, const glm::dvec3& cam
     m_light = 0.25f + 1.45f * env.daylight;
 }
 
-void Wildlife::placeDemo(const glm::dvec3& cam, const glm::vec3& forward) {
+void Wildlife::placeDemo(const glm::dvec3& cam, const glm::vec3& forward, int set) {
     const glm::vec3 fwd = glm::normalize(glm::vec3(forward.x, 0.0f, forward.z));
     const glm::vec3 side(-fwd.z, 0.0f, fwd.x);
     struct D { Kind k; float size; glm::vec3 col; float heading; };
     const D demo[] = {{Butterfly, 0.6f, {0.95f, 0.55f, 0.15f}, 0.3f}, {Gull, 0.9f, {0.95f, 0.95f, 0.95f}, 1.2f},
                       {Bird, 0.7f, {0.16f, 0.16f, 0.18f}, 2.0f},      {Fish, 0.8f, {1.0f, 0.5f, 0.1f}, 0.0f},
-                      {Leaf, 0.5f, {0.8f, 0.45f, 0.1f}, 0.0f}};
+                      {Leaf, 0.5f, {0.8f, 0.45f, 0.1f}, 0.0f},        {Crab, 0.9f, {0.85f, 0.3f, 0.16f}, 0.6f},
+                      {Turtle, 1.0f, {0.36f, 0.5f, 0.28f}, 0.3f},     {Jelly, 0.9f, {1.5f, 0.63f, 1.17f}, 0.0f}};
     int i = 0;
     for (const D& d : demo) {
+        if (set == 1 && d.k != Crab && d.k != Turtle && d.k != Jelly)
+            continue;
         Critter* c = acquire();
         if (!c)
             return;
         c->kind = d.k;
-        c->size = d.size;
+        c->size = set == 1 ? d.size * 1.5f : d.size;
         c->color = d.col;
-        c->pos = cam + glm::dvec3(fwd * 5.0f + side * (float(i) - 2.0f) * 2.2f);
+        c->pos = set == 1 ? cam + glm::dvec3(fwd * 4.0f + side * (float(i) - 1.0f) * 1.8f)
+                          : cam + glm::dvec3(fwd * (i < 4 ? 5.0f : 8.5f) + side * (float(i % 4) - 1.5f) * 2.2f);
         c->vel = glm::vec3(std::cos(d.heading), 0.0f, std::sin(d.heading)) * 0.5f;
         c->age = 5.0f;
         c->life = 1e9f;
@@ -559,7 +728,7 @@ void Wildlife::draw(const glm::mat4& viewProj, const glm::dvec3& cam, const glm:
             const float far = underwater ? 26.0f : (c.kind == Gull ? 140.0f : 92.0f);
             float a = std::min(1.0f, c.age * 2.0f) * std::clamp(c.life / 0.6f, 0.0f, 1.0f) *
                       (1.0f - glm::smoothstep(far * 0.6f, far, d));
-            const bool emissive = c.kind == Firefly;
+            const bool emissive = c.kind == Firefly || c.kind == Jelly;
             const float lit = emissive ? 1.0f : m_light;
             // Sprites turn to a heading in the camera's own plane; bodies need the real one, along
             // the ground.

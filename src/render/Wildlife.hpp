@@ -57,10 +57,11 @@ public:
 
     // Harness only (--tour, VX_TOUR_WILD=zoo): one of each animal in a row in front of the camera,
     // close enough to judge the models from any side. The game never calls this.
-    void placeDemo(const glm::dvec3& cam, const glm::vec3& forward);
+    // set 1 is just the crab, turtle and jellyfish, larger and closer together.
+    void placeDemo(const glm::dvec3& cam, const glm::vec3& forward, int set = 0);
 
 private:
-    enum Kind : std::uint8_t { Butterfly = 1, Firefly, Gull, Fish, Leaf, Mote, Bubble, Bird };
+    enum Kind : std::uint8_t { Butterfly = 1, Firefly, Gull, Fish, Leaf, Mote, Bubble, Bird, Crab, Turtle, Jelly };
     // Solid, airborne things write depth (composite paints sky over any pixel still at the far
     // plane, so they would be erased otherwise). Fish are solid too but stay depth-free: one that
     // wrote depth would read to the water pass as shallow water and grow foam around itself.
@@ -109,6 +110,12 @@ private:
     void spawnMote(const glm::dvec3& cam, const Env& env);
     void spawnBubble(const ChunkManager& w, const glm::dvec3& cam);
     void spawnFlock(const glm::dvec3& cam);
+    void spawnCrab(const ChunkManager& w, const glm::dvec3& cam);
+    // turtles and jellyfish both live in open water; this finds a column of it near the camera
+    bool findWater(const ChunkManager& w, const glm::dvec3& cam, float rMin, float rMax, int minDepth,
+                   int& x, int& z, int& surface, int& floor);
+    void spawnTurtle(const ChunkManager& w, const glm::dvec3& cam);
+    void spawnJelly(const ChunkManager& w, const glm::dvec3& cam);
 
     unsigned int m_prog = 0;   // the glows, as camera-facing sprites
     unsigned int m_prog3d = 0; // the animals, as boxes

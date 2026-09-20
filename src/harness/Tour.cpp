@@ -226,6 +226,8 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
             } else if (mode == "coast") {
                 we.coast = 1.0f;
                 we.nearWater = 0.5f;
+            } else if (mode == "zoo2") {
+                rc.wildlife->placeDemo(camera.position, glm::vec3(0.0f, 0.0f, 1.0f), 1);
             } else if (mode == "zoo") {
                 rc.wildlife->placeDemo(camera.position, glm::vec3(0.0f, 0.0f, 1.0f));
             } else if (mode == "sea") {
@@ -233,7 +235,7 @@ int runTour(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs,
                 we.reef = 0.8f;
                 we.coast = 0.5f;
             }
-            if (mode != "zoo")
+            if (mode != "zoo" && mode != "zoo2")
                 for (int i = 0; i < 600; ++i)
                     rc.wildlife->update(1.0f / 30.0f, world, camera.position, we);
             VX_INFO("tour wildlife: %d creatures alive (%s)", rc.wildlife->liveCount(), wm);
