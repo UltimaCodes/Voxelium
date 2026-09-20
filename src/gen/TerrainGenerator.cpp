@@ -361,6 +361,7 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
         // foliage sits ON the surface, so only a chunk that holds a surface cell has any
         if (baseY <= hMax + 1)
             placeFoliage(chunk, pos, heights, desertW);
+        placeStructures(chunk, pos); // a lighthouse rises well above the ground
         carveTestRoom(chunk, pos); // no-op unless the room overlaps
         return;
     }
@@ -519,6 +520,7 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
 
     placeTrees(chunk, pos); // trees even in coarse gen — cheap, and stops them popping in
     placeFoliage(chunk, pos, heights, desertW);
+    placeStructures(chunk, pos);
     carveTestRoom(chunk, pos);
 }
 
@@ -705,6 +707,195 @@ void TerrainGenerator::placePalm(Chunk& chunk, ChunkPos pos, int tx, int tz, int
         if (((rv >> (12 + k)) & 1u) != 0u) {
             static constexpr int kDx[4] = {1, -1, 0, 0}, kDz[4] = {0, 0, 1, -1};
             put(px + kDx[k], cy - 1, pz + kDz[k], blocks::Coconut, true);
+        }
+}
+
+TerrainGenerator::StructureSite TerrainGenerator::structureSite(int cx, int cz) const {
+    constexpr int kCell = 96;
+    StructureSite none;
+    const std::uint32_t hsh = cellHash(wrapMul(cx, 7919u) + std::uint32_t(seedOff(m_seed, 83)),
+                                       wrapMul(cz, 104729u) + std::uint32_t(seedOff(m_seed, 89)));
+    if ((hsh & 255u) > 104u)
+        return none; // about 40% of cells have a candidate
+    const int ax = cx * kCell + 20 + int((hsh >> 8) % std::uint32_t(kCell - 40));
+    const int az = cz * kCell + 20 + int((hsh >> 16) % std::uint32_t(kCell - 40));
+    const Column col = column(ax, az);
+    const int g = col.h;
+    const std::uint32_t rv = voxelHash(ax, 91, az);
+    StructureSite site;
+    site.x = ax;
+    site.z = az;
+    site.h = g;
+    // shipwreck: shallow seabed, not by a desert; a quarter of the candidates are left empty
+    if (col.desert < 0.3f && g <= kSeaLevel - 3 && g >= kSeaLevel - 10) {
+        site.kind = (rv & 3u) == 0u ? 0 : 1;
+        return site;
+    }
+    // desert ruins, on half the candidates
+    if (col.desert > 0.55f && g >= kSeaLevel + 6) {
+        site.kind = (rv & 1u) == 0u ? 0 : 2;
+        return site;
+    }
+    // lighthouse: a bit of low coast with open water not far off, on a third of the candidates
+    if (col.desert < 0.3f && g >= kSeaLevel + 1 && g <= kSeaLevel + 8 && (rv >> 4) % 3u == 0u) {
+        bool coast = false;
+        for (const auto& d : {std::pair<int, int>{12, 0}, {-12, 0}, {0, 12}, {0, -12}})
+            coast = coast || column(ax + d.first, az + d.second).h < kSeaLevel;
+        site.kind = coast ? 3 : 0;
+        return site;
+    }
+    return none;
+}
+
+void TerrainGenerator::placeStructures(Chunk& chunk, ChunkPos pos) const {
+    constexpr int kCell = 96;
+    constexpr int kReach = 14; // the widest any of them gets from its anchor (a wreck, 6 either way)
+    const int baseX = pos.x * kChunkSize;
+    const int baseY = pos.y * kChunkSize;
+    const int baseZ = pos.z * kChunkSize;
+    const int cx0 = floorDivI(baseX - kReach, kCell), cx1 = floorDivI(baseX + kChunkSize - 1 + kReach, kCell);
+    const int cz0 = floorDivI(baseZ - kReach, kCell), cz1 = floorDivI(baseZ + kChunkSize - 1 + kReach, kCell);
+
+    const auto put = [&](int wx, int wy, int wz, BlockId id) {
+        const int lx = wx - baseX, ly = wy - baseY, lz = wz - baseZ;
+        if (lx >= 0 && lx < kChunkSize && ly >= 0 && ly < kChunkSize && lz >= 0 && lz < kChunkSize)
+            chunk.set(lx, ly, lz, id);
+    };
+    // a block that only replaces water or air: the hull of a wreck does not carve the seabed
+    const auto putSoft = [&](int wx, int wy, int wz, BlockId id) {
+        const int lx = wx - baseX, ly = wy - baseY, lz = wz - baseZ;
+        if (lx >= 0 && lx < kChunkSize && ly >= 0 && ly < kChunkSize && lz >= 0 && lz < kChunkSize) {
+            const BlockId cur = chunk.get(lx, ly, lz);
+            if (cur == blocks::Air || blocks::isWater(cur))
+                chunk.set(lx, ly, lz, id);
+        }
+    };
+
+    for (int cz = cz0; cz <= cz1; ++cz)
+        for (int cx = cx0; cx <= cx1; ++cx) {
+            const StructureSite st = structureSite(cx, cz);
+            if (st.kind == 0)
+                continue;
+            const int ax = st.x, az = st.z, g = st.h;
+            // most of the structure lies within a chunk or two of its anchor's height
+            if (baseY > g + 28 || baseY + kChunkSize - 1 < g - 10)
+                continue;
+            const std::uint32_t rv = voxelHash(ax, 91, az);
+
+            // ---- shipwreck: shallow seabed, not by a desert --------------------------------------
+            if (st.kind == 1) {
+                const bool alongX = (rv & 4u) != 0u;
+                const int y0 = g + 1; // the keel sits a block into the seabed
+                for (int u = -6; u <= 6; ++u) {
+                    // the hull narrows toward both ends
+                    const int half = std::abs(u) > 4 ? 0 : (std::abs(u) > 2 ? 1 : 2);
+                    for (int v = -half; v <= half; ++v) {
+                        const int wx = ax + (alongX ? u : v), wz = az + (alongX ? v : u);
+                        const std::uint32_t h2 = voxelHash(wx, y0, wz);
+                        // the keel and ribs are logs, the rest planks, with holes where it has rotted
+                        putSoft(wx, y0, wz, v == 0 ? blocks::Wood : blocks::Planks);
+                        // pilings under it, so it lies on the bottom instead of hanging in the water
+                        for (int k = 1; k <= 5; ++k)
+                            putSoft(wx, y0 - k, wz, blocks::Planks);
+                        if (std::abs(v) == half && (h2 % 100u) > 22u) { // the sides
+                            putSoft(wx, y0 + 1, wz, blocks::Planks);
+                            if ((h2 >> 8) % 100u > 45u)
+                                putSoft(wx, y0 + 2, wz, blocks::Planks);
+                        }
+                        if (std::abs(v) < half && (h2 >> 16) % 100u > 55u) // a patchy deck
+                            putSoft(wx, y0 + 1, wz, blocks::Planks);
+                    }
+                }
+                // a snapped mast, and the stump of a second
+                for (int k = 1; k <= 6; ++k)
+                    putSoft(ax, y0 + k, az, blocks::Wood);
+                for (int k = 1; k <= 2; ++k)
+                    putSoft(alongX ? ax + 3 : ax, y0 + k, alongX ? az : az + 3, blocks::Wood);
+                continue;
+            }
+
+            // ---- desert ruins ------------------------------------------------------------------
+            if (st.kind == 2) {
+                // a paved square with broken pillars at the corners and a low wall along two sides
+                constexpr int kR = 6;
+                for (int dz = -kR; dz <= kR; ++dz)
+                    for (int dx = -kR; dx <= kR; ++dx) {
+                        put(ax + dx, g, az + dz, blocks::Sandstone);
+                        // clear the dunes off it
+                        for (int k = 1; k <= 4; ++k)
+                            put(ax + dx, g + k, az + dz, blocks::Air);
+                    }
+                // eight pillars round the edge, each broken off at its own height
+                for (int i = 0; i < 8; ++i) {
+                    static constexpr int kOff[8][2] = {{-1, -1}, {0, -1}, {1, -1}, {-1, 0}, {1, 0}, {-1, 1}, {0, 1}, {1, 1}};
+                    const int px = ax + kOff[i][0] * kR, pz = az + kOff[i][1] * kR;
+                    const int ph = 2 + int((voxelHash(px, 92, pz) >> 5) % 6u);
+                    for (int k = 1; k <= ph; ++k)
+                        put(px, g + k, pz, blocks::Sandstone);
+                }
+                // a low wall along two sides with gaps where it has fallen
+                for (int d = -kR + 1; d <= kR - 1; ++d) {
+                    if (voxelHash(ax + d, 93, az) % 100u > 35u)
+                        put(ax + d, g + 1, az - kR, blocks::Sandstone);
+                    if (voxelHash(ax, 94, az + d) % 100u > 35u)
+                        put(ax - kR, g + 1, az + d, blocks::Sandstone);
+                }
+                // an altar in the middle
+                put(ax, g + 1, az, blocks::Sandstone);
+                put(ax + 1, g + 1, az, blocks::Sandstone);
+                put(ax, g + 2, az, blocks::Sandstone);
+                continue;
+            }
+
+            // ---- lighthouse: a bit of coast with open water not far off --------------------------
+            if (st.kind == 3) {
+                // foundation: a stone footing down to whatever is under it
+                for (int dz = -3; dz <= 3; ++dz)
+                    for (int dx = -3; dx <= 3; ++dx)
+                        if (dx * dx + dz * dz <= 10)
+                            for (int k = -6; k <= 0; ++k)
+                                put(ax + dx, g + k, az + dz, blocks::Stone);
+                constexpr int kTower = 16;
+                for (int k = 1; k <= kTower; ++k) {
+                    const int R = 3 - (k - 1) / 8; // 3 low down, 2 near the top
+                    const BlockId wall = ((k - 1) / 3) % 2 == 0 ? blocks::Bricks : blocks::Snow; // red and white
+                    for (int dz = -R; dz <= R; ++dz)
+                        for (int dx = -R; dx <= R; ++dx) {
+                            const int d2 = dx * dx + dz * dz;
+                            if (d2 > R * R + 1)
+                                continue;
+                            const bool hollow = d2 <= (R - 1) * (R - 1) + (R > 2 ? 0 : 0);
+                            BlockId id = hollow ? blocks::Air : wall;
+                            // a doorway on the +z side, and a slit window every fourth level on the others
+                            if (!hollow && dx == 0 && dz == R && k <= 2)
+                                id = blocks::Air;
+                            if (!hollow && k % 4 == 2 && k > 2 && (dx == 0 || dz == 0) && !(dx == 0 && dz == R))
+                                id = blocks::Air;
+                            put(ax + dx, g + k, az + dz, id);
+                        }
+                }
+                // the gallery, then the lantern room with a light in it
+                const int top = g + kTower + 1;
+                for (int dz = -4; dz <= 4; ++dz)
+                    for (int dx = -4; dx <= 4; ++dx)
+                        if (dx * dx + dz * dz <= 17)
+                            put(ax + dx, top, az + dz, blocks::Stone);
+                for (int dz = -2; dz <= 2; ++dz)
+                    for (int dx = -2; dx <= 2; ++dx) {
+                        const int d2 = dx * dx + dz * dz;
+                        if (d2 > 5)
+                            continue;
+                        for (int k = 1; k <= 3; ++k) {
+                            // stone posts at the corners of the ring, open between them
+                            const bool post = std::abs(dx) == 2 || std::abs(dz) == 2 ? (std::abs(dx) + std::abs(dz)) >= 3 : false;
+                            put(ax + dx, top + k, az + dz, d2 >= 4 ? (post ? blocks::Stone : blocks::Air) : blocks::Air);
+                        }
+                        put(ax + dx, top + 4, az + dz, blocks::Stone); // the roof
+                    }
+                put(ax, top + 2, az, blocks::Glow);
+                put(ax, top + 5, az, blocks::Stone);
+                continue;
+            }
         }
 }
 

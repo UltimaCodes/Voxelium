@@ -48,6 +48,15 @@ public:
     };
     FarSample farSample(int wx, int wz) const;
 
+    // What, if anything, stands in a 96-block structure cell: 0 nothing, 1 shipwreck, 2 desert ruins,
+    // 3 lighthouse, with the x/z it is anchored at. Public so a harness can find one to look at.
+    struct StructureSite {
+        int kind = 0;
+        int x = 0, z = 0;
+        int h = 0; // ground height at the anchor
+    };
+    StructureSite structureSite(int cellX, int cellZ) const;
+
 private:
     // Final height of a column and how desert it is. Every place that needs to agree about the
     // ground (chunks, trees, foliage, spawn, light) goes through this one shaping function.
@@ -60,6 +69,10 @@ private:
                               int wx, int wz, int seed);
 
     void placeTrees(Chunk& chunk, ChunkPos pos) const;
+    // Lighthouses on the coast, shipwrecks on the shallow seabed and ruins in the desert: one
+    // candidate per 96-block cell, built from the anchor's position alone like the trees are, so
+    // every chunk a structure crosses builds the same one with no neighbour lookups.
+    void placeStructures(Chunk& chunk, ChunkPos pos) const;
     void placeFoliage(Chunk& chunk, ChunkPos pos, const int (*heights)[kChunkSize],
                       const float (*desert)[kChunkSize]) const;
     void decorateSea(Chunk& chunk, int baseX, int baseY, int baseZ, int x, int z, int h) const;
