@@ -106,7 +106,8 @@ leaves, cicadas, frogs at dusk, desert wind, surf and gulls on a beach, and a lo
 underwater. "am i in a cave" is read off the
 voxel **sky light** rather than by casting rays, since the light engine has already worked
 that out, and it needs you to be enclosed *and* underground, so an overhang isn't a cave.
-heavy rain gets occasional thunder, rolled off by how much sky you can see.
+the worst downpours are thunderstorms: a bolt that forks down out of the cloud deck, a flash across the sky
+and everything under it, and the thunder arriving after, later and quieter the further off it struck.
 
 going underwater runs the world and ambience through a real low-pass sweeping 18 kHz down
 to 700 Hz — menus stay dry, because a menu click isn't in the water with you. sounds are
@@ -118,6 +119,13 @@ surf, gulls, cave drips and cicadas are real CC0 recordings assembled into loops
 `scripts/build_ambience_recordings.py`, and the rest of the biome beds are synthesized by
 `scripts/gen_ambience.py`. no clip is required — delete any of them and the engine just stays quiet for that one. drop your own
 in and they take over; the naming rules are in that same file.
+
+## title screen
+
+the game opens on a title screen over a live view of a real world: a coast picked out of the seed, orbited slowly in
+morning light, rendered by the game's own pipeline. **new world** takes a seed (or rolls one) and shows that world
+behind the menu as you type, **continue** lists your saves as cards, **settings** is the same panel as in game, and the
+loading screen sits over the same view while the chunks build.
 
 ## worlds
 
@@ -157,6 +165,12 @@ particles have physics: shards bounce and slide to a stop, dust and sand drift i
 lean the grass, sand and snow puff up under your feet (more when you land), sand streams across dunes
 in the wind, and rain splashes off whatever it hits. wind comes through in gusts that sweep across the
 grass and leaves rather than every blade swaying in lockstep.
+
+the weather has a look to it: haze goes warm and dusty over a desert, cool and salty over the sea and faintly green in a
+forest. snow settles on the ground while it snows, on roofs and canopies first, and melts once it stops. crabs scuttle
+about on the beaches, turtles glide through the shallows, and jellyfish drift in deeper water and glow after dark.
+lighthouses stand on the low coast (the lantern shows as a beacon at night), shipwrecks lie on the seabed, and broken
+ruins sit out in the desert.
 
 ## what's in it
 
