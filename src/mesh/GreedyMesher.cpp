@@ -301,6 +301,26 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
                             m_gridLight[gi(sx * f + dx, sy * f + dy, sz * f + dz)] = lv;
                         }
             }
+    // The pads stay air at this level, which is right for rock (a face at the border is behind
+    // the neighbour's own) but not for water: it is see-through, so every coarse water chunk
+    // stood a translucent wall on each side and underneath, and a distant lake or sea came
+    // apart along its chunk lines. Water at the border carries on into the pad beside it and
+    // below it. Not above: that is where the surface is, and a pad of water over it would
+    // delete the surface wherever it sits on a chunk's top edge.
+    if (m_hasWater)
+        for (int a = 0; a < kChunkSize; ++a)
+            for (int b = 0; b < kChunkSize; ++b) {
+                const auto carry = [&](int x, int y, int z, int px, int py, int pz) {
+                    const BlockId w = m_grid[gi(x, y, z)];
+                    if (blocks::isWater(w))
+                        m_grid[gi(px, py, pz)] = w;
+                };
+                carry(0, a, b, -1, a, b);
+                carry(kChunkSize - 1, a, b, kChunkSize, a, b);
+                carry(a, b, 0, a, b, -1);
+                carry(a, b, kChunkSize - 1, a, b, kChunkSize);
+                carry(a, 0, b, a, -1, b);
+            }
     if (sealedCount == 0)
         return;
     BlockId fill = blocks::Stone;
