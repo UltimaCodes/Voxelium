@@ -256,6 +256,28 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
     // pure heightmap terrain has none — the loop breaks immediately per column
     if (m_seed.phase == SeedPhase::Spread) {
         ScopedNanoAccum _timeThis(m_seedPhaseNanos.spread);
+        // A neighbouring column that has not been lit yet reads sky 0 everywhere, only because
+        // nobody has descended into it. Counting that as shadowed air made every open-air voxel
+        // along the edge a spread source and flooded the neighbour's sky with 14s and 13s that
+        // its own descent then overwrote with 15: measured at 94% of all spread work (90.9M of
+        // 96.9M enqueues in 35 s of flying at radius 32), and the light backlog grew without
+        // end. So only lit neighbours count here; checkColumnEdges settles each shared face
+        // once both sides are lit. Starlight does the same: it does not propagate into unlit
+        // chunks and edge-checks borders instead.
+        bool nbLit[4][kMaxStack] = {};
+        static constexpr int kNb[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+        for (int s = 0; s < 4; ++s)
+            for (int cy = m_seed.y0; cy <= m_seed.y1; ++cy)
+                nbLit[s][cy - m_seed.y0] =
+                    m_world.chunkLit({m_seed.chunkX + kNb[s][0], cy, m_seed.chunkZ + kNb[s][1]});
+        const auto countsAsShade = [&](const glm::ivec3& n) {
+            const int ncx = n.x >> 5, ncz = n.z >> 5;
+            if (ncx == m_seed.chunkX && ncz == m_seed.chunkZ)
+                return true;
+            const int s = ncx > m_seed.chunkX ? 0 : (ncx < m_seed.chunkX ? 1 : (ncz > m_seed.chunkZ ? 2 : 3));
+            const int cy = (n.y >> 5) - m_seed.y0;
+            return cy >= 0 && cy <= m_seed.y1 - m_seed.y0 && nbLit[s][cy];
+        };
         while (m_seed.cursor < kCells) {
             if (m_seed.cursor % kSpreadCheck == 0 && m_seed.cursor > 0 && over())
                 return false;
@@ -269,7 +291,8 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
                 bool boundary = false;
                 for (int d = 0; d < 6 && !boundary; ++d) {
                     const glm::ivec3 n = p + kStep[d];
-                    boundary = !blocks::blocksLight(blockAt(n)) && getLevel(n, Sky) < 14;
+                    boundary = countsAsShade(n) && !blocks::blocksLight(blockAt(n)) &&
+                               getLevel(n, Sky) < 14;
                 }
                 if (boundary)
                     enqueue(Sky, p);
@@ -314,6 +337,34 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
 
     m_seed.phase = SeedPhase::Idle;
     return true;
+}
+
+void LightEngine::checkColumnEdges(std::int32_t cx, std::int32_t cz, int y0, int y1) {
+    static constexpr int kSide[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+    constexpr int kLast = kChunkSize - 1;
+    for (const auto& s : kSide)
+        for (int cy = y0; cy <= y1; ++cy) {
+            const ChunkPos pa{cx, cy, cz};
+            const ChunkPos pb{cx + s[0], cy, cz + s[1]};
+            const Chunk* a = m_world.chunkData(pa);
+            const Chunk* b = m_world.chunkData(pb);
+            if (!a || !b || !m_world.chunkLit(pa) || !m_world.chunkLit(pb))
+                continue;
+            // the two voxels either side of the shared face; t runs along it
+            for (int y = 0; y < kChunkSize; ++y)
+                for (int t = 0; t < kChunkSize; ++t) {
+                    const int ax = s[0] > 0 ? kLast : (s[0] < 0 ? 0 : t);
+                    const int az = s[1] > 0 ? kLast : (s[1] < 0 ? 0 : t);
+                    const int bx = s[0] > 0 ? 0 : (s[0] < 0 ? kLast : t);
+                    const int bz = s[1] > 0 ? 0 : (s[1] < 0 ? kLast : t);
+                    const int la = light::sky(a->lightAt(ax, y, az)) / 17;
+                    const int lb = light::sky(b->lightAt(bx, y, bz)) / 17;
+                    if (la > lb + 1 && !blocks::blocksLight(b->get(bx, y, bz)))
+                        enqueue(Sky, {cx * kChunkSize + ax, cy * kChunkSize + y, cz * kChunkSize + az});
+                    else if (lb > la + 1 && !blocks::blocksLight(a->get(ax, y, az)))
+                        enqueue(Sky, {pb.x * kChunkSize + bx, cy * kChunkSize + y, pb.z * kChunkSize + bz});
+                }
+        }
 }
 
 void LightEngine::seedNewChunk(ChunkPos pos, bool skyAbove) {
@@ -467,6 +518,21 @@ void LightEngine::onBlockChanged(const glm::ivec3& wp, BlockId oldId, BlockId ne
     }
 }
 
+// A queue is only cleared once it has fully drained, and while the world streams in it never
+// does: new work arrives every frame. The consumed front was then never given back, so the
+// vector held every voxel queued since it last ran dry - 67M entries (800 MB) after half a
+// minute of flying at radius 32 - and each time it outgrew its capacity it copied all of that,
+// which was a 33, then 68, then 132 ms frame. Dropping the consumed front once it is the bigger
+// half keeps the vector near the live backlog, at O(1) per entry overall, because only the
+// smaller, live part is ever moved.
+template <typename T>
+static void compact(std::vector<T>& q, std::size_t& head) {
+    if (head < 65536 || head * 2 < q.size())
+        return;
+    q.erase(q.begin(), q.begin() + std::ptrdiff_t(head));
+    head = 0;
+}
+
 void LightEngine::process(double budgetMs) {
     resetChunkCache();
     const auto t0 = std::chrono::steady_clock::now();
@@ -491,6 +557,8 @@ void LightEngine::process(double budgetMs) {
             if (m_removalHead[ch] >= m_removal[ch].size()) {
                 m_removal[ch].clear();
                 m_removalHead[ch] = 0;
+            } else {
+                compact(m_removal[ch], m_removalHead[ch]);
             }
         }
         for (int ch = 0; ch < kChannels; ++ch) {
@@ -503,6 +571,8 @@ void LightEngine::process(double budgetMs) {
             if (m_queueHead[ch] >= m_queue[ch].size()) {
                 m_queue[ch].clear();
                 m_queueHead[ch] = 0;
+            } else {
+                compact(m_queue[ch], m_queueHead[ch]);
             }
         }
         if (!didWork)

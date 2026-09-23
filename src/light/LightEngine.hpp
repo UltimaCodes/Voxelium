@@ -36,6 +36,11 @@ public:
     // hitch. begin/step spreads it over frames, splitting at (dx,dz) cell granularity.
     // The caller must not treat the column as lit until step returns true.
     void beginSeedColumn(std::int32_t chunkX, std::int32_t chunkZ);
+    // Once a column is lit, compare each face it shares with a lit neighbour column and queue
+    // whichever side is brighter than one step of falloff explains. The seed's spread skips
+    // unlit neighbours, so this is what carries sky across a border into, say, a cave mouth
+    // that opens in the other column. y0..y1 is the column's resident band.
+    void checkColumnEdges(std::int32_t cx, std::int32_t cz, int y0, int y1);
     bool stepSeedColumn(double budgetMs); // true = column finished (check seedAborted!)
     // True when the last seed gave up because the column's chunks were not all resident.
     // stepSeedColumn still returns "finished" in that case — there is nothing left to do —

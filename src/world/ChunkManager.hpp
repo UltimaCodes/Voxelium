@@ -71,6 +71,11 @@ public:
                 const glm::dvec3& cameraPos);
 
     const Chunk* chunkData(ChunkPos pos) const { return voxelsAt(pos); }
+    // Its column has been through the light seed (see LightEngine::checkColumnEdges).
+    bool chunkLit(ChunkPos pos) const {
+        const auto it = m_chunks.find(pos);
+        return it != m_chunks.end() && it->second.lit;
+    }
     Chunk* chunkDataMutable(ChunkPos pos) {
         const auto it = m_chunks.find(pos);
         return it != m_chunks.end() ? it->second.voxels : nullptr;

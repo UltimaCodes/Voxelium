@@ -449,6 +449,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                         cit->second.remesh = true;
                 }
             m_meshScanDirty = true; // newly lit -> meshable
+            light.checkColumnEdges(col.x, col.z, my0, my1);
             // Sky light spreads sideways out of this column, and an absent neighbour reads
             // as stone — so a column lit before its neighbours exist gets a dark edge that
             // nothing would ever correct. Remember it and redo it when they turn up.
