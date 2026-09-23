@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gfx/MappedRing.hpp"
+
 #include <glm/glm.hpp>
 
 #include <cstdint>
@@ -103,8 +105,7 @@ private:
 
     unsigned int m_prog = 0;
     unsigned int m_vao = 0;
-    unsigned int m_ssbo = 0;
-    GpuParticle* m_map = nullptr;
+    MappedRing m_ring;
     Particle m_pool[kCapacity];
     int m_live = 0;
     int m_victim = 0; // next slot overwritten while the pool is full

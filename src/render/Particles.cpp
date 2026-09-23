@@ -16,8 +16,6 @@
 namespace vx {
 
 namespace {
-constexpr GLbitfield kWriteMapFlags =
-    GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
 constexpr float kGravity = 14.0f; // lighter than the player's 32: debris should hang a bit
 
 // The same gust wave chunk.vert bends the grass with, so sand streams across the ground in the
@@ -57,25 +55,14 @@ bool Particles::init(const std::filesystem::path& shaderDir) {
     if (!m_prog)
         return false;
     glCreateVertexArrays(1, &m_vao);
-    glCreateBuffers(1, &m_ssbo);
-    glNamedBufferStorage(m_ssbo, GLsizeiptr(kCapacity) * GLsizeiptr(sizeof(GpuParticle)),
-                         nullptr, kWriteMapFlags);
-    m_map = static_cast<GpuParticle*>(glMapNamedBufferRange(
-        m_ssbo, 0, GLsizeiptr(kCapacity) * GLsizeiptr(sizeof(GpuParticle)), kWriteMapFlags));
-    if (!m_map) {
-        VX_ERROR("particles: persistent mapping failed");
-        return false;
-    }
-    return true;
+    return m_ring.init(std::size_t(kCapacity) * sizeof(GpuParticle));
 }
 
 void Particles::shutdown() {
-    if (m_ssbo)
-        glDeleteBuffers(1, &m_ssbo);
+    m_ring.shutdown();
     if (m_vao)
         glDeleteVertexArrays(1, &m_vao);
-    m_ssbo = m_vao = 0;
-    m_map = nullptr;
+    m_vao = 0;
     m_live = 0;
 }
 
@@ -420,6 +407,7 @@ void Particles::draw(const glm::mat4& viewProj, const glm::dvec3& cameraPos,
         return;
     // Two batches in one buffer: the ordinary ones (blended, no depth write) first, then the ones
     // that must write depth so the composite pass does not paint the sky over them.
+    auto* map = static_cast<GpuParticle*>(m_ring.begin());
     int out = 0;
     int plainEnd = 0;
     for (int pass = 0; pass < 2; ++pass) {
@@ -431,7 +419,7 @@ void Particles::draw(const glm::mat4& viewProj, const glm::dvec3& cameraPos,
             // fade out over the last third of the life rather than popping
             const float t = p.life * p.invLife;
             const float alpha = std::min(1.0f, t * 3.0f) * p.maxAlpha;
-            GpuParticle& g = m_map[out++];
+            GpuParticle& g = map[out++];
             g.x = rel.x;
             g.y = rel.y;
             g.z = rel.z;
@@ -456,7 +444,7 @@ void Particles::draw(const glm::mat4& viewProj, const glm::dvec3& cameraPos,
     glProgramUniform1i(m_prog, 6, 0);
     glUseProgram(m_prog);
     glBindTextureUnit(0, blockTexArray);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_ssbo);
+    m_ring.bind(0);
     glBindVertexArray(m_vao);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -469,6 +457,7 @@ void Particles::draw(const glm::mat4& viewProj, const glm::dvec3& cameraPos,
     }
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
+    m_ring.fence();
 }
 
 } // namespace vx

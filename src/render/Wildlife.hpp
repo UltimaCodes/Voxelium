@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gfx/MappedRing.hpp"
+
 #include <glm/glm.hpp>
 
 #include <cstdint>
@@ -120,8 +122,7 @@ private:
     unsigned int m_prog = 0;   // the glows, as camera-facing sprites
     unsigned int m_prog3d = 0; // the animals, as boxes
     unsigned int m_vao = 0;
-    unsigned int m_ssbo = 0;
-    GpuSprite* m_map = nullptr;
+    MappedRing m_ring;
 
     Critter m_pool[kCapacity];
     int m_live = 0;

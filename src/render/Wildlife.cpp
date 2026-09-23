@@ -15,8 +15,6 @@ namespace vx {
 
 namespace {
 
-constexpr GLbitfield kWriteMapFlags =
-    GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
 constexpr float kPi = 3.14159265f;
 
 // The y of the first solid block at or below yFrom, searching `depth` blocks down. Unloaded
@@ -62,15 +60,7 @@ bool Wildlife::init(const std::filesystem::path& shaderDir) {
     if (!m_prog || !m_prog3d)
         return false;
     glCreateVertexArrays(1, &m_vao);
-    glCreateBuffers(1, &m_ssbo);
-    const GLsizeiptr bytes = GLsizeiptr(kCapacity) * GLsizeiptr(sizeof(GpuSprite));
-    glNamedBufferStorage(m_ssbo, bytes, nullptr, kWriteMapFlags);
-    m_map = static_cast<GpuSprite*>(glMapNamedBufferRange(m_ssbo, 0, bytes, kWriteMapFlags));
-    if (!m_map) {
-        VX_ERROR("wildlife: persistent mapping failed");
-        return false;
-    }
-    return true;
+    return m_ring.init(std::size_t(kCapacity) * sizeof(GpuSprite));
 }
 
 void Wildlife::shutdown() {
@@ -79,12 +69,10 @@ void Wildlife::shutdown() {
     if (m_prog3d)
         glDeleteProgram(m_prog3d);
     m_prog = m_prog3d = 0;
-    if (m_ssbo)
-        glDeleteBuffers(1, &m_ssbo);
+    m_ring.shutdown();
     if (m_vao)
         glDeleteVertexArrays(1, &m_vao);
-    m_ssbo = m_vao = 0;
-    m_map = nullptr;
+    m_vao = 0;
     m_live = 0;
 }
 
@@ -716,6 +704,7 @@ void Wildlife::draw(const glm::mat4& viewProj, const glm::dvec3& cam, const glm:
     // write), then the fish (solid, no depth write), then the airborne animals (solid, depth
     // write).
     const auto batchOf = [](Kind k) { return !isSolid(k) ? 0 : (writesDepth(k) ? 2 : 1); };
+    auto* map = static_cast<GpuSprite*>(m_ring.begin());
     int out = 0;
     int batchEnd[3] = {0, 0, 0};
     for (int batch = 0; batch < 3; ++batch) {
@@ -741,7 +730,7 @@ void Wildlife::draw(const glm::mat4& viewProj, const glm::dvec3& cam, const glm:
                 h = {1.0f, 0.0f};
             if (c.kind == Mote)
                 a *= c.aux3;
-            GpuSprite& g = m_map[out++];
+            GpuSprite& g = map[out++];
             g.x = rel.x;
             g.y = rel.y;
             g.z = rel.z;
@@ -764,7 +753,7 @@ void Wildlife::draw(const glm::mat4& viewProj, const glm::dvec3& cam, const glm:
     glProgramUniformMatrix4fv(m_prog, 0, 1, GL_FALSE, glm::value_ptr(viewProj));
     glProgramUniform3fv(m_prog, 4, 1, &right.x);
     glProgramUniform3fv(m_prog, 5, 1, &up.x);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_ssbo);
+    m_ring.bind(0);
     glBindVertexArray(m_vao);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -787,6 +776,7 @@ void Wildlife::draw(const glm::mat4& viewProj, const glm::dvec3& cam, const glm:
                          (batchEnd[2] - batchEnd[1]) * kVertsPerBody);
     }
     glDepthMask(GL_TRUE);
+    m_ring.fence();
 }
 
 } // namespace vx

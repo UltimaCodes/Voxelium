@@ -89,9 +89,8 @@ public:
     void cullFrustum(const Frustum& frustum, const glm::ivec3& cameraChunk,
                      const glm::vec3& cameraFrac, bool caveCull, bool sunlitOnly = false);
     void drawIndirect(unsigned int program, const glm::mat4& viewProj);
-    void cullInto(unsigned int metaBuf, unsigned int chunkCount, const Frustum& frustum,
-                  const glm::ivec3& cameraChunk, const glm::vec3& cameraFrac, bool caveCull,
-                  bool sunlitOnly = false);
+    void cullInto(bool water, const Frustum& frustum, const glm::ivec3& cameraChunk,
+                  const glm::vec3& cameraFrac, bool caveCull, bool sunlitOnly = false);
 
     int gpuVisibleChunks() const { return m_visibleChunks; } // ~3 frames of latency
     int debugReadDrawCount() const;                          // syncs; smoke test only
@@ -99,6 +98,7 @@ public:
 
 private:
     void recycle(Range range);
+    void syncSlot(bool water); // bring this frame's meta/visibility copies up to date
     Range tryAlloc(std::span<const PackedQuad> quads, std::uint32_t need);
     bool reclaimPendingFrees(); // wait out the fence ring, recycle everything in it
 
@@ -143,6 +143,17 @@ private:
     void* m_waterMetaMap = nullptr;
     const std::uint32_t* m_readbackMap = nullptr;
     std::uint32_t* m_visMap = nullptr;
+
+    // The meta and visibility buffers hold one copy per slot of the fence ring. Updates land in
+    // these CPU copies; the first cull of a frame copies whatever changed into that frame's slot.
+    // There used to be one mapped copy, written in place whenever the chunk set changed - and
+    // under vsync the CPU runs ahead, so at radius 32 the frame before was still in flight for
+    // half of those writes, its culls reading a list half rewritten under them.
+    std::vector<unsigned char> m_metaCpu, m_waterMetaCpu;
+    std::vector<std::uint32_t> m_visCpu;
+    std::uint32_t m_metaVersion = 1, m_waterMetaVersion = 1, m_visVersion = 1;
+    std::uint32_t m_slotMeta[kFrameRing] = {}, m_slotWaterMeta[kFrameRing] = {},
+                  m_slotVis[kFrameRing] = {};
 
     bool m_reclaimedThisFrame = false; // reclaim blocks on the GPU: once a frame, no more
     bool m_loggedChunkCap = false;     // kMaxChunks overflow is reported once, not per frame

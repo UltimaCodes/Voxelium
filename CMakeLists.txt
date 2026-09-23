@@ -25,6 +25,7 @@ add_executable(voxelium
     src/gfx/BlockTextures.cpp
     src/gfx/GlDebug.cpp
     src/gfx/GpuTimer.cpp
+    src/gfx/MappedRing.cpp
     src/gen/TerrainGenerator.cpp
     src/gfx/Shader.cpp
     src/harness/Bench.cpp
