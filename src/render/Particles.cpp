@@ -82,9 +82,19 @@ void Particles::shutdown() {
 Particles::Particle& Particles::acquire() {
     if (m_live < kCapacity)
         return m_pool[m_live++];
-    // Full: overwrite slot 0. The pool is compacted on update, so slot 0 is the oldest
-    // survivor — dropping that is far better than dropping the burst being spawned now.
-    return m_pool[0];
+    // Full: overwrite in turn. It used to be slot 0 every time, so a whole burst landed in one
+    // slot and a storm (a bolt is a couple of thousand particles) left one shard of every
+    // block broken during it. No slot is reliably the oldest - compaction swaps the newest into
+    // each freed slot - so this only spreads the damage, which is all a full pool can do.
+    m_victim = (m_victim + 1) % kCapacity;
+    return m_pool[m_victim];
+}
+
+int Particles::countLayer(int layer) const {
+    int n = 0;
+    for (int i = 0; i < m_live; ++i)
+        n += m_pool[i].layer == layer ? 1 : 0;
+    return n;
 }
 
 Particles::Particle& Particles::fresh() {

@@ -881,6 +881,20 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                     vx::Particles::kCapacity, after, partOk ? "PASS" : "FAIL");
             if (!partOk)
                 return 1;
+
+            // A full pool must still take a whole burst. Every spawn into a full pool used to
+            // overwrite slot 0, so a block broken while lightning had filled it left one shard.
+            for (int i = 0; rc.particles->liveCount() < vx::Particles::kCapacity && i < 64; ++i)
+                rc.particles->spawnBolt({0.0, 440.0, 0.0}, {0.0, 70.0, 0.0}, 77u + unsigned(i), 1.0f);
+            const bool full = rc.particles->liveCount() == vx::Particles::kCapacity;
+            rc.particles->spawnBlockBreak({0.0, 70.0, 0.0}, 7); // layer 7 marks the burst, no puff
+            const int shards = rc.particles->countLayer(7);
+            rc.particles->update(10.0f); // empty again for the groups after
+            const bool fullOk = full && shards == 14 && rc.particles->liveCount() == 0;
+            VX_INFO("particles: full pool (%s) took %d of 14 shards of a burst -> %s",
+                    full ? "full" : "NOT full", shards, fullOk ? "PASS" : "FAIL");
+            if (!fullOk)
+                return 1;
         }
 
         // Audio: the clips must be decoded ONCE, at init, and never again.

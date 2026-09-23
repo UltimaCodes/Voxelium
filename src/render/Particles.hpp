@@ -66,6 +66,8 @@ public:
               const glm::vec3& up, unsigned int blockTexArray);
 
     int liveCount() const { return m_live; }
+    // Harness only: live particles drawing texture layer `layer`.
+    int countLayer(int layer) const;
 
 private:
     struct Particle {
@@ -105,6 +107,7 @@ private:
     GpuParticle* m_map = nullptr;
     Particle m_pool[kCapacity];
     int m_live = 0;
+    int m_victim = 0; // next slot overwritten while the pool is full
     std::uint32_t m_rng = 0x9E3779B9u;
     float m_time = 0.0f;
     float m_sandCarry = 0.0f;  // fractional spawns carried between frames
