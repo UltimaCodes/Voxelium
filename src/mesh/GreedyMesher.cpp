@@ -242,38 +242,57 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
     // they really are. That was the dark speckle over every distant mountain, and it is why the
     // detail band could not be pulled in. A cube that is nothing but cave air has no block of
     // its own to become, so it takes the chunk's most common solid.
+    //
+    // Which solid a cube becomes is a vote too, and a plain count elected what fills it rather
+    // than what shows: grass is one layer on three of dirt and snow a two-block cap on dirt
+    // (TerrainGenerator), so at 4x hills went brown and peaks patchy - the owner's "ugly from
+    // across a lake". A block with open air above it (air or foliage that light reaches, so not
+    // a cave floor) is the surface, and it votes 1 + f times: a full layer of it outweighs the
+    // whole rest of the cube, while a leaf or two on a mass of rock still loses.
     const int f = 1 << lod;
     const int n = kChunkSize / f;
     const int cube = f * f * f;
+    const auto downsampled = [](BlockId raw) {
+        // Cross-plane foliage counts as AIR. It is sub-block decoration that cannot survive a
+        // downsample, and this path never emits cross quads (m_hasCross is only set at LOD 0)
+        // — so a cube it won became solid-but-invisible: non-opaque, in no solidity mask, no
+        // quads. That is a hole, and on a tufted grass surface enough cubes win to shred a
+        // hillside into floating shelves and dot a shoreline with a checkerboard of gaps. A
+        // waterlogged plant is water at this scale, not a hole in the sea.
+        return blocks::isWaterlogged(raw) ? blocks::Water
+                                          : (blocks::isCross(raw) ? blocks::Air : raw);
+    };
+    // Whether the cell above each column's next voxel is open. The cubes are walked from the top
+    // layer down and each cube top to bottom, so this carries straight on from the cube above.
+    const Chunk* above = neighbors ? neighbors[2] : nullptr;
+    bool open[kChunkSize][kChunkSize]; // [z][x]
+    for (int z = 0; z < kChunkSize; ++z)
+        for (int x = 0; x < kChunkSize; ++x) // nothing loaded above the band is sky
+            open[z][x] = !above || (downsampled(above->get(x, 0, z)) == blocks::Air &&
+                                    above->lightAt(x, 0, z) != 0);
     int fillCounts[blocks::kBlockCount] = {0};
     std::uint16_t sealedCubes[(kChunkSize / 2) * (kChunkSize / 2) * (kChunkSize / 2)];
     int sealedCount = 0;
-    for (int sz = 0; sz < n; ++sz)
-        for (int sy = 0; sy < n; ++sy)
+    for (int sy = n - 1; sy >= 0; --sy)
+        for (int sz = 0; sz < n; ++sz)
             for (int sx = 0; sx < n; ++sx) {
                 int counts[blocks::kBlockCount] = {0};
+                int votes[blocks::kBlockCount] = {0};
                 int maxSky = 0, maxBlk = 0;
-                for (int dz = 0; dz < f; ++dz)
-                    for (int dy = 0; dy < f; ++dy)
+                for (int dy = f - 1; dy >= 0; --dy)
+                    for (int dz = 0; dz < f; ++dz)
                         for (int dx = 0; dx < f; ++dx) {
-                            // Cross-plane foliage votes as AIR. It is sub-block decoration
-                            // that cannot survive a downsample, and this path never emits
-                            // cross quads (m_hasCross is only set at LOD 0) — so a cube it
-                            // won became solid-but-invisible: non-opaque, in no solidity
-                            // mask, no quads. That is a hole, and on a tufted grass surface
-                            // enough cubes win to shred a hillside into floating shelves
-                            // and dot a shoreline with a checkerboard of gaps.
-                            const BlockId raw = chunk.get(sx * f + dx, sy * f + dy, sz * f + dz);
-                            // a waterlogged plant is water at this scale, not a hole in the sea
-                            const BlockId b = blocks::isWaterlogged(raw)
-                                                  ? blocks::Water
-                                                  : (blocks::isCross(raw) ? blocks::Air : raw);
-                            const std::uint32_t l = chunk.lightAt(sx * f + dx, sy * f + dy,
-                                                                  sz * f + dz);
+                            const int x = sx * f + dx, y = sy * f + dy, z = sz * f + dz;
+                            const BlockId b = downsampled(chunk.get(x, y, z));
+                            const std::uint32_t l = chunk.lightAt(x, y, z);
+                            const bool surface = b != blocks::Air && open[z][x];
+                            open[z][x] = b == blocks::Air && l != 0;
                             if (b == blocks::Air && l == 0)
                                 continue; // sealed: counts as solid below
-                            if (b < blocks::kBlockCount)
+                            if (b < blocks::kBlockCount) {
                                 ++counts[b];
+                                votes[b] += surface ? 1 + f : 1;
+                            }
                             maxSky = std::max(maxSky, light::sky(l));
                             maxBlk = std::max(maxBlk, light::block(l));
                         }
@@ -282,8 +301,8 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
                 if (solid * 2 >= cube) { // majority solid -> keep it solid (no thin holes)
                     int best = 0;
                     for (int b = 1; b < blocks::kBlockCount; ++b)
-                        if (counts[b] > best) {
-                            best = counts[b];
+                        if (votes[b] > best) {
+                            best = votes[b];
                             dom = BlockId(b);
                         }
                     if (dom == blocks::Air)
