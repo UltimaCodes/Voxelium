@@ -116,6 +116,7 @@ private:
     static constexpr float kSlack = 0.18f;
     glm::dvec3 m_anchorWorld[kCascades] = {};
     glm::vec3 m_anchorSun[kCascades] = {};
+    glm::vec3 m_anchorUp[kCascades] = {glm::vec3(0, 1, 0), glm::vec3(0, 1, 0), glm::vec3(0, 1, 0)};
     float m_radius[kCascades] = {};
     bool m_dirty[kCascades] = {true, true, true};
     bool m_forceAll = true;
@@ -123,6 +124,26 @@ private:
     // interval has passed, so the last change is never dropped, only delayed.
     bool m_pending[kCascades] = {};
     std::chrono::steady_clock::time_point m_lastRedraw[kCascades] = {};
+
+    // --- the far cascade, drawn in slices ----------------------------------------------
+    // Redrawing the far cascade draws every sunlit chunk within ~1100 blocks: at Ultra's
+    // detail reach that is ~22M quads and ~30 ms of GPU in one frame, which happened every
+    // time streaming or drift asked for it - a hitch every 0.7 s while flying (SPEC #141). So a
+    // routine redraw goes to a spare layer (index kCascades) an eighth of the chunks a frame,
+    // and only when the last eighth lands is it copied over the far cascade's own layer and its
+    // anchor swapped in; until then the old one keeps shading, still inside its slack.
+    // A forced redraw (settings, resize, first frame) is still drawn whole, at once.
+    static constexpr int kFarSlices = 8; // cull.comp's 2x2x2 checkerboard
+    int m_farSlice = -1;                 // next slice to draw, -1 when none is under way
+    glm::dvec3 m_farAnchor{0.0};
+    glm::vec3 m_farSun{0.0f};
+    glm::vec3 m_farUp{0.0f, 1.0f, 0.0f};
+    float m_farRadius = 0.0f;
+    glm::mat4 m_farVp{1.0f};
+
+    // A cascade's light view-projection for this frame's camera, from where it was anchored.
+    static glm::mat4 cascadeMatrix(const glm::dvec3& anchor, const glm::vec3& sun,
+                                   const glm::vec3& up, float r, const glm::dvec3& cameraPos);
 
     // invalidate()'s throttle. A point in the past so the very first call always fires.
     static constexpr std::chrono::milliseconds kMinForceInterval{100};

@@ -35,6 +35,11 @@ layout(location = 10) uniform uint uPlaneCount;
 // the light, and a sealed chunk is always behind whatever encloses it, so it can never
 // change the result — dropping it is exact, not an approximation.
 layout(location = 11) uniform uint uSunlitOnly;
+// The far shadow cascade is drawn an eighth at a time (ShadowMap::kFarSlices): 8 = draw
+// everything, 0..7 = only the chunks on that cell of a 2x2x2 checkerboard. Keyed on the chunk's
+// position, not its slot here, because the slots are reordered whenever chunks load or unload
+// and a chunk must not move to a slice that has already been drawn.
+layout(location = 12) uniform uint uSlice;
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
@@ -46,6 +51,9 @@ void main() {
         return; // sealed from the sky: contributes nothing to a sun shadow map
 
     ChunkMeta m = meta[i];
+    if (uSlice < 8u && (uint(m.posFirst.x & 1) | (uint(m.posFirst.z & 1) << 1) |
+                        (uint(m.posFirst.y & 1) << 2)) != uSlice)
+        return;
     vec3 offset = vec3((m.posFirst.xyz - uCameraChunk) * 32) - uCameraFrac;
     vec3 center = offset + 16.0;
     for (uint p = 0u; p < uPlaneCount; ++p) {

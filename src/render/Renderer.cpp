@@ -285,7 +285,8 @@ void Renderer::syncSlot(bool water) {
 }
 
 void Renderer::cullInto(bool water, const Frustum& frustum, const glm::ivec3& cameraChunk,
-                        const glm::vec3& cameraFrac, bool caveCull, bool sunlitOnly) {
+                        const glm::vec3& cameraFrac, bool caveCull, bool sunlitOnly,
+                        unsigned int slice) {
     syncSlot(water);
     constexpr GLsizeiptr kMetaBytes = GLsizeiptr(kMaxChunks) * GLsizeiptr(sizeof(GpuChunkMeta));
     constexpr GLsizeiptr kVisBytes = kMaxChunks / 8;
@@ -302,6 +303,7 @@ void Renderer::cullInto(bool water, const Frustum& frustum, const glm::ivec3& ca
     glProgramUniform1ui(m_cullProgram, 9, caveCull ? 1u : 0u);
     glProgramUniform1ui(m_cullProgram, 10, GLuint(frustum.count));
     glProgramUniform1ui(m_cullProgram, 11, sunlitOnly ? 1u : 0u);
+    glProgramUniform1ui(m_cullProgram, 12, slice);
     glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, water ? m_waterMetaBuf : m_metaBuf,
                       kMetaBytes * m_slot, kMetaBytes);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_cmdBuf);
@@ -313,8 +315,9 @@ void Renderer::cullInto(bool water, const Frustum& frustum, const glm::ivec3& ca
 }
 
 void Renderer::cullFrustum(const Frustum& frustum, const glm::ivec3& cameraChunk,
-                           const glm::vec3& cameraFrac, bool caveCull, bool sunlitOnly) {
-    cullInto(false, frustum, cameraChunk, cameraFrac, caveCull, sunlitOnly);
+                           const glm::vec3& cameraFrac, bool caveCull, bool sunlitOnly,
+                           unsigned int slice) {
+    cullInto(false, frustum, cameraChunk, cameraFrac, caveCull, sunlitOnly, slice);
 }
 
 void Renderer::drawIndirect(unsigned int program, const glm::mat4& viewProj) {

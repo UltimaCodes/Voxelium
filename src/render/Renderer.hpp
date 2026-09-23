@@ -85,12 +85,15 @@ public:
 
     // For the shadow pass: cull chunks against an arbitrary frustum (a cascade's ortho
     // box) into the command buffers, then draw with any depth program. Called once per
-    // cascade so far casters aren't drawn into tight near cascades.
+    // cascade so far casters aren't drawn into tight near cascades. `slice` 0..7 keeps only
+    // one cell of a 2x2x2 checkerboard of chunks (see cull.comp); 8 keeps them all.
     void cullFrustum(const Frustum& frustum, const glm::ivec3& cameraChunk,
-                     const glm::vec3& cameraFrac, bool caveCull, bool sunlitOnly = false);
+                     const glm::vec3& cameraFrac, bool caveCull, bool sunlitOnly = false,
+                     unsigned int slice = 8);
     void drawIndirect(unsigned int program, const glm::mat4& viewProj);
     void cullInto(bool water, const Frustum& frustum, const glm::ivec3& cameraChunk,
-                  const glm::vec3& cameraFrac, bool caveCull, bool sunlitOnly = false);
+                  const glm::vec3& cameraFrac, bool caveCull, bool sunlitOnly = false,
+                  unsigned int slice = 8);
 
     int gpuVisibleChunks() const { return m_visibleChunks; } // ~3 frames of latency
     int debugReadDrawCount() const;                          // syncs; smoke test only
