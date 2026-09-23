@@ -129,8 +129,7 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
         // depth-only pass had no use for it. Without this the leaf test samples whatever
         // happened to be on unit 0.
         glBindTextureUnit(0, rc.blockTex);
-        rc.shadows.update(camera.position, camera.forward(), sunL,
-                          glm::radians(camera.fovYDeg), aspect);
+        rc.shadows.update(camera.position, sunL);
         rc.shadows.render(rc.renderer, cam.cameraChunk, cam.cameraFrac);
     }
     if (timers) timers->shadow.end();

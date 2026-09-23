@@ -9,10 +9,10 @@ namespace vx {
 
 class Renderer;
 
-// 3 stabilized shadow cascades in a depth array. Each cascade fits a bounding sphere of
-// its view-frustum slice (fixed radius per cascade) and snaps its center to shadow
-// texels in light space using double-precision world coordinates — rotating or moving
-// the camera never makes shadows swim.
+// 3 stabilized shadow cascades in a depth array. Each cascade covers a ball about the camera
+// out to its split (fixed radius per cascade) and snaps its center to shadow texels in light
+// space using double-precision world coordinates — rotating or moving the camera never makes
+// shadows swim, and rotating never moves a cascade at all.
 class ShadowMap {
 public:
     static constexpr int kCascades = 3;
@@ -28,11 +28,14 @@ public:
     // Cascade far distances. The last one is where shadows stop entirely. It sat at a fixed
     // 420 (past the 384-block detailed band), which left everything beyond it flat-lit no
     // matter how far you could see - a visible ring of shadowed ground around the player.
-    // It now follows the render distance up to kFarMax; past that the texels are too coarse
-    // to be worth it and the fog has taken over anyway. The last 10% fades out rather than
-    // cutting.
+    // It now follows the render distance (the fog end) up to kFarMax. That was 760, short of
+    // the fog end at radius 32 (942), so the last stretch before the haze never had a shadow.
+    // The cascades cover a ball about the camera now (see update()), so reaching the fog still
+    // leaves finer texels than 760 did before - 0.87 blocks against 1.34 at a 2560 map - and
+    // the shadow pass measured cheaper, not dearer, since the old, larger box already took in
+    // everything loaded. The last 10% fades out rather than cutting.
     static constexpr float kFarMin = 420.0f;
-    static constexpr float kFarMax = 760.0f;
+    static constexpr float kFarMax = 960.0f;
     glm::vec3 splits() const { return m_splits; }
     // How far the far cascade should reach. Changing it invalidates every cascade, since the
     // old contents were rendered at a different texel scale.
@@ -49,8 +52,7 @@ public:
     void shutdown();
 
     // Rebuilds cascade matrices for this frame (camera-relative space).
-    void update(const glm::dvec3& cameraPos, const glm::vec3& forward, const glm::vec3& sunL,
-                float fovYRad, float aspect);
+    void update(const glm::dvec3& cameraPos, const glm::vec3& sunL);
 
     // Renders all cascades. Culls per-cascade against each cascade's ortho box so far
     // chunks aren't drawn into the tight near cascades.

@@ -118,8 +118,7 @@ void ShadowMap::setLeafGap(float gap) {
     m_forceAll = true;
 }
 
-void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& forward,
-                       const glm::vec3& sunL, float fovYRad, float aspect) {
+void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& sunL) {
     // light basis: looking along -sunL
     const glm::dvec3 lz = glm::normalize(-glm::dvec3(sunL));
     const glm::dvec3 upRef =
@@ -130,8 +129,6 @@ void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& forward,
     m_lightY = glm::vec3(ly);
     m_camLightXY = glm::vec2(float(glm::dot(lx, cameraPos)), float(glm::dot(ly, cameraPos)));
 
-    const float tanH = std::tan(fovYRad * 0.5f);
-    const float tanW = tanH * aspect;
     const auto now = std::chrono::steady_clock::now();
     // the far cascade holds the most geometry by a distance, so it is the one made to wait
     constexpr std::chrono::milliseconds kInterval[kCascades] = {std::chrono::milliseconds(0),
@@ -139,17 +136,21 @@ void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& forward,
                                                                 std::chrono::milliseconds(700)};
 
     for (int c = 0; c < kCascades; ++c) {
-        const float nearD = c == 0 ? 0.1f : m_splits[c - 1];
-        const float farD = m_splits[c];
-        // bounding sphere of the frustum slice, inflated by the drift we allow before
-        // re-anchoring, so a cached cascade still covers what it needs to
-        const float tc = (nearD + farD) * 0.5f;
-        const float radius =
-            glm::length(glm::vec3(tanW * farD, tanH * farD, farD - tc)) * (1.0f + kSlack);
+        // The shaders pick a cascade by distance from the camera (length(pos) against the
+        // splits), so cascade c only ever has to cover the ball of radius splits[c] around the
+        // camera. It used to cover a bounding sphere of its slice of the view frustum instead,
+        // and at any field of view the settings allow (50..110) that sphere is the bigger of
+        // the two: at 85 degrees and 16:9 the far one had a radius of 1719 to shade points no
+        // more than 760 away, so every texel was about twice the size it needed to be. Being
+        // pushed out ahead of the camera, it also had to move - and the far one redrew the
+        // whole visible world - every time the camera turned. A ball about the camera only
+        // moves when the camera does. Inflated by the drift allowed before re-anchoring, so a
+        // cached cascade still covers what it needs to.
+        const float radius = m_splits[c] * (1.0f + kSlack);
         const float texel = radius * 2.0f / float(m_resolution);
         m_texelWorld[c] = texel;
 
-        const glm::dvec3 idealWorld = cameraPos + glm::dvec3(forward) * double(tc);
+        const glm::dvec3 idealWorld = cameraPos;
 
         // Cascade 0 always re-anchors: it's only ~130 chunks and contact shadows are the
         // ones you'd notice lagging. The far two re-anchor only once the ideal centre has
