@@ -235,9 +235,19 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
     // chunk-local but chunk size is a power of two, so they align globally -> adjacent
     // same-LOD chunks share border surfaces (coincident faces, no cracks). pads stay air
     // (isolated); cross-LOD boundaries can seam, which is acceptable at distance.
+    //
+    // Air with no light at all, sky or block, votes as rock. Nothing reaches it, so it is sealed
+    // inside the terrain: a cave. Caves are never seen from far off, but a downsample thins the
+    // rock over one into air, the camera sees in, and the walls inside are pitch black because
+    // they really are. That was the dark speckle over every distant mountain, and it is why the
+    // detail band could not be pulled in. A cube that is nothing but cave air has no block of
+    // its own to become, so it takes the chunk's most common solid.
     const int f = 1 << lod;
     const int n = kChunkSize / f;
     const int cube = f * f * f;
+    int fillCounts[blocks::kBlockCount] = {0};
+    std::uint16_t sealedCubes[(kChunkSize / 2) * (kChunkSize / 2) * (kChunkSize / 2)];
+    int sealedCount = 0;
     for (int sz = 0; sz < n; ++sz)
         for (int sy = 0; sy < n; ++sy)
             for (int sx = 0; sx < n; ++sx) {
@@ -258,10 +268,12 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
                             const BlockId b = blocks::isWaterlogged(raw)
                                                   ? blocks::Water
                                                   : (blocks::isCross(raw) ? blocks::Air : raw);
-                            if (b < blocks::kBlockCount)
-                                ++counts[b];
                             const std::uint32_t l = chunk.lightAt(sx * f + dx, sy * f + dy,
                                                                   sz * f + dz);
+                            if (b == blocks::Air && l == 0)
+                                continue; // sealed: counts as solid below
+                            if (b < blocks::kBlockCount)
+                                ++counts[b];
                             maxSky = std::max(maxSky, light::sky(l));
                             maxBlk = std::max(maxBlk, light::block(l));
                         }
@@ -274,6 +286,10 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
                             best = counts[b];
                             dom = BlockId(b);
                         }
+                    if (dom == blocks::Air)
+                        sealedCubes[sealedCount++] = std::uint16_t(sx | (sy << 5) | (sz << 10));
+                    else if (blocks::occludes(dom))
+                        ++fillCounts[dom];
                 }
                 if (blocks::isWater(dom))
                     m_hasWater = true;
@@ -285,6 +301,21 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
                             m_gridLight[gi(sx * f + dx, sy * f + dy, sz * f + dz)] = lv;
                         }
             }
+    if (sealedCount == 0)
+        return;
+    BlockId fill = blocks::Stone;
+    for (int b = 1, best = 0; b < blocks::kBlockCount; ++b)
+        if (fillCounts[b] > best) {
+            best = fillCounts[b];
+            fill = BlockId(b);
+        }
+    for (int i = 0; i < sealedCount; ++i) {
+        const int sx = sealedCubes[i] & 31, sy = (sealedCubes[i] >> 5) & 31, sz = sealedCubes[i] >> 10;
+        for (int dz = 0; dz < f; ++dz)
+            for (int dy = 0; dy < f; ++dy)
+                for (int dx = 0; dx < f; ++dx)
+                    m_grid[gi(sx * f + dx, sy * f + dy, sz * f + dz)] = fill;
+    }
 }
 
 void GreedyMesher::buildColumns() {
