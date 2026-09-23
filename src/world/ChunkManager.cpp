@@ -43,13 +43,12 @@ std::int64_t horizontalDist2(ChunkPos p, ChunkPos center) {
 // bands (L4 16x, L5 32x = one dominant block per chunk) make big render distances almost
 // free — a very-distant chunk is a handful of quads. near bands are unchanged, so raising
 // the radius only adds cheap coarse geometry out on the horizon.
-// Bands scale with the render distance instead of sitting at fixed chunk counts. They
-// were tuned at radius 16 and stayed there, so raising the radius did not push detail
-// outward with it — it just added more of the coarsest band, and full detail still ran
-// out at 8 chunks no matter how far you could see. The ratios below reproduce the old
-// 8/14/22/30/42 exactly at radius 16, so that case is unchanged.
-int lodForDist2(std::int64_t d2, int radius) {
-    const double s = std::max(radius, 16) / 16.0; // only ever widens; 16 is the floor
+// Bands scale with the render distance instead of sitting at fixed chunk counts, by `s`
+// (ChunkManager::lodScale). They were tuned at radius 16 and stayed there, so raising the
+// radius did not push detail outward with it — it just added more of the coarsest band, and
+// full detail still ran out at 8 chunks no matter how far you could see. The ratios below
+// reproduce the old 8/14/22/30/42 exactly at radius 16, so that case is unchanged.
+int lodForDist2(std::int64_t d2, double s) {
     const auto band = [&](double chunks) {
         const double d = chunks * s;
         return std::int64_t(d * d);
@@ -59,7 +58,7 @@ int lodForDist2(std::int64_t d2, int radius) {
     // in front of you.
     //
     // ONLY that band moved. The 1 -> 2 transition is where kCoarseLod kicks in and chunks
-    // start generating without caves or trees, and at the default radius 16 the loaded ring
+    // start generating without caves, and at the default radius 16 the loaded ring
     // is only 17 chunks — push that threshold out to 24 and nothing is ever coarse, which
     // silently turns the whole coarse-gen optimisation off and costs +78% quads. It stays
     // at 14. The smoke regen group samples a column at 15 chunks precisely to hold this.
@@ -71,9 +70,10 @@ int lodForDist2(std::int64_t d2, int radius) {
     return 5;
 }
 
-// chunks meshed at this LOD or coarser generate without caves/trees (they'd be averaged
-// away by the downsample). approaching one — desired LOD drops below this — re-generates
-// it detailed. caves cost ~4x gen/mesh/quads, so skipping them far out is the big win.
+// chunks meshed at this LOD or coarser generate without caves (they'd be averaged away by
+// the downsample; trees still generate, see TerrainGenerator::generate). approaching one —
+// desired LOD drops below this — re-generates it detailed. caves cost ~4x gen/mesh/quads,
+// so skipping them far out is the big win.
 constexpr int kCoarseLod = 2;
 
 constexpr int kFaceOffsets[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
@@ -96,19 +96,23 @@ constexpr int kFaceOffsets[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
 // receded far enough for a neighbour to coarsen, this chunk has crossed its own band too.
 constexpr double kSkirtMargin = 2.0;
 
-std::uint8_t coarseNeighborMask(ChunkPos pos, int lod, ChunkPos center, int radius) {
+std::uint8_t coarseNeighborMask(ChunkPos pos, int lod, ChunkPos center, double scale) {
     std::uint8_t mask = 0;
     for (int f = 0; f < 6; ++f) {
         const ChunkPos n{pos.x + kFaceOffsets[f][0], pos.y + kFaceOffsets[f][1],
                          pos.z + kFaceOffsets[f][2]};
         const double d = std::sqrt(double(horizontalDist2(n, center))) + kSkirtMargin;
-        if (lodForDist2(std::int64_t(d * d), radius) > lod)
+        if (lodForDist2(std::int64_t(d * d), scale) > lod)
             mask |= std::uint8_t(1u << f);
     }
     return mask;
 }
 
 } // namespace
+
+double ChunkManager::lodScale() const {
+    return std::min(std::max(radius, 16) / 16.0, double(std::max(detailScale, 1.0f)));
+}
 
 void ChunkManager::noteDirty(ChunkPos p) {
     m_dirty = true;
@@ -215,7 +219,7 @@ ChunkManager::LodAudit ChunkManager::auditLod() const {
             continue;
         if (e.state != ChunkState::Meshed)
             continue; // still in flight isn't a bug on its own; busy() should have caught it
-        const int desired = lodForDist2(horizontalDist2(pos, m_center), radius);
+        const int desired = lodForDist2(horizontalDist2(pos, m_center), lodScale());
         if (e.lod != desired)
             ++a.lodMismatch;
         // Exactly the self-heal condition in update() that queues a coarse->detailed regen
@@ -584,7 +588,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         voxels->fillLight(0);
         voxels->retainJob();
         // far chunks generate coarse (no caves/trees); re-gen'd detailed when approached
-        const bool detailed = lodForDist2(horizontalDist2(pos, center), radius) < kCoarseLod;
+        const bool detailed = lodForDist2(horizontalDist2(pos, center), lodScale()) < kCoarseLod;
         Entry entry; // state defaults to Generating
         entry.voxels = voxels;
         entry.detailed = detailed;
@@ -663,7 +667,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         if (std::abs(item.first.x - center.x) > radius ||
             std::abs(item.first.z - center.z) > radius)
             continue;
-        const int desired = lodForDist2(horizontalDist2(item.first, center), radius);
+        const int desired = lodForDist2(horizontalDist2(item.first, center), lodScale());
         const bool firstMesh = e.state == ChunkState::Ready;
         const bool reLod = e.state == ChunkState::Meshed && (e.lod != desired || e.remesh);
         // A coarse chunk close enough to want detail re-generates (with caves) rather than
@@ -720,14 +724,14 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         }
         const auto it = m_chunks.find(pos);
         Entry& e = it->second;
-        const int lod = lodForDist2(horizontalDist2(pos, center), radius);
+        const int lod = lodForDist2(horizontalDist2(pos, center), lodScale());
         if (e.state == ChunkState::Ready)
             e.state = ChunkState::Meshing; // first mesh: not drawn until it lands
         // (a re-LOD or relight keeps state Meshed so the old mesh stays drawn meanwhile)
         e.remesh = false;
         e.meshingLod = std::int8_t(lod);
 
-        const std::uint8_t skirt = coarseNeighborMask(pos, lod, center, radius);
+        const std::uint8_t skirt = coarseNeighborMask(pos, lod, center, lodScale());
 
         std::array<const Chunk*, 6> nb{
             voxelsAt({pos.x + 1, pos.y, pos.z}), voxelsAt({pos.x - 1, pos.y, pos.z}),
@@ -1251,7 +1255,7 @@ void ChunkManager::remeshNow(Renderer& renderer, ChunkPos pos) {
     std::vector<PackedQuad>* waterBuf = m_waterPool.checkout();
     // edits are always on full-detail chunks, but one can still border a coarser ring
     const GreedyStats stats = m_mesher.mesh(*e.voxels, neighbors, *quadBuf, *waterBuf, 0,
-                                            coarseNeighborMask(pos, 0, m_center, radius));
+                                            coarseNeighborMask(pos, 0, m_center, lodScale()));
     e.connectivity = computeConnectivity(*e.voxels);
     e.sunlit = stats.sunlit; // an edit can open a sealed chunk to the sky, or seal it
 

@@ -341,6 +341,13 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
             ImGui::SetNextItemWidth(-125.0f);
             ImGui::SliderInt("render dist", &radius, 4, 32, "%d chunks");
             ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("detail dist", &fx.lodDetail, 1.0f, 2.0f, "%.2fx");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("how far out full-detail blocks reach, past 16 chunks.\n"
+                                  "full detail reaches %d blocks now; beyond it the ground is\n"
+                                  "drawn coarser. the biggest single cost at a high render dist.",
+                                  int(12.0f * 32.0f * std::min(float(std::max(radius, 16)) / 16.0f, fx.lodDetail)));
+            ImGui::SetNextItemWidth(-125.0f);
             ImGui::SliderFloat("render scale", &fx.renderScale, 0.5f, 1.0f, "%.2fx");
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("renders the whole HDR chain smaller and upscales at the\n"

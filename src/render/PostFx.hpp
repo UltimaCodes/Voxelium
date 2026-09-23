@@ -96,6 +96,8 @@ struct FxToggles {
     // The coarse heightfield past the streamed chunks (render/FarTerrain), so the view reaches
     // kilometres instead of ending in haze at the chunk radius.
     bool farTerrain = true;
+    // ChunkManager::detailScale, saved with the rest; main.cpp hands it over every frame.
+    float lodDetail = 1.25f;
     // Runtime only, never saved: filled in each frame by whatever is directing the sky.
     float cloudBias = 0.0f; // extra cloud cover, 0..~0.22
     float flash = 0.0f;     // lightning, 0..1, decays in a fraction of a second

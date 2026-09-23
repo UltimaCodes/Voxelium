@@ -57,6 +57,9 @@ using vx::RenderContext;
 using vx::TaaState;
 using vx::renderFrame;
 using vx::runBenchmark;
+
+static_assert(vx::FxToggles{}.lodDetail == vx::ChunkManager::kDefaultDetailScale,
+              "the harnesses run at ChunkManager's default, the game at the setting's");
 using vx::runFlythrough;
 using vx::runMesherOracle;
 using vx::runSmokeTest;
@@ -491,7 +494,12 @@ int main(int argc, char** argv) {
     // showing a loading screen.
     if (liveApp) {
         world->radius = savedRadius;
+        world->detailScale = fx.lodDetail;
         camera.fovYDeg = savedFov;
+    } else if (const char* d = std::getenv("VX_LODDETAIL")) {
+        // a harness at another detail distance: it moves the frame time and the picture
+        // together, so a value has to be judged with --bench and --tour both
+        world->detailScale = std::clamp(float(std::atof(d)), 1.0f, 2.0f);
     }
 
     if (tour) {
@@ -1044,6 +1052,7 @@ int main(int argc, char** argv) {
         // the beds, and settles the submerged filter. None of that can happen at play time.
         audio.update(float(dt));
 
+        world->detailScale = fx.lodDetail;
         world->update(*jobs, renderer, *light, camera.position);
         if (fx.farTerrain)
             farTerrain.update(world->generator(), *jobs, camera.position);

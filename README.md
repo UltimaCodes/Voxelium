@@ -53,7 +53,11 @@ ESC opens the settings menu (it pauses too), in five tabs:
 - **quality** — Low / Medium / High / Ultra presets, plus everything they set: render
   distance, render scale, the shader tier, shadow map size, and each effect toggle. the
   preset is worked out from the values rather than remembered, so touching any of them
-  flips it to "custom" straight away.
+  flips it to "custom" straight away. **detail dist** sits under render distance and is
+  not part of any preset: how far out the ground stays full-detail before it goes coarser.
+  at a big render distance it's the biggest single cost there is (at 32 chunks and 720p on
+  an RTX 2070 SUPER, the old 2.0 was about 11 ms a frame, the default 1.25 about 9), so it's
+  yours to trade.
 - **visuals** — the things a preset deliberately does *not* touch, because they are taste
   and not performance: fov, crosshair, day/night cycle, night vision, exposure, bloom,
   and the grade (saturation, contrast, temperature, vignette, grain).
