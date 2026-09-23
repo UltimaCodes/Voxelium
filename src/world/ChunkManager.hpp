@@ -465,6 +465,7 @@ private:
     bool m_lastCaveCull = false;
     int m_jobsInFlight = 0; // main-thread view: submit increments, result-drain decrements
     int m_genInFlight = 0;  // the generation jobs among them
+    int m_regenInFlight = 0; // and the detailed re-gens
     int m_pendingMesh = 0;
     int m_lateSeeds = 0; // see Stats::lateSeeds
     // the per-frame mesh scan is O(loaded chunks); only run it when something could have
