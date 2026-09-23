@@ -15,6 +15,7 @@
 #include "mesh/NaiveMesher.hpp"
 #include "platform/Window.hpp"
 #include "render/Camera.hpp"
+#include "render/FarTerrain.hpp"
 #include "render/FrameRenderer.hpp"
 #include "render/Overlay.hpp"
 #include "render/Particles.hpp"
@@ -42,6 +43,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace vx {
@@ -146,6 +148,14 @@ int runBenchmark(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
     ft.scene.init();
     ft.post.init();
 
+    // The frame the game draws: distance fog closing in at the edge of the loaded ring, and the
+    // far horizon beyond it. Without these the bench measured a frame nobody plays.
+    const float fogEnd = float(radius) * float(vx::kChunkSize) * 0.92f;
+    const auto drawView = [&](const vx::FxToggles& f) {
+        renderFrame(rc, camera, f, true, w, h, fbo, 0.6f, &ft, false, glm::vec3(0.0f), false,
+                    nullptr, fogEnd, -1, 0, f.farTerrain ? vx::FarTerrain::kFogEnd : 0.0f);
+    };
+
     const auto median = [](std::vector<double>& v) {
         if (v.empty())
             return 0.0;
@@ -177,6 +187,15 @@ int runBenchmark(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
             if (i > 200 && !world.busy() && light.idle())
                 break;
         }
+        // the horizon is built on a worker from the generator alone, so it just needs time
+        if (rc.farTerrain) {
+            for (int i = 0; i < 1500 && !rc.farTerrain->ready(); ++i) {
+                rc.farTerrain->update(world.generator(), jobs, camera.position);
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            if (!rc.farTerrain->ready())
+                VX_ERROR("bench: the far horizon never finished building");
+        }
         std::vector<vx::ChunkDrawInfo> di;
         std::vector<vx::ChunkDrawInfo> wi;
         world.collectDrawInfo(di, wi);
@@ -191,7 +210,7 @@ int runBenchmark(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         for (int i = 0; i < kWarm + kFrames; ++i) {
             const auto t0 = std::chrono::steady_clock::now();
             rc.renderer.beginFrame();
-            renderFrame(rc, camera, fx, true, w, h, fbo, 0.6f, &ft);
+            drawView(fx);
             rc.renderer.endFrame();
             glFinish(); // benchmark only: we want the whole frame's GPU work accounted for
             const double cpuMs =
@@ -228,7 +247,7 @@ int runBenchmark(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         for (int i = 0; i < kWarm + kFrames; ++i) {
             const auto t0 = std::chrono::steady_clock::now();
             rc.renderer.beginFrame();
-            renderFrame(rc, camera, scaled, true, w, h, fbo, 0.6f, &ft);
+            drawView(scaled);
             rc.renderer.endFrame();
             glFinish();
             const double cpuMs =
@@ -245,6 +264,27 @@ int runBenchmark(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                 median(sh2), median(sc2), median(po2), median(fr2));
         totScaledFrame += median(fr2);
 
+        // same view with the horizon off, so its cost is a number and not a guess
+        vx::FxToggles noFar = fx;
+        noFar.farTerrain = false;
+        std::vector<double> sc4, fr4;
+        for (int i = 0; i < kWarm + kFrames; ++i) {
+            const auto t0 = std::chrono::steady_clock::now();
+            rc.renderer.beginFrame();
+            drawView(noFar);
+            rc.renderer.endFrame();
+            glFinish();
+            const double cpuMs =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+                    .count();
+            if (i >= kWarm) {
+                sc4.push_back(ft.scene.milliseconds());
+                fr4.push_back(cpuMs);
+            }
+        }
+        VX_INFO("   far off  | scene %5.2f | frame %6.2f ms  (the horizon costs %.2f ms scene, %.2f ms frame)",
+                median(sc4), median(fr4), mSc - median(sc4), mFr - median(fr4));
+
         // Same view with the camera walking forward at ~8 units/s. A stationary camera is
         // the best possible case for cascade caching, so measuring only that would be
         // dishonest — this is what the cost actually looks like while you play.
@@ -258,7 +298,7 @@ int runBenchmark(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
             camera.position = startPos + step * double(i);
             const auto t0 = std::chrono::steady_clock::now();
             rc.renderer.beginFrame();
-            renderFrame(rc, camera, fx, true, w, h, fbo, 0.6f, &ft);
+            drawView(fx);
             rc.renderer.endFrame();
             glFinish();
             const double cpuMs =
