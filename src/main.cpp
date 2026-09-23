@@ -464,10 +464,19 @@ int main(int argc, char** argv) {
                 worldSeed);
     }
 
-    // declaration order matters: jobs is destroyed first, joining all workers, so no
-    // job can touch world's chunks or queues during teardown
     auto world = std::make_unique<vx::ChunkManager>(saveDir, worldSeed);
     auto light = std::make_unique<vx::LightEngine>(*world);
+    // The workers are joined before world goes, on every way out of main: a mesh, generation
+    // or far-terrain job still running - or still queued, since a stopping worker empties the
+    // queue first - writes into world's chunks, pools and result queues, or reads its
+    // generator. Declaring jobs after world used to see to that, until the title screen needed
+    // workers first (9a93428) and moved it above; from then on, quitting while chunks were
+    // streaming let jobs finish into a freed ChunkManager. A probe that quit mid-flight caught
+    // it as heap corruption on exit (0xC0000374).
+    struct JoinWorkers {
+        std::unique_ptr<vx::JobSystem>& jobs;
+        ~JoinWorkers() { jobs.reset(); }
+    } joinWorkers{jobs};
 
     vx::FlyCamera camera;
     // Spawn ON the ground, not at a fixed altitude. y was hardcoded to 110, which is inside
