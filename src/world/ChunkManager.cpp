@@ -110,6 +110,39 @@ std::uint8_t coarseNeighborMask(ChunkPos pos, int lod, ChunkPos center, double s
 
 } // namespace
 
+// What landing a job's empty result would have done, without the job: the chunk is drawn as
+// nothing at this LOD, and cave culling may flood through it.
+void ChunkManager::landEmpty(ChunkPos pos, int lod, Renderer& renderer) {
+    Entry& e = m_chunks.find(pos)->second;
+    if (e.range.count != 0) {
+        renderer.free(e.range);
+        e.range = {};
+    }
+    if (e.waterRange.count != 0) {
+        renderer.free(e.waterRange);
+        e.waterRange = {};
+    }
+    if (e.quadBuf) {
+        m_quadPool.checkin(e.quadBuf);
+        e.quadBuf = nullptr;
+    }
+    if (e.waterBuf) {
+        m_waterPool.checkin(e.waterBuf);
+        e.waterBuf = nullptr;
+    }
+    e.quads = 0;
+    e.waterQuads = 0;
+    e.connectivity = computeConnectivity(*e.voxels);
+    e.sunlit = false;
+    e.lod = std::int8_t(lod);
+    e.remesh = false;
+    e.lightDirty = false;
+    e.state = ChunkState::Meshed;
+    noteDirty(pos);
+    m_visDirty = true;
+    m_meshScanDirty = true;
+}
+
 double ChunkManager::lodScale() const {
     return std::min(std::max(radius, 16) / 16.0, double(std::max(detailScale, 1.0f)));
 }
@@ -128,16 +161,48 @@ void ChunkManager::noteDirty(ChunkPos p) {
     m_dirtyNearest = std::min(m_dirtyNearest, std::max(blocks, 0.0f));
 }
 
+ChunkManager::ColumnHeights ChunkManager::columnHeights(int cx, int cz) const {
+    const ChunkPos key{cx, 0, cz};
+    if (const auto it = m_columnHeights.find(key); it != m_columnHeights.end())
+        return it->second;
+    // The top is the highest of nine samples across the column, not the one at its centre: a
+    // steep peak stands tens of blocks higher at a corner, and the band stopped short of it.
+    // The chunk holding those blocks then had no neighbour above it and never meshed, and
+    // anything over it was never even generated (reproduced: a peak at radius 32 seen from a
+    // low camera). The margin covers what grows on the ground - a spruce reaches ~17 above it,
+    // a lighthouse ~21 - and terrain rising between the samples.
+    constexpr int kMargin = kChunkSize;
+    constexpr int kAt[3] = {0, kChunkSize / 2, kChunkSize - 1};
+    ColumnHeights h;
+    h.centre = m_gen.surfaceHeight(cx * kChunkSize + kChunkSize / 2, cz * kChunkSize + kChunkSize / 2);
+    h.top = h.centre;
+    for (const int dz : kAt)
+        for (const int dx : kAt)
+            h.top = std::max(h.top, m_gen.surfaceHeight(cx * kChunkSize + dx, cz * kChunkSize + dz));
+    h.top += kMargin;
+    if (m_columnHeights.size() > 200000)
+        m_columnHeights.clear(); // a long flight's worth; it only ever costs a recompute
+    m_columnHeights.emplace(key, h);
+    return h;
+}
+
 void ChunkManager::columnRange(int cx, int cz, int& y0, int& y1, bool& skyAtTop) const {
-    const int surf = m_gen.surfaceHeight(cx * kChunkSize + kChunkSize / 2,
-                                         cz * kChunkSize + kChunkSize / 2);
+    const ColumnHeights heights = columnHeights(cx, cz);
+    const int surf = heights.centre;
     // chunk holding the first open-air voxel above the surface
     const int surfChunk = (surf + 1) >= 0 ? (surf + 1) / kChunkSize
                                           : -((-(surf + 1) + kChunkSize - 1) / kChunkSize);
     y0 = m_center.y - kVerticalRadius;
     const int bandTop = m_center.y + kVerticalRadius;
     if (bandTop + 1 >= surfChunk) {
-        y1 = std::max(bandTop, surfChunk);
+        // over everything the column can hold, so the top chunk is open sky everywhere; the
+        // buried test above stays on the centre sample, as it always was. Never past
+        // bandTop + 1, where rescan() evicts: a chunk loaded above that is thrown out again at
+        // the next rescan, its column never completes, and the whole column stays unlit
+        // (a --tour run left 208 chunks UNLIT before this clamp).
+        const int topChunk = heights.top >= 0 ? heights.top / kChunkSize
+                                              : -((-heights.top + kChunkSize - 1) / kChunkSize);
+        y1 = std::max({bandTop, surfChunk, std::min(topChunk, bandTop + 1)});
         skyAtTop = true;
     } else {
         y1 = bandTop; // buried: a chunk of separation is 32 blocks, sky reaches 15
@@ -354,6 +419,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         if (it != m_chunks.end() && it->second.state == ChunkState::Generating)
             it->second.state = ChunkState::Ready;
         --m_jobsInFlight;
+        --m_genInFlight;
 
         // once the whole vertical column has data, it can be light-seeded (sky descent
         // spans all of it at once)
@@ -466,10 +532,16 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         // It must go back on the queue AND out of m_seededColumns, or it stays marked
         // seeded forever holding sky light 0 - open sky reading as pitch black, at any
         // time of day, which is exactly what it looked like.
+        //
+        // Unless it is past the ring rescan() generates (radius + 2): nothing will ever fill
+        // its missing chunks there, so it failed again every frame, forever, and busy() never
+        // cleared (a --tour stop ran out its 40000 frames on one such column). It gets queued
+        // again the normal way if the camera comes back and its chunks are generated.
         const auto requeueSeed = [&](ChunkPos col) {
             m_seededColumns.erase(col);
             m_provisionalColumns.erase(col);
-            m_seedDeferred.push_back(col);
+            if (std::abs(col.x - center.x) <= radius + 2 && std::abs(col.z - center.z) <= radius + 2)
+                m_seedDeferred.push_back(col);
         };
         const auto remaining = [&] {
             return std::max(0.1, kSeedBudgetMs - msSince(seedStart));
@@ -573,8 +645,13 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     // the camera — stale far-away work is wasted work when it moves
     const auto scanStart = Clock::now();
     const int inflightCap = std::max(8, jobs.workerCount() * 6);
+    // Generation used to go first and take every slot, and while the camera moves its queue
+    // never empties - so meshing only got what generation left over, which flying at radius 32
+    // was nothing most frames, and ~10k chunks sat ready to mesh. With meshes waiting it now
+    // keeps to half the slots, counted on its own jobs so meshing cannot starve it either.
+    const int genCap = m_pendingMesh > 0 ? inflightCap / 2 : inflightCap;
 
-    while (m_jobsInFlight < inflightCap && !m_genQueue.empty()) {
+    while (m_genInFlight < genCap && m_jobsInFlight < inflightCap && !m_genQueue.empty()) {
         const ChunkPos pos = m_genQueue.back();
         m_genQueue.pop_back();
         if (m_chunks.contains(pos))
@@ -601,6 +678,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         // tops blinking out and the caves under them showing through while you fly.
         m_visDirty = true;
         ++m_jobsInFlight;
+        ++m_genInFlight;
         jobs.submit([this, voxels, pos, detailed] {
             const auto t0 = Clock::now();
             // disk first: a saved (player-edited) chunk loads instead of regenerating.
@@ -628,6 +706,11 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     m_meshScanDirty = false;
     m_meshScratch.clear();
     m_regenScratch.clear();
+    m_emptyScratch.clear();
+    // The self-heal below is a safety net for a rare path, and it was a hash lookup for every
+    // resident chunk on every scanned frame (1.3 ms a frame at radius 32). An eighth of the
+    // scans is still well under a second behind.
+    const bool heal = doMeshScan && (m_healTick++ & 7u) == 0;
     if (doMeshScan)
     for (const auto& item : m_chunks) {
         const Entry& e = item.second;
@@ -643,7 +726,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         // NB: gated on m_seededColumns, never on e.lit. evicting one chunk of a column
         // drops the column from m_seededColumns but leaves the surviving chunks flagged
         // lit, so e.lit says "done" for a column that no longer has a seed to its name.
-        if (e.state != ChunkState::Generating && !e.pendingDetail) {
+        if (heal && e.state != ChunkState::Generating && !e.pendingDetail) {
             const ChunkPos col{item.first.x, 0, item.first.z};
             if (!m_seededColumns.contains(col) && columnPresent(col)) {
                 bool ready = true;
@@ -698,14 +781,31 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         }
         if (!(firstMesh || reLod) || e.meshingLod == desired)
             continue;
+        // Solid air has nothing to draw at any LOD and bakes no light, so it needs neither a job
+        // nor its neighbours: at radius 32 it was 25k of the ~35k chunks waiting to mesh, each
+        // holding a job slot like a real mesh.
+        if (e.meshingLod < 0 && e.voxels->uniform() && e.voxels->uniformId() == blocks::Air) {
+            m_emptyScratch.push_back(item.first);
+            continue;
+        }
         bool ready = true;
         for (const auto& o : kFaceOffsets) {
             const ChunkPos n{item.first.x + o[0], item.first.y + o[1], item.first.z + o[2]};
-            if (n.y < 0 || n.y >= kWorldChunksY)
-                continue; // outside the world counts as present (air)
             const auto nit = m_chunks.find(n);
-            if (nit == m_chunks.end() || nit->second.state == ChunkState::Generating ||
-                !nit->second.lit) {
+            if (nit == m_chunks.end()) {
+                // Outside its column's resident band it will never be loaded, so waiting for it
+                // stranded this chunk unmeshed for good: open air above the band (it reaches
+                // over the column's terrain) or the dark rock left below it. The old test was
+                // the fixed world's floor and ceiling, from before the world had none (INFO #11).
+                int ny0 = 0, ny1 = 0;
+                bool nsky = false;
+                columnRange(n.x, n.z, ny0, ny1, nsky);
+                if (n.y < ny0 || n.y > ny1)
+                    continue;
+                ready = false;
+                break;
+            }
+            if (nit->second.state == ChunkState::Generating || !nit->second.lit) {
                 ready = false;
                 break;
             }
@@ -713,9 +813,20 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         if (ready)
             m_meshScratch.push_back(item.first);
     }
-    std::sort(m_meshScratch.begin(), m_meshScratch.end(), [center](ChunkPos a, ChunkPos b) {
+    for (const ChunkPos pos : m_emptyScratch)
+        landEmpty(pos, lodForDist2(horizontalDist2(pos, center), lodScale()), renderer);
+    // Only as many as there are free slots get scheduled, so only those need to be in order.
+    const auto nearer = [center](ChunkPos a, ChunkPos b) {
         return horizontalDist2(a, center) < horizontalDist2(b, center);
-    });
+    };
+    const std::size_t slots = std::size_t(std::max(0, inflightCap - m_jobsInFlight));
+    if (m_meshScratch.size() > slots) {
+        std::nth_element(m_meshScratch.begin(), m_meshScratch.begin() + std::ptrdiff_t(slots),
+                         m_meshScratch.end(), nearer);
+        std::sort(m_meshScratch.begin(), m_meshScratch.begin() + std::ptrdiff_t(slots), nearer);
+    } else {
+        std::sort(m_meshScratch.begin(), m_meshScratch.end(), nearer);
+    }
     m_pendingMesh = int(m_meshScratch.size());
 
     for (const ChunkPos pos : m_meshScratch) {

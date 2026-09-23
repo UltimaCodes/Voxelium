@@ -387,6 +387,18 @@ public:
     void columnRange(int cx, int cz, int& y0, int& y1, bool& skyAtTop) const;
 
 private:
+    // The surface at the column's centre, and the highest block the generator can put anywhere
+    // in it plus room for what grows on top. Cached: it is ten noise samples and columnRange is
+    // asked constantly.
+    struct ColumnHeights {
+        int centre = 0;
+        int top = 0;
+    };
+    ColumnHeights columnHeights(int cx, int cz) const;
+    mutable ankerl::unordered_dense::map<ChunkPos, ColumnHeights, ChunkPosHash> m_columnHeights;
+    void landEmpty(ChunkPos pos, int lod, Renderer& renderer);
+    std::vector<ChunkPos> m_emptyScratch; // solid air ready to land without a mesh job
+    std::uint32_t m_healTick = 0;
     std::vector<ChunkPos> m_evictList; // outside the ring; may wait on in-flight jobs
     // Voxels disturbed since the last falling tick. Duplicates are allowed: the tick
     // re-checks each one against the world anyway, so a repeat is a no-op and that is far
@@ -452,6 +464,7 @@ private:
     bool m_visDirty = true;
     bool m_lastCaveCull = false;
     int m_jobsInFlight = 0; // main-thread view: submit increments, result-drain decrements
+    int m_genInFlight = 0;  // the generation jobs among them
     int m_pendingMesh = 0;
     int m_lateSeeds = 0; // see Stats::lateSeeds
     // the per-frame mesh scan is O(loaded chunks); only run it when something could have
