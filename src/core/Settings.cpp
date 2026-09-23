@@ -1,6 +1,7 @@
 #include "core/Settings.hpp"
 
 #include "core/Log.hpp"
+#include "render/QualityPreset.hpp"
 #include "world/Chunk.hpp" // lamp swatch count, for clamping on load
 
 #include <algorithm>
@@ -86,7 +87,7 @@ std::array<Bound, kSettingCount> bind(FxToggles& fx, bool& vsync, bool& caveCull
         {"dither", T::Float, &fx.dither, 0.0f, 2.0f},
         {"autoWeather", T::Bool, &fx.autoWeather, 0, 0},
         {"farTerrain", T::Bool, &fx.farTerrain, 0, 0},
-        {"lodDetail", T::Float, &fx.lodDetail, 1.0f, 2.0f},
+        {"detailDist", T::Float, &fx.lodDetail, 1.0f, 2.0f},
         {"precip", T::Float, &fx.precip, 0.0f, 1.0f},
         {"snow", T::Float, &fx.snow, 0.0f, 1.0f},
         {"quality", T::Int, &fx.quality, 0.0f, 3.0f},
@@ -175,6 +176,7 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
 
     std::string line;
     int applied = 0;
+    bool sawDetail = false;
     while (std::getline(in, line)) {
         const std::string_view raw = trim(line);
         if (raw.empty() || raw.front() == '#')
@@ -190,11 +192,23 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
         if (it == schema.end())
             continue; // unknown key from an older/newer build
         readInto(*it, val);
+        sawDetail = sawDetail || it->ptr == &fx.lodDetail;
         ++applied;
     }
 
     for (const Bound& b : schema)
         clampTo(b);
+    // The detail distance was saved as "lodDetail" before the presets owned it, and every file
+    // from then holds 1.25: the default of the day written back, not anybody's choice. That key
+    // is ignored now. A file without this one takes the reach of the preset its other values
+    // match, so an Ultra file comes back with Ultra's reach rather than a stale cap.
+    if (!sawDetail)
+        for (int i = 0; i < 4; ++i) {
+            fx.lodDetail = presetValues(Preset(i)).lodDetail;
+            if (detectPreset(fx, radius) == Preset(i))
+                break;
+            fx.lodDetail = FxToggles{}.lodDetail;
+        }
     return applied > 0;
 }
 

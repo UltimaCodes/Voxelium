@@ -59,7 +59,7 @@ using vx::renderFrame;
 using vx::runBenchmark;
 
 static_assert(vx::FxToggles{}.lodDetail == vx::ChunkManager::kDefaultDetailScale,
-              "the harnesses run at ChunkManager's default, the game at the setting's");
+              "a world nobody has set a reach on must match the setting's default");
 using vx::runFlythrough;
 using vx::runMesherOracle;
 using vx::runSmokeTest;
@@ -501,9 +501,11 @@ int main(int argc, char** argv) {
     // streaming target the instant gameplay started. That is the exact "chunks don't render
     // past spawn, and it's laggy" report: the game never finished loading, it just stopped
     // showing a loading screen.
+    // A harness runs at the default reach, or at the preset's when VX_PRESET picked one: the
+    // reach is a preset knob, and a bench of Ultra at High's reach would not be Ultra.
+    world->detailScale = fx.lodDetail;
     if (liveApp) {
         world->radius = savedRadius;
-        world->detailScale = fx.lodDetail;
         camera.fovYDeg = savedFov;
     } else if (const char* d = std::getenv("VX_LODDETAIL")) {
         // a harness at another detail distance: it moves the frame time and the picture

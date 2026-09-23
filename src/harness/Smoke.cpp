@@ -24,6 +24,7 @@
 #include "render/Overlay.hpp"
 #include "render/Particles.hpp"
 #include "render/PostFx.hpp"
+#include "render/QualityPreset.hpp"
 #include "render/Renderer.hpp"
 #include "render/ShadowMap.hpp"
 #include "ui/DebugHud.hpp"
@@ -1585,6 +1586,52 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
             VX_INFO("persistence: settings round-trip %d/%d keys perturbed, %d differ after "
                     "reload (want 0) -> %s",
                     touched, vx::Settings::keyCount(), diff, ok ? "PASS" : "FAIL");
+            if (!ok)
+                return 1;
+        }
+
+        // (a3) every preset reads back as itself, and a file saved before the detail distance
+        // was a preset knob (it has the old "lodDetail=1.25" and no "detailDist") loads with
+        // the reach of the preset the rest of it matches. That second part is what brings an
+        // Ultra player's mountains back; without it their file stays capped at 1.25 forever.
+        {
+            int recognised = 0;
+            for (int i = 0; i < 4; ++i) {
+                vx::FxToggles fx;
+                int radius = 16;
+                vx::applyPreset(vx::Preset(i), fx, radius);
+                recognised += vx::detectPreset(fx, radius) == vx::Preset(i);
+            }
+            const std::filesystem::path sf = outPath.parent_path() / "vxsettings_old_smoke.cfg";
+            const auto oldFile = [&](vx::Preset p) {
+                vx::FxToggles fx;
+                int radius = 16;
+                vx::applyPreset(p, fx, radius);
+                fx.lodDetail = 1.0f; // must not survive: the file will not carry it
+                vx::Settings::save(sf, fx, false, true, radius, 70.0f);
+                std::ifstream in(sf);
+                std::string text, line;
+                while (std::getline(in, line))
+                    if (line.rfind("detailDist=", 0) != 0)
+                        text += line + "\n";
+                in.close();
+                std::ofstream(sf, std::ios::trunc) << text << "lodDetail=1.25\n";
+                vx::FxToggles got;
+                bool vs = false, cc = true;
+                int r = 16;
+                float fov = 70.0f;
+                vx::Settings::load(sf, got, vs, cc, r, fov);
+                return got.lodDetail;
+            };
+            const float ultra = oldFile(vx::Preset::Ultra);
+            const float high = oldFile(vx::Preset::High);
+            std::error_code sec;
+            std::filesystem::remove(sf, sec);
+            const bool ok = recognised == 4 && std::fabs(ultra - 2.0f) < 1e-4f &&
+                            std::fabs(high - 1.5f) < 1e-4f;
+            VX_INFO("persistence: %d/4 presets recognised; a pre-preset file loads detail %.2f "
+                    "as Ultra (want 2.00), %.2f as High (want 1.50) -> %s",
+                    recognised, double(ultra), double(high), ok ? "PASS" : "FAIL");
             if (!ok)
                 return 1;
         }

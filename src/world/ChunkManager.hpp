@@ -259,8 +259,9 @@ public:
     // How far out full detail reaches, as a cap on how much the LOD bands may widen with the
     // radius: 1 keeps them at their radius-16 size at any radius, 2 lets them double at 32.
     // Full detail is most of the frame at a big radius — at radius 32, 2 against 1 was 22.4M
-    // quads against 5.6M and about twice the frame time — so this is the player's trade.
-    static constexpr float kDefaultDetailScale = 1.25f;
+    // quads against 5.6M and about twice the frame time — so this is the player's trade. Each
+    // quality preset sets it (Ultra 2); the default is High's.
+    static constexpr float kDefaultDetailScale = 1.5f;
     float detailScale = kDefaultDetailScale;
     double lodScale() const; // what the bands are actually scaled by right now
 

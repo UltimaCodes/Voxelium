@@ -37,6 +37,10 @@ struct PresetValues {
     float cloudShadow;
     float leafSss;
     float relief;
+    // How far full detail reaches (ChunkManager::detailScale). Each preset holds the reach its
+    // radius had before this became a setting - 1 up to radius 16, radius/16 above - so Ultra
+    // sees its mountains in full at 32 again, as it did when the presets were measured.
+    float lodDetail;
 };
 
 const PresetValues& presetValues(Preset p);
