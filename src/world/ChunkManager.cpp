@@ -480,10 +480,18 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     // none of them may be mid-generation on a worker — a Generating chunk has a live
     // writer racing makeUniform's clear()/push_back() and would read a torn palette.
     // absent neighbors are fine (blockAt treats them as stone); only Generating blocks.
+    //
+    // The whole resident band, with room for chunks still waiting to be evicted after a move -
+    // not 0..kWorldChunksY, a #27 leftover that never looked below y=0 or above the old world
+    // top. The band reaches seven chunks under the camera, so standing anywhere below y=224
+    // made deep-stone chunks resident at negative y, and a seed could read one while a
+    // worker was clearing its palette to regenerate it: an index into an emptied palette, which
+    // is the exact signature of a bounds assert one Debug smoke run hit during a world switch,
+    // when every chunk is new.
     const auto neighborhoodSettled = [this](ChunkPos col) {
         static constexpr int kCols[5][2] = {{0, 0}, {1, 0}, {-1, 0}, {0, 1}, {0, -1}};
         for (const auto& c : kCols)
-            for (int cy = 0; cy < kWorldChunksY; ++cy) {
+            for (int cy = m_center.y - kVerticalRadius - 3; cy <= m_center.y + kVerticalRadius + 3; ++cy) {
                 const auto it = m_chunks.find({col.x + c[0], cy, col.z + c[1]});
                 if (it != m_chunks.end() && it->second.state == ChunkState::Generating)
                     return false;
