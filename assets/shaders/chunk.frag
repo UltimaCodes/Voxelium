@@ -466,13 +466,24 @@ void main() {
     // of visibly lighting up at noon. The skyL=1 (full sky exposure) case is untouched: it
     // still resolves to the true, undamped uSkyAmbient, so open-air lighting does not move.
     vec3 floorAmbient = uSkyAmbient * mix(1.0, 0.3, uDaylight);
+    // Owner report: underground looked nothing like the surface, with "no true darkness and
+    // light". Every floor in here (the sky floor, the flat term, the backstop below) was there
+    // for shade on the SURFACE, and all of them reached a sealed cave just the same: a cave wall
+    // no lamp could see sat at the same grey as the walls one could, so a light had nothing to
+    // fall off into. They fade out over the last few levels of sky now, which is shade nobody on
+    // the surface ever stands in, and leave a sealed cave dark except where something lights it.
+    float open = smoothstep(0.0, 0.35, skyL);
+    // Sky light reaching into a hole used to fill it linearly with its level, so five blocks
+    // inside a cave mouth still had two thirds of open-air ambient. Light that has turned
+    // corners dies faster than that: same as before from about level 9 up, gone near the end.
+    float skyFill = skyL * smoothstep(0.0, 0.6, skyL);
     // The flat term used to be an ungated constant, which reads as harmless next to a
     // daylight ambient of 0.26-0.55 but was 40-64% of the night ambient — a day-neutral
     // number that was, in practice, a night-only brightener. Faded out with daylight so it
-    // still stops fully-enclosed faces (interior leaf pockets, deep cave walls) crushing to
+    // still stops fully-enclosed faces (interior leaf pockets, a deep notch) crushing to
     // pure black in daylight, without lifting the whole night off the floor.
-    vec3 ambient = mix(floorAmbient * gateFloor, uSkyAmbient, skyL) +
-                   vec3(0.035, 0.04, 0.05) * mix(0.25, 1.0, uDaylight);
+    vec3 ambient = mix(floorAmbient * gateFloor * open, uSkyAmbient, skyFill) +
+                   vec3(0.035, 0.04, 0.05) * mix(0.25, 1.0, uDaylight) * open;
     // The emitter's own colour drives the tint now (M18), so the fixed warm multiplier
     // that used to supply it would double-tint. Keep a slight warm bias for the ember
     // feel and let the light itself carry the hue out to its falloff.
@@ -580,6 +591,7 @@ void main() {
     // almost no sky). Rather than keep chasing individual cases, nothing lit at all is
     // allowed to render darker than this, full stop — dim and blue-tinted like the existing
     // flat ambient term above, so it reads as "in shadow" rather than as a flat grey floor.
-    shading = max(shading, vec3(0.05, 0.055, 0.065));
+    // Not underground, though: there the floor is a trace you can just make out rock by.
+    shading = max(shading, mix(vec3(0.004, 0.0045, 0.006), vec3(0.05, 0.055, 0.065), open));
     outColor = vec4(albedo * mix(kShade[vDir], 0.88, farK) * shading + emission + transmit, 1.0);
 }

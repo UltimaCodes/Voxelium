@@ -416,6 +416,17 @@ public:
             for (int i = 0; i < kChunkSize3; ++i)
                 l[std::size_t(i)].store(v, std::memory_order_relaxed);
     }
+    // All 32^3 light values in index() order, for the GPU light volume.
+    void copyLight(std::uint32_t* out) const {
+        if (const auto* l = m_light.load(std::memory_order_acquire)) {
+            for (int i = 0; i < kChunkSize3; ++i)
+                out[i] = l[std::size_t(i)].load(std::memory_order_relaxed);
+        } else {
+            const std::uint32_t v = m_uniformLight.load(std::memory_order_relaxed);
+            for (int i = 0; i < kChunkSize3; ++i)
+                out[i] = v;
+        }
+    }
     // Sky everywhere, colour kept. A chunk can already hold a neighbour's lamp light by the time
     // its own column is seeded, and fillLight would wipe that.
     void fillSky(int sky) {

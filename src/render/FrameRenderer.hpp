@@ -16,6 +16,7 @@ class Particles;
 class Weather;
 class Wildlife;
 class FarTerrain;
+class LightVolume;
 
 // Everything needed to draw one frame of the world, shared by the live game loop and by all
 // three offscreen harnesses (--smoke, --bench, --tour). It lives here rather than in main so
@@ -81,6 +82,9 @@ struct RenderContext {
     unsigned int drawProgram;
     unsigned int waterProgram;
     unsigned int blockTex;
+    // Null where lamp light in the air is not wanted. The caller keeps it filled (update) - the
+    // frame only reads it.
+    LightVolume* lightVolume = nullptr;
 };
 
 struct FrameTimers {

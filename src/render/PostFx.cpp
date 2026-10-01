@@ -334,6 +334,10 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform1f(m_progComposite, 20, p.toggles.clouds ? 1.0f : 0.0f);
     glProgramUniform1f(m_progComposite, 21, p.time);
     glProgramUniform1f(m_progComposite, 22, p.toggles.ssgi ? 1.0f : 0.0f);
+    glProgramUniform3fv(m_progComposite, 37, 1, &p.lightVolumeCam.x);
+    glProgramUniform3fv(m_progComposite, 38, 1, &p.lightVolumeMin.x);
+    glProgramUniform1f(m_progComposite, 39, p.lightVolume != 0 ? 1.0f : 0.0f);
+    glBindTextureUnit(7, p.lightVolume);
     glBindTextureUnit(0, m_hdrColor);
     glBindTextureUnit(1, p.shadows->texture());
     glBindTextureUnit(3, m_depth);
@@ -471,9 +475,10 @@ void PostFx::run(const RunParams& p) {
     // Faded in as daylight goes, so it costs nothing by day and never touches a day frame.
     glProgramUniform1f(m_progFinal, 12, p.toggles.scotopic * (1.0f - p.daylight));
     glProgramUniform1f(m_progFinal, 14, p.toggles.dither);
-    // 0.18 is middle grey. Only meaningful when the adaptation actually ran this frame.
+    // Middle grey would be 0.18; aimed a little under it so every scene sits a touch darker
+    // (owner, for realism). Only meaningful when the adaptation actually ran this frame.
     glProgramUniform1f(m_progFinal, 11,
-                       (p.toggles.autoExposure && m_adaptValid) ? 0.18f : 0.0f);
+                       (p.toggles.autoExposure && m_adaptValid) ? 0.165f : 0.0f);
     glBindTextureUnit(0, resolved);
     glBindTextureUnit(2, m_bloomTex[0]);
     glBindTextureUnit(3, m_adapt[m_adaptIndex]);

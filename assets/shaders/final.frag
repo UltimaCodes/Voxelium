@@ -60,11 +60,19 @@ vec3 whiteBalance(vec3 c) {
 // asks for all the gain on offer, so every other night fix was being multiplied by 3 on its
 // way to the screen. 2.0 still lifts a cave enough to navigate it and stops the adaptation
 // undoing the shading work.
+//
+// Turned down again at the owner's request, for realism: a dark scene is only brightened part
+// of the way the average asks for (the eye adapts, it does not see in the dark) and to 1.6 at
+// most, so caves and night stay dark with their lamps standing out rather than being lifted
+// toward grey. Darkening a bright scene is untouched.
 float exposureScale() {
     if (uAutoKey <= 0.0)
         return uExposure;
     float avgLum = exp(texture(uAdapt, vec2(0.5)).r);
-    return uExposure * clamp(uAutoKey / max(avgLum, 1e-4), 0.35, 2.0);
+    float gain = uAutoKey / max(avgLum, 1e-4);
+    if (gain > 1.0)
+        gain = pow(gain, 0.7);
+    return uExposure * clamp(gain, 0.35, 1.6);
 }
 
 // Scotopic (rod) vision: below about 0.01 cd/m2 the cones stop contributing, so night

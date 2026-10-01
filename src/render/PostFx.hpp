@@ -185,6 +185,10 @@ public:
         float time = 0.0f;       // drives cloud drift and grain
         float dt = 0.0f;         // seconds since the last frame; drives eye adaptation
         bool underwater = false; // camera eye submerged -> composite adds depth fog + tint
+        // Lamp light in the air: the LightVolume texture, 0 for none, and where the camera is in it.
+        unsigned int lightVolume = 0;
+        glm::vec3 lightVolumeCam{0.0f};
+        glm::vec3 lightVolumeMin{0.0f};
         // TAA reprojection: last frame's unjittered view-proj and how far the camera moved
         glm::mat4 prevViewProj{1.0f};
         glm::vec3 camDelta{0.0f};

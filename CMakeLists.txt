@@ -43,6 +43,7 @@ add_executable(voxelium
     src/render/Particles.cpp
     src/render/Camera.cpp
     src/render/FrameRenderer.cpp
+    src/render/LightVolume.cpp
     src/render/Overlay.cpp
     src/render/PostFx.cpp
     src/render/QualityPreset.cpp

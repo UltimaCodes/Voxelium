@@ -5,6 +5,7 @@
 #include "render/Renderer.hpp"
 #include "render/Weather.hpp"
 #include "render/FarTerrain.hpp"
+#include "render/LightVolume.hpp"
 #include "render/Wildlife.hpp"
 #include "render/ShadowMap.hpp"
 #include "world/Chunk.hpp"
@@ -308,6 +309,11 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     rp.toggles.taa = useTaa;
     rp.toggles.motionBlur = useMotion;
     rp.underwater = underwater;
+    if (rc.lightVolume && fx.volumetric && rc.lightVolume->anyLight()) {
+        rp.lightVolume = rc.lightVolume->texture();
+        rp.lightVolumeCam = rc.lightVolume->cameraTexel();
+        rp.lightVolumeMin = rc.lightVolume->regionMinRel();
+    }
     if (useReproj) {
         rp.prevViewProj = taa->prevViewProj;
         rp.camDelta = glm::vec3(camera.position - taa->prevCamPos);

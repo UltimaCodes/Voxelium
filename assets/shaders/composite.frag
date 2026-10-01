@@ -29,6 +29,7 @@ layout(binding = 0) uniform sampler2D uScene;
 layout(binding = 3) uniform sampler2D uDepth;
 layout(binding = 4) uniform sampler2D uSsgi;
 layout(binding = 1) uniform sampler2DArrayShadow uShadowMap;
+layout(binding = 7) uniform sampler3D uLightVol; // voxel light around the camera (LightVolume)
 
 layout(location = 0) uniform vec2 uProjScale; // (aspect/f, 1/f)
 layout(location = 1) uniform float uNear;
@@ -55,6 +56,9 @@ layout(location = 35) uniform vec3 uBiomeTint;     // the air of this place: mul
 layout(location = 36) uniform float uBiomeHaze;    // and thickens it, 0..~0.2
 layout(location = 27) uniform float uFlare;        // lens flare strength, 0 = off
 layout(location = 28) uniform vec3 uCamPos;        // camera world position (clouds are world-anchored)
+layout(location = 37) uniform vec3 uVolCam;        // camera in light-volume texels, axis order (x, z, y)
+layout(location = 38) uniform vec3 uVolMin;        // the volume's low corner relative to the camera
+layout(location = 39) uniform float uVolOn;        // 1 when some block light is in range
 // location 29 (uContact) retired - screen-space contact shadows removed entirely (owner
 // call: subtle at best, and every previous tuning pass on this effect - #58's darkening
 // stack, #84's "hard black" fix - was fighting it compounding with AO/cloud shadow/direct
@@ -64,6 +68,9 @@ layout(location = 28) uniform vec3 uCamPos;        // camera world position (clo
 
 const vec3 kWaterDeep = vec3(0.03, 0.13, 0.20);
 const float kSeaLevel = 62.0; // matches gen/TerrainGenerator kSeaLevel
+// How much a block of air scatters back of the lamp light in it. Tuned against hidden cave
+// shots so a lamp gets a halo a few blocks across without fogging the cave.
+const float kLampAir = 0.03;
 
 // Caustics. Voronoi-ish: two layers of cellular distance, scrolled against each other and
 // sharpened, which is the standard trick for the bright wandering web on a seabed. Two
@@ -465,6 +472,41 @@ void main() {
         // Raised from 0.00018 (#76): reference shader-pack screenshots show god rays as a
         // dominant compositional element through gaps in foliage/terrain, not a faint haze.
         color += uLightColor * (scatter * phase * len * 0.00032);
+    }
+
+    // Lamp light in the air. The cascades give the sun its shafts above; a lamp's light only
+    // ever landed on faces, so a cave lit by one read as walls painted bright around a hole of
+    // darkness, nothing between. This marches the voxel light around the camera (LightVolume,
+    // filtered, so it is smooth between voxels where the faces are stepped) and adds what the
+    // air along the ray would scatter back. Only what lamps and glow give: sky light in the air
+    // is the distance haze's job.
+    if (uVolOn > 0.5) {
+        float len = min(dist, 56.0);
+        vec3 rd = normalize(worldRel);
+#if   VX_QUALITY == 0
+        const int kLampSteps = 6;
+#elif VX_QUALITY == 1
+        const int kLampSteps = 8;
+#elif VX_QUALITY == 3
+        const int kLampSteps = 16;
+#else
+        const int kLampSteps = 12;
+#endif
+        float stepLen = len / float(kLampSteps);
+        float t = stepLen * ign(gl_FragCoord.xy + vec2(37.0, 11.0));
+        vec3 glow = vec3(0.0);
+        for (int i = 0; i < kLampSteps; ++i) {
+            vec3 p = rd * t;
+            vec3 q = p - uVolMin;
+            if (all(greaterThanEqual(q, vec3(0.0))) && all(lessThan(q, vec3(128.0)))) {
+                vec3 l = texture(uLightVol, (uVolCam + p.xzy) / 128.0).rgb;
+                // steeper than a lit face's l * l: the glow stays close round the light
+                // instead of hazing the dark rock the ray passes on its way
+                glow += l * l * l;
+            }
+            t += stepLen;
+        }
+        color += vec3(1.12, 1.0, 0.88) * glow * (stepLen * kLampAir);
     }
 
     if (uUnderwater > 0.5) {

@@ -27,6 +27,7 @@
 #include "render/Weather.hpp"
 #include "render/FarTerrain.hpp"
 #include "render/Lightning.hpp"
+#include "render/LightVolume.hpp"
 #include "ui/MenuBackdrop.hpp"
 #include "render/WeatherDirector.hpp"
 #include "render/Wildlife.hpp"
@@ -249,6 +250,11 @@ int main(int argc, char** argv) {
     const GLuint blockTex = vx::createBlockTextureArray(assets / "textures");
     RenderContext rc{renderer,   shadowMap,    postfx,   overlay,  &particles,
                      &weather,   &wildlife,    &farTerrain, drawProgram, waterProgram, blockTex};
+    // Lamp light in the air, for the game only: the harnesses render from fixed scenes and
+    // never fill it.
+    vx::LightVolume lightVolume;
+    if (liveApp)
+        rc.lightVolume = &lightVolume;
 
     // A quality change is the one setting that is not free: the sample counts are baked into the
     // programs, so the tier has to be recompiled rather than branched on. The binary cache makes
@@ -1172,6 +1178,8 @@ int main(int argc, char** argv) {
             const int crack =
                 breaking ? vx::crackLayer(int(breakProgress * float(vx::crackStages())))
                          : -1;
+            if (rc.lightVolume && fx.volumetric)
+                rc.lightVolume->update(*world, camera.position);
             renderFrame(rc, camera, fx, caveCull, fbW, fbH, 0, float(now), &timers, hasSel,
                         selMin, eyeUnderwater, &taaState, fogEnd, crack, blockTex,
                         fx.farTerrain ? vx::FarTerrain::kFogEnd : 0.0f);
