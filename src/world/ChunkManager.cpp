@@ -369,6 +369,7 @@ void ChunkManager::processEvictions(Renderer& renderer, JobSystem& jobs) {
         if (std::abs(gone.x - m_center.x) > radius + 3 || std::abs(gone.z - m_center.z) > radius + 3) {
             m_seededColumns.erase(ChunkPos{gone.x, 0, gone.z});
             m_provisionalColumns.erase(ChunkPos{gone.x, 0, gone.z});
+            m_reseedColumns.erase(ChunkPos{gone.x, 0, gone.z});
         }
         m_chunks.erase(it);
         m_visDirty = true; // reshuffles meta order; see the note at try_emplace
@@ -614,8 +615,13 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                 break;
             const ChunkPos col = m_seedQueue.back();
             m_seedQueue.pop_back();
-            if (!neighborhoodSettled(col)) {
-                m_seedDeferred.push_back(col); // retry once neighbours settle
+            // Wait for every chunk of the band to be there before starting: a column queued
+            // whole loses that the moment the camera changes chunk height and its band grows
+            // a chunk still to be generated, and starting it anyway only aborted and queued it
+            // again, every frame - 87,655 aborted starts against 3,504 finished seeds in one
+            // ten-chunk walk at radius 32, all of it spent from the seeding budget.
+            if (!neighborhoodSettled(col) || !columnPresent(col)) {
+                m_seedDeferred.push_back(col); // retry once the column and neighbours settle
                 continue;
             }
             light.beginSeedColumn(col.x, col.z);
@@ -767,7 +773,8 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                     m_seededColumns.insert(col);
                     m_seedQueue.push_back(col);
                 }
-            } else if (!e.lit && seedingIdle && m_seededColumns.contains(col)) {
+            } else if (!e.lit && seedingIdle && m_seededColumns.contains(col) &&
+                       !m_reseedColumns.contains(col)) {
                 // An unlit chunk in a column whose seed is done. A regen landing clears the
                 // column's lit flags over the band and queues a re-seed, and if the camera
                 // changes chunk height before that runs, the re-seed covers a different band:
@@ -988,6 +995,8 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             m_pool.release(r.voxels); // entry evicted or superseded: drop this re-gen
             --m_jobsInFlight;
             --m_regenInFlight;
+            if (it != m_chunks.end())
+                reseedWhenSettled({r.pos.x, 0, r.pos.z});
             continue;
         }
         Entry& e = it->second;
@@ -1007,6 +1016,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             e.pendingDetail = nullptr;
             --m_jobsInFlight;
             --m_regenInFlight;
+            reseedWhenSettled({r.pos.x, 0, r.pos.z}); // one fewer regen pending in the column
             continue;
         }
         Chunk* old = e.voxels;
@@ -1016,19 +1026,13 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         m_pool.release(old);
         --m_jobsInFlight;
         --m_regenInFlight;
-        const ChunkPos col{r.pos.x, 0, r.pos.z};
-        if (m_seededColumns.erase(col)) { // voxels came back with light wiped -> re-seed
-            m_seedQueue.push_back(col);
-            // Same #27 leftover as the seed sweep: clearing lit over 0..kWorldChunksY misses
-            // every resident chunk outside that range, which would then keep a lit flag for
-            // light that was just wiped — and meshing trusts lit.
-            int y0 = 0, y1 = 0;
-            bool sky = false;
-            columnRange(col.x, col.z, y0, y1, sky);
-            for (int cy = y0; cy <= y1; ++cy)
-                if (const auto cit = m_chunks.find({r.pos.x, cy, r.pos.z}); cit != m_chunks.end())
-                    cit->second.lit = false;
-        }
+        // The new voxels carry no light, so this chunk waits unlit (its coarse mesh stays drawn)
+        // and its column is re-seeded once the last regen in it has landed. A column entering
+        // the detail band regenerates every chunk in it, and re-seeding on each landing relit
+        // and re-meshed the whole column once per chunk.
+        e.lit = false;
+        m_reseedColumns.insert({r.pos.x, 0, r.pos.z});
+        reseedWhenSettled({r.pos.x, 0, r.pos.z});
         m_meshScanDirty = true;
     }
     m_regenDoneScratch.clear();
@@ -1178,6 +1182,7 @@ void ChunkManager::loadWorld(Renderer& renderer, int seed, std::filesystem::path
     m_chunks.clear();
     m_seededColumns.clear();
     m_provisionalColumns.clear();
+    m_reseedColumns.clear();
     m_seedQueue.clear();
     m_seedDeferred.clear();
     m_genQueue.clear();
@@ -1380,6 +1385,27 @@ void ChunkManager::updateVisibilityIfNeeded(Renderer& renderer, const glm::dvec3
     m_visDirty = false;
     rebuildVisibility(cameraChunk);
     renderer.updateVisibility(m_visBits);
+}
+
+void ChunkManager::reseedWhenSettled(ChunkPos col) {
+    if (!m_reseedColumns.contains(col))
+        return;
+    for (int cy = m_center.y - kVerticalRadius - 3; cy <= m_center.y + kVerticalRadius + 3; ++cy)
+        if (const auto it = m_chunks.find({col.x, cy, col.z}); it != m_chunks.end() && it->second.pendingDetail)
+            return; // another regen in this column is still out
+    m_reseedColumns.erase(col);
+    // Lit stays false over the band until the seed runs (meshing trusts lit), and the column
+    // stays in m_seededColumns as "scheduled", the same as a column the gen-done drain queues:
+    // dropping it there let the self-heal queue the same column again behind this seed.
+    int y0 = 0, y1 = 0;
+    bool sky = false;
+    columnRange(col.x, col.z, y0, y1, sky);
+    for (int cy = y0; cy <= y1; ++cy)
+        if (const auto it = m_chunks.find({col.x, cy, col.z}); it != m_chunks.end())
+            it->second.lit = false;
+    m_seededColumns.insert(col);
+    m_provisionalColumns.erase(col);
+    m_seedQueue.push_back(col);
 }
 
 void ChunkManager::waitForSaves() const {

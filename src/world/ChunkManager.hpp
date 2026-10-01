@@ -381,6 +381,10 @@ private:
     // otherwise mark them finished forever. They get re-seeded once the missing neighbour
     // actually arrives.
     ankerl::unordered_dense::set<ChunkPos, ChunkPosHash> m_provisionalColumns;
+    // Columns where a coarse->detailed regen has landed and that need one re-seed, held until
+    // the last regen still pending in the column has landed or dropped (see reseedWhenSettled).
+    ankerl::unordered_dense::set<ChunkPos, ChunkPosHash> m_reseedColumns;
+    void reseedWhenSettled(ChunkPos col);
     bool columnPresent(ChunkPos col) const;
 
 public:
