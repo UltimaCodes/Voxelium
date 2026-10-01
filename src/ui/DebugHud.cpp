@@ -291,6 +291,7 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
                             ImVec2(26.0f * titleScale, 22.0f * titleScale));
     ImGui::Begin("settings", nullptr,
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
                      (titleMode ? (ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBackground) : 0));
     if (titleMode) {
         const ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
@@ -313,12 +314,21 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     // Tabs rather than one long column (#51). The old menu was a flat run of seven sections
     // with world save/load buried between "lighting" and "post", which is not where anyone
     // looks for it.
+    //
+    // Each tab scrolls inside its own region and the buttons under it stay put. The quality tab
+    // is taller than the window at 720p, and with the whole window scrolling "back" sat below its
+    // bottom edge, where a click from the title screen landed on nothing.
+    const float footerH = 30.0f + 2.0f * ImGui::GetStyle().ItemSpacing.y + 1.0f;
+    const auto beginBody = [footerH](const char* id) { ImGui::BeginChild(id, ImVec2(0.0f, -footerH)); };
     if (ImGui::BeginTabBar("##tabs")) {
         if (ImGui::BeginTabItem("quality")) {
+            beginBody("##quality");
             // The preset is RECOGNISED from the values rather than stored, so it can never
             // claim to be High while sitting on hand-edited knobs. Touch anything a preset
             // owns and this reads Custom on the next frame; that is the whole state machine.
             const Preset current = detectPreset(fx, radius);
+            // shared out across the row: a fixed width ran the last one under the scrollbar at 720p
+            const float presetW = (ImGui::GetContentRegionAvail().x - 3.0f * ImGui::GetStyle().ItemSpacing.x) / 4.0f;
             for (int i = 0; i < 4; ++i) {
                 const Preset p = Preset(i);
                 if (i > 0)
@@ -327,7 +337,7 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
                 if (active)
                     ImGui::PushStyleColor(ImGuiCol_Button,
                                           ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-                if (ImGui::Button(presetName(p), ImVec2(95.0f, 0.0f)))
+                if (ImGui::Button(presetName(p), ImVec2(presetW, 0.0f)))
                     applyPreset(p, fx, radius);
                 if (active)
                     ImGui::PopStyleColor();
@@ -408,12 +418,14 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
             ImGui::Checkbox("vsync", &vsync);
             ImGui::SameLine();
             ImGui::Checkbox("cave cull", &caveCull);
+            ImGui::EndChild();
             ImGui::EndTabItem();
         }
 
         // Everything a preset does NOT own: taste, not performance. Kept apart so switching
         // preset never silently rewrites someone's look.
         if (ImGui::BeginTabItem("visuals")) {
+            beginBody("##visuals");
             ImGui::SeparatorText("camera");
             ImGui::SetNextItemWidth(-125.0f);
             ImGui::SliderFloat("fov", &fovDeg, 50.0f, 110.0f, "%.0f deg");
@@ -489,10 +501,12 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
                 fx.vignette = 0.0f;
                 fx.grain = 0.0f;
             }
+            ImGui::EndChild();
             ImGui::EndTabItem();
         }
 
         if (ImGui::BeginTabItem("audio")) {
+            beginBody("##audio");
             ImGui::SetNextItemWidth(-125.0f);
             ImGui::SliderFloat("master", &fx.volume, 0.0f, 1.0f, "%.2f");
             ImGui::SeparatorText("buses");
@@ -511,10 +525,12 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
             ImGui::Spacing();
             ImGui::TextDisabled("nothing ships in sounds/ but CC0 footsteps -\n"
                                 "drop your own clips there to hear more.");
+            ImGui::EndChild();
             ImGui::EndTabItem();
         }
 
         if (!titleMode && ImGui::BeginTabItem("world")) {
+            beginBody("##world");
             ImGui::Text("seed %d", worlds.seed);
             ImGui::TextDisabled("(this world is not kept unless you save it)");
             ImGui::Spacing();
@@ -583,10 +599,12 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
                     ImGui::CloseCurrentPopup();
                 ImGui::EndPopup();
             }
+            ImGui::EndChild();
             ImGui::EndTabItem();
         }
 
         if (ImGui::BeginTabItem("controls")) {
+            beginBody("##controls");
             // Read-only. There is no rebinding, and a list that looks editable but is not
             // would be worse than none.
             static constexpr const char* kKeys[][2] = {
@@ -614,6 +632,7 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
                 }
                 ImGui::EndTable();
             }
+            ImGui::EndChild();
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
