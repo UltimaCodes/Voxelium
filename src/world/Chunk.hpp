@@ -416,6 +416,16 @@ public:
             for (int i = 0; i < kChunkSize3; ++i)
                 l[std::size_t(i)].store(v, std::memory_order_relaxed);
     }
+    // Sky everywhere, colour kept. A chunk can already hold a neighbour's lamp light by the time
+    // its own column is seeded, and fillLight would wipe that.
+    void fillSky(int sky) {
+        m_uniformLight.store(light::withSky(m_uniformLight.load(std::memory_order_relaxed), sky),
+                             std::memory_order_relaxed);
+        if (auto* l = m_light.load(std::memory_order_acquire))
+            for (int i = 0; i < kChunkSize3; ++i)
+                l[std::size_t(i)].store(light::withSky(l[std::size_t(i)].load(std::memory_order_relaxed), sky),
+                                        std::memory_order_relaxed);
+    }
 
     bool paletteHas(BlockId id) const {
         for (const BlockId b : m_palette)

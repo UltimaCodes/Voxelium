@@ -71,7 +71,14 @@ public:
     void update(JobSystem& jobs, Renderer& renderer, LightEngine& light,
                 const glm::dvec3& cameraPos);
 
-    const Chunk* chunkData(ChunkPos pos) const { return voxelsAt(pos); }
+    // A chunk's voxels once generated, null while a worker is still writing them. The light
+    // engine reads and writes through these, and light spreading sideways used to walk straight
+    // into chunks being generated at the ring's edge: reading a palette mid-rebuild, and writing
+    // light the chunk then did or did not keep depending on timing.
+    const Chunk* chunkData(ChunkPos pos) const {
+        const auto it = m_chunks.find(pos);
+        return it != m_chunks.end() && it->second.state != ChunkState::Generating ? it->second.voxels : nullptr;
+    }
     // Its column has been through the light seed (see LightEngine::checkColumnEdges).
     bool chunkLit(ChunkPos pos) const {
         const auto it = m_chunks.find(pos);
@@ -79,7 +86,7 @@ public:
     }
     Chunk* chunkDataMutable(ChunkPos pos) {
         const auto it = m_chunks.find(pos);
-        return it != m_chunks.end() ? it->second.voxels : nullptr;
+        return it != m_chunks.end() && it->second.state != ChunkState::Generating ? it->second.voxels : nullptr;
     }
 
     BlockId blockAtWorld(const glm::ivec3& wp) const;

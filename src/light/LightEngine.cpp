@@ -175,7 +175,7 @@ void LightEngine::beginSeedColumn(std::int32_t chunkX, std::int32_t chunkZ) {
     if (skyAtTop)
         for (int cy = y0; cy <= y1; ++cy)
             if (stack[cy - y0]->uniform() && stack[cy - y0]->uniformId() == blocks::Air)
-                stack[cy - y0]->fillLight(light::kFullSky);
+                stack[cy - y0]->fillSky(255);
 }
 
 bool LightEngine::stepSeedColumn(double budgetMs) {
@@ -202,13 +202,10 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
     const int baseX = m_seed.chunkX * kChunkSize;
     const int baseZ = m_seed.chunkZ * kChunkSize;
     constexpr int kCells = kChunkSize * kChunkSize;
-    // How often to read the clock, per phase, because the phases are wildly different
-    // costs per cell. Descent is a straight pointer walk. Spread can climb 256 voxels
-    // doing six world lookups each, so it needs a much tighter leash — checking it as
-    // rarely as the descent let the 2 ms budget run to 8-10 ms. (Those lookups go through
-    // the chunk cache now and are far cheaper, but the ratio between the phases holds.)
+    // How often to read the clock: every 32 cells. Descent and spread are both pointer walks
+    // and queue pushes now; the spread used to do six world lookups a voxel and needed a check
+    // every 4 cells to keep inside the budget.
     constexpr int kDescentCheck = 32;
-    constexpr int kSpreadCheck = 4;
 
     // straight-down descent, direct pointers so this stays cheap (no hashing)
     if (m_seed.phase == SeedPhase::Descent) {
@@ -252,53 +249,41 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
         m_seed.phase = SeedPhase::Spread;
     }
 
-    // spread sources: direct-sky voxels bordering shadowed air (cave mouths, overhangs).
-    // pure heightmap terrain has none — the loop breaks immediately per column
+    // spread sources: direct-sky voxels next to air the descent did not reach (overhangs, cave
+    // mouths, the space under a canopy). Read off the descent heights, not off the light: a
+    // cell's sky voxels are sources from just above where its own descent stopped up to where
+    // a neighbouring cell's stopped, plus the one over a cutout the descent stopped on. This
+    // used to test each voxel's neighbours' CURRENT light, climbing from the surface until one
+    // was not dark, and the light BFS runs between the frames a seed is spread over - so where
+    // a climb stopped, and with it whether the pocket above got any light, depended on timing.
+    // Two loads of the same place disagreed by one or two levels on whole runs of voxels.
+    //
+    // Neighbouring columns are left to checkColumnEdges, which compares the shared faces once
+    // both sides are lit. Counting an unlit neighbour (sky 0 only because nobody had descended
+    // into it yet) as shade was 94% of all spread work once (90.9M of 96.9M enqueues in 35 s of
+    // flying at radius 32) and the light backlog grew without end.
     if (m_seed.phase == SeedPhase::Spread) {
         ScopedNanoAccum _timeThis(m_seedPhaseNanos.spread);
-        // A neighbouring column that has not been lit yet reads sky 0 everywhere, only because
-        // nobody has descended into it. Counting that as shadowed air made every open-air voxel
-        // along the edge a spread source and flooded the neighbour's sky with 14s and 13s that
-        // its own descent then overwrote with 15: measured at 94% of all spread work (90.9M of
-        // 96.9M enqueues in 35 s of flying at radius 32), and the light backlog grew without
-        // end. So only lit neighbours count here; checkColumnEdges settles each shared face
-        // once both sides are lit. Starlight does the same: it does not propagate into unlit
-        // chunks and edge-checks borders instead.
-        bool nbLit[4][kMaxStack] = {};
+        const int botY = m_seed.y0 * kChunkSize;
+        const int spreadTop = (m_seed.y1 + 1) * kChunkSize;
         static constexpr int kNb[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
-        for (int s = 0; s < 4; ++s)
-            for (int cy = m_seed.y0; cy <= m_seed.y1; ++cy)
-                nbLit[s][cy - m_seed.y0] =
-                    m_world.chunkLit({m_seed.chunkX + kNb[s][0], cy, m_seed.chunkZ + kNb[s][1]});
-        const auto countsAsShade = [&](const glm::ivec3& n) {
-            const int ncx = n.x >> 5, ncz = n.z >> 5;
-            if (ncx == m_seed.chunkX && ncz == m_seed.chunkZ)
-                return true;
-            const int s = ncx > m_seed.chunkX ? 0 : (ncx < m_seed.chunkX ? 1 : (ncz > m_seed.chunkZ ? 2 : 3));
-            const int cy = (n.y >> 5) - m_seed.y0;
-            return cy >= 0 && cy <= m_seed.y1 - m_seed.y0 && nbLit[s][cy];
-        };
         while (m_seed.cursor < kCells) {
-            if (m_seed.cursor % kSpreadCheck == 0 && m_seed.cursor > 0 && over())
+            if (m_seed.cursor % kDescentCheck == 0 && m_seed.cursor > 0 && over())
                 return false;
             const int dz = m_seed.cursor >> 5;
             const int dx = m_seed.cursor & 31;
-            // Up to the top of the resident range, not to a world ceiling — the spread
-            // only ever climbs from the surface it found during the descent anyway.
-            const int spreadTop = (m_seed.y1 + 1) * kChunkSize;
-            for (int sy = m_seed.heights[dz][dx] + 1; sy < spreadTop; ++sy) {
-                const glm::ivec3 p{baseX + dx, sy, baseZ + dz};
-                bool boundary = false;
-                for (int d = 0; d < 6 && !boundary; ++d) {
-                    const glm::ivec3 n = p + kStep[d];
-                    boundary = countsAsShade(n) && !blocks::blocksLight(blockAt(n)) &&
-                               getLevel(n, Sky) < 14;
-                }
-                if (boundary)
-                    enqueue(Sky, p);
-                else
-                    break;
+            const int h = m_seed.heights[dz][dx];
+            int reach = h;
+            for (const auto& n : kNb) {
+                const int nx = dx + n[0], nz = dz + n[1];
+                if (nx >= 0 && nx < kChunkSize && nz >= 0 && nz < kChunkSize)
+                    reach = std::max(reach, m_seed.heights[nz][nx]);
             }
+            for (int sy = h + 1; sy <= reach && sy < spreadTop; ++sy)
+                enqueue(Sky, {baseX + dx, sy, baseZ + dz});
+            if (reach == h && h >= botY && h + 1 < spreadTop &&
+                !blocks::blocksLight(stack[(h >> 5) - m_seed.y0]->get(dx, h & 31, dz)))
+                enqueue(Sky, {baseX + dx, h + 1, baseZ + dz});
             ++m_seed.cursor;
         }
         m_seed.cursor = 0;
@@ -340,30 +325,62 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
 }
 
 void LightEngine::checkColumnEdges(std::int32_t cx, std::int32_t cz, int y0, int y1) {
-    static constexpr int kSide[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+    for (int cy = y0; cy <= y1; ++cy) {
+        if (!m_world.chunkLit({cx, cy, cz}))
+            continue;
+        for (const int face : {0, 1, 4, 5})
+            settleFace({cx, cy, cz}, face);
+        // and the face above, inside the column too: a chunk regenerated in place starts from no
+        // light, and what the chunk over it had been sending down is not re-sent by anything else
+        settleFace({cx, cy, cz}, 2);
+    }
+    if (m_world.chunkLit({cx, y0, cz}))
+        settleFace({cx, y0, cz}, 3);
+}
+
+void LightEngine::settleFace(ChunkPos pa, int face) {
+    const ChunkPos pb{pa.x + kStep[face].x, pa.y + kStep[face].y, pa.z + kStep[face].z};
+    const Chunk* a = m_world.chunkData(pa);
+    const Chunk* b = m_world.chunkData(pb);
+    if (!a || !b || !m_world.chunkLit(pb))
+        return;
     constexpr int kLast = kChunkSize - 1;
-    for (const auto& s : kSide)
-        for (int cy = y0; cy <= y1; ++cy) {
-            const ChunkPos pa{cx, cy, cz};
-            const ChunkPos pb{cx + s[0], cy, cz + s[1]};
-            const Chunk* a = m_world.chunkData(pa);
-            const Chunk* b = m_world.chunkData(pb);
-            if (!a || !b || !m_world.chunkLit(pa) || !m_world.chunkLit(pb))
+    const int axis = face >> 1;
+    const bool up = (face & 1) == 0; // b lies on the positive side of a
+    const glm::ivec3 baseA = glm::ivec3(pa.x, pa.y, pa.z) * kChunkSize;
+    const glm::ivec3 baseB = glm::ivec3(pb.x, pb.y, pb.z) * kChunkSize;
+    // full sky keeps its strength going straight down; every other step costs at least one
+    const bool aOverB = face == 3, bOverA = face == 2;
+    for (int u = 0; u < kChunkSize; ++u)
+        for (int v = 0; v < kChunkSize; ++v) {
+            // the two voxels either side of the shared face; u and v run along it
+            glm::ivec3 la{u, v, 0}, lb{u, v, 0};
+            if (axis == 0) {
+                la = {up ? kLast : 0, u, v};
+                lb = {up ? 0 : kLast, u, v};
+            } else if (axis == 1) {
+                la = {u, up ? kLast : 0, v};
+                lb = {u, up ? 0 : kLast, v};
+            } else {
+                la = {u, v, up ? kLast : 0};
+                lb = {u, v, up ? 0 : kLast};
+            }
+            const std::uint32_t va = a->lightAt(la.x, la.y, la.z);
+            const std::uint32_t vb = b->lightAt(lb.x, lb.y, lb.z);
+            if (va == vb)
                 continue;
-            // the two voxels either side of the shared face; t runs along it
-            for (int y = 0; y < kChunkSize; ++y)
-                for (int t = 0; t < kChunkSize; ++t) {
-                    const int ax = s[0] > 0 ? kLast : (s[0] < 0 ? 0 : t);
-                    const int az = s[1] > 0 ? kLast : (s[1] < 0 ? 0 : t);
-                    const int bx = s[0] > 0 ? 0 : (s[0] < 0 ? kLast : t);
-                    const int bz = s[1] > 0 ? 0 : (s[1] < 0 ? kLast : t);
-                    const int la = light::sky(a->lightAt(ax, y, az)) / 17;
-                    const int lb = light::sky(b->lightAt(bx, y, bz)) / 17;
-                    if (la > lb + 1 && !blocks::blocksLight(b->get(bx, y, bz)))
-                        enqueue(Sky, {cx * kChunkSize + ax, cy * kChunkSize + y, cz * kChunkSize + az});
-                    else if (lb > la + 1 && !blocks::blocksLight(a->get(ax, y, az)))
-                        enqueue(Sky, {pb.x * kChunkSize + bx, cy * kChunkSize + y, pb.z * kChunkSize + bz});
-                }
+            const bool aOpen = !blocks::blocksLight(a->get(la.x, la.y, la.z));
+            const bool bOpen = !blocks::blocksLight(b->get(lb.x, lb.y, lb.z));
+            const int ga[4] = {light::red(va) / 17, light::green(va) / 17, light::blue(va) / 17, light::sky(va) / 17};
+            const int gb[4] = {light::red(vb) / 17, light::green(vb) / 17, light::blue(vb) / 17, light::sky(vb) / 17};
+            for (int ch = 0; ch < kChannels; ++ch) {
+                const int costAB = ch == Sky && aOverB && ga[ch] == 15 ? 0 : 1;
+                const int costBA = ch == Sky && bOverA && gb[ch] == 15 ? 0 : 1;
+                if (ga[ch] - costAB > gb[ch] && bOpen)
+                    enqueue(ch, baseA + la);
+                else if (gb[ch] - costBA > ga[ch] && aOpen)
+                    enqueue(ch, baseB + lb);
+            }
         }
 }
 
@@ -417,6 +434,10 @@ void LightEngine::seedNewChunk(ChunkPos pos, bool skyAbove) {
                             enqueue(ch, wp);
                         }
                 }
+
+    // and whatever the lit chunks around it would have sent in had it been here
+    for (int face = 0; face < 6; ++face)
+        settleFace(pos, face);
 }
 
 void LightEngine::seedColumn(std::int32_t chunkX, std::int32_t chunkZ) {

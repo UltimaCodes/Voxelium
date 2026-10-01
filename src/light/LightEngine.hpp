@@ -36,10 +36,11 @@ public:
     // hitch. begin/step spreads it over frames, splitting at (dx,dz) cell granularity.
     // The caller must not treat the column as lit until step returns true.
     void beginSeedColumn(std::int32_t chunkX, std::int32_t chunkZ);
-    // Once a column is lit, compare each face it shares with a lit neighbour column and queue
-    // whichever side is brighter than one step of falloff explains. The seed's spread skips
-    // unlit neighbours, so this is what carries sky across a border into, say, a cave mouth
-    // that opens in the other column. y0..y1 is the column's resident band.
+    // Once a column is lit, settle each face its chunks share with a lit neighbour (settleFace):
+    // the four sides, and the faces between the column's own chunks and at its ends. The seed's
+    // spread leaves neighbouring columns alone, so this is what carries sky across a border into,
+    // say, a cave mouth that opens in the other column, and a lamp's light into a column that was
+    // not there yet when the lamp was lit. y0..y1 is the column's resident band.
     void checkColumnEdges(std::int32_t cx, std::int32_t cz, int y0, int y1);
     bool stepSeedColumn(double budgetMs); // true = column finished (check seedAborted!)
     // True when the last seed gave up because the column's chunks were not all resident.
@@ -154,6 +155,13 @@ private:
     int getLevel(const glm::ivec3& wp, int channel) const;
     void setLevel(const glm::ivec3& wp, int channel, int level);
     void enqueue(int channel, const glm::ivec3& wp) { m_queue[channel].push_back(wp); }
+    // Light stops at a chunk that is not there (or still generating): it reads as stone. So
+    // whenever a chunk is lit, every face it shares with a lit neighbour is compared, in all four
+    // channels, and whichever side holds more than one step across would explain is queued to
+    // carry it over. Done each time the later of two neighbours is lit, that settles every border
+    // whatever order the chunks arrived in - which is what makes the same place light the same
+    // way on every load.
+    void settleFace(ChunkPos pa, int face);
     // by value on purpose: both steps push into the queue they were popped from, and a
     // reallocation would invalidate a reference mid-step
     void propagateStep(int channel, glm::ivec3 wp);
