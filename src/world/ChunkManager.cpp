@@ -358,8 +358,18 @@ void ChunkManager::processEvictions(Renderer& renderer, JobSystem& jobs) {
         if (e.waterBuf)
             m_waterPool.checkin(e.waterBuf);
         m_pool.release(e.voxels);
-        m_seededColumns.erase(ChunkPos{m_evictList[i].x, 0, m_evictList[i].z});
-        m_provisionalColumns.erase(ChunkPos{m_evictList[i].x, 0, m_evictList[i].z});
+        // Only a column leaving the ring loses its seed. The band trimming a chunk off the
+        // bottom or top when the camera changes height leaves the rest of the column lit
+        // correctly, and if the chunk comes back it is lit on arrival like any other band
+        // growth. Dropping the seed there made the self-heal relight every column in view on
+        // each vertical chunk step - ~4000 at radius 32, half a minute of seeding during which
+        // nothing new anywhere could light or mesh: walk over a hill and the world stopped
+        // rendering a few chunks out (owner report).
+        const ChunkPos gone = m_evictList[i];
+        if (std::abs(gone.x - m_center.x) > radius + 3 || std::abs(gone.z - m_center.z) > radius + 3) {
+            m_seededColumns.erase(ChunkPos{gone.x, 0, gone.z});
+            m_provisionalColumns.erase(ChunkPos{gone.x, 0, gone.z});
+        }
         m_chunks.erase(it);
         m_visDirty = true; // reshuffles meta order; see the note at try_emplace
         m_evictList[i] = m_evictList.back();
@@ -723,9 +733,10 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     // resident chunk on every scanned frame (1.3 ms a frame at radius 32). An eighth of the
     // scans is still well under a second behind.
     const bool heal = doMeshScan && (m_healTick++ & 7u) == 0;
+    const bool seedingIdle = m_seedQueue.empty() && !light.seedInProgress();
     if (doMeshScan)
-    for (const auto& item : m_chunks) {
-        const Entry& e = item.second;
+    for (auto& item : m_chunks) {
+        Entry& e = item.second;
         // Catch columns that became complete without anyone noticing. A column is only
         // ever put up for seeding from the gen-done drain, keyed on one of ITS chunks
         // finishing generation — so a column that completes by any other route (an entry
@@ -735,9 +746,9 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         //
         // The scan already walks every chunk and only runs when something changed, so
         // checking here costs a set lookup on work that was happening anyway.
-        // NB: gated on m_seededColumns, never on e.lit. evicting one chunk of a column
-        // drops the column from m_seededColumns but leaves the surviving chunks flagged
-        // lit, so e.lit says "done" for a column that no longer has a seed to its name.
+        // NB: gated on m_seededColumns, never on e.lit. a column leaving the ring drops from
+        // m_seededColumns with its first evicted chunk while the rest wait their turn still
+        // flagged lit, so e.lit says "done" for a column that no longer has a seed to its name.
         if (heal && e.state != ChunkState::Generating && !e.pendingDetail) {
             const ChunkPos col{item.first.x, 0, item.first.z};
             if (!m_seededColumns.contains(col) && columnPresent(col)) {
@@ -756,6 +767,22 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                     m_seededColumns.insert(col);
                     m_seedQueue.push_back(col);
                 }
+            } else if (!e.lit && seedingIdle && m_seededColumns.contains(col)) {
+                // An unlit chunk in a column whose seed is done. A regen landing clears the
+                // column's lit flags over the band and queues a re-seed, and if the camera
+                // changes chunk height before that runs, the re-seed covers a different band:
+                // the chunk at the old edge is never marked again and never meshes. Light it
+                // the way a chunk arriving in a seeded column is lit.
+                int cy0 = 0, cy1 = 0;
+                bool colSky = false;
+                columnRange(col.x, col.z, cy0, cy1, colSky);
+                light.seedNewChunk(item.first, colSky && item.first.y >= cy1);
+                e.lit = true;
+                if (e.meshingLod >= 0)
+                    e.lightDirty = true;
+                else if (e.state == ChunkState::Meshed)
+                    e.remesh = true;
+                m_meshScanDirty = true;
             }
         }
         if (!e.lit || e.pendingDetail) // pendingDetail: a detailed re-gen is landing

@@ -241,6 +241,32 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
                 before, worst, late, vertOk ? "PASS" : "FAIL");
         if (!vertOk)
             return 1;
+
+        // Climbing back must not relight the world. Two chunks up from here the band trims a
+        // chunk off the bottom of every column at once, and that used to cost every column its
+        // seed: the self-heal then relit all of them (about 4000 at radius 32), and until that
+        // was through nothing new could light or mesh - walk over a hill and the world stopped
+        // rendering a few chunks out (owner report). A trim is not a column leaving the ring.
+        int worstBacklog = 0;
+        for (int step = 1; step <= 2; ++step) {
+            camera.position.y += 32.0;
+            // long enough for several self-heal passes (every 8th scan), however busy() reads
+            for (int f = 0; f < 4000 && (f < 64 || world.busy() || !light.idle()); ++f) {
+                rc.renderer.beginFrame();
+                world.update(jobs, rc.renderer, light, camera.position);
+                rc.renderer.endFrame();
+                worstBacklog = std::max(worstBacklog, world.seedBacklog());
+            }
+        }
+        world.refreshStats();
+        const int climbUnlit = world.stats().unlit;
+        const int columns = (2 * world.radius + 5) * (2 * world.radius + 5);
+        const bool climbOk = worstBacklog * 10 < columns && climbUnlit == 0;
+        VX_INFO("vertical: two one-chunk climbs back, worst seed backlog %d of %d columns "
+                "(want under a tenth), unlit after %d -> %s",
+                worstBacklog, columns, climbUnlit, climbOk ? "PASS" : "FAIL");
+        if (!climbOk)
+            return 1;
         camera.position = {16.0, 110.0, 16.0};
         drain();
     }

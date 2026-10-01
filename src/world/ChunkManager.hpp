@@ -233,6 +233,9 @@ public:
                m_savesInFlight.load(std::memory_order_acquire) > 0;
     }
 
+    // Columns waiting for their light seed. Cheap; --smoke watches it frame by frame.
+    int seedBacklog() const { return int(m_seedQueue.size()); }
+
     // --smoke only: hold every eviction save this long before it serializes, so the window in
     // which one is still running can be made wide enough to test.
     void setSaveDelayForTest(int ms) { m_saveDelayMs.store(ms, std::memory_order_relaxed); }
