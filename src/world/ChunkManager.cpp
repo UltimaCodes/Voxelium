@@ -372,6 +372,9 @@ void ChunkManager::processEvictions(Renderer& renderer, JobSystem& jobs) {
             m_reseedColumns.erase(ChunkPos{gone.x, 0, gone.z});
         }
         m_chunks.erase(it);
+        // a neighbour waiting on this chunk may count it as out of its band now
+        for (const auto& o : kFaceOffsets)
+            touchScan({gone.x + o[0], gone.y + o[1], gone.z + o[2]});
         m_visDirty = true; // reshuffles meta order; see the note at try_emplace
         m_evictList[i] = m_evictList.back();
         m_evictList.pop_back();
@@ -433,6 +436,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         const auto it = m_chunks.find(pos);
         if (it != m_chunks.end() && it->second.state == ChunkState::Generating)
             it->second.state = ChunkState::Ready;
+        touchScan(pos);
         --m_jobsInFlight;
         --m_genInFlight;
 
@@ -479,6 +483,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             ++m_lateSeeds;
             light.seedNewChunk(pos, colSky && pos.y >= cy1);
             it->second.lit = true;
+            touchScan(pos);
             m_meshScanDirty = true;
         }
     }
@@ -523,6 +528,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             for (int cy = my0; cy <= my1; ++cy)
                 if (const auto cit = m_chunks.find({col.x, cy, col.z}); cit != m_chunks.end()) {
                     cit->second.lit = true;
+                    touchScan(cit->first);
                     // A RE-seed changes light in a chunk that is already meshed, and the
                     // seeder writes through Chunk::setLight directly (the sky descent and
                     // fillLight) rather than LightEngine::setLevel, which is the only thing
@@ -652,6 +658,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         const auto it = m_chunks.find(pos);
         if (it == m_chunks.end())
             continue;
+        touchScan(pos);
         Entry& e = it->second;
         // A mesh job reading this chunk right now sampled the light as it was when it
         // started, and its result lands after this loop — so flipping the state here would
@@ -729,20 +736,29 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     // this loop is O(loaded chunks); skip it whenever nothing could have changed the mesh
     // set (no streaming in flight and the camera hasn't moved). a loaded, still world then
     // costs nothing here instead of re-scanning ~36k chunks every single frame.
-    const bool doMeshScan =
-        m_meshScanDirty || m_jobsInFlight > 0 || !m_genQueue.empty() || !m_uploads.empty();
+    const bool doMeshScan = m_meshScanDirty || m_scanConfirm || m_jobsInFlight > 0 ||
+                            !m_genQueue.empty() || !m_uploads.empty();
+    // Walking every resident chunk was 5.4 ms of a 12 ms frame flying at radius 32, nearly all
+    // of it finding again the same chunks still waiting for a slot. The whole world is only
+    // walked when the answer can have changed everywhere at once - the camera changed chunk
+    // (LOD bands, band and ring all move), the radius or detail changed - plus every
+    // kFullScanEvery as a safety net, and once after the last partial scan before busy() can
+    // clear. In between: what something touched, their neighbours (a chunk's readiness is its
+    // neighbours'), and the nearest of the candidates still waiting.
+    const auto scanNow = Clock::now();
+    const double scanLod = lodScale();
+    const bool fullScan =
+        doMeshScan && (!(center == m_scanCenter) || radius != m_scanRadius ||
+                       scanLod != m_scanLodScale || scanNow - m_lastFullScan >= kFullScanEvery ||
+                       (m_scanConfirm && m_scanTouched.empty() && m_scanCarry.empty()));
     m_meshScanDirty = false;
     m_meshScratch.clear();
     m_regenScratch.clear();
     m_emptyScratch.clear();
-    // The self-heal below is a safety net for a rare path, and it was a hash lookup for every
-    // resident chunk on every scanned frame (1.3 ms a frame at radius 32). An eighth of the
-    // scans is still well under a second behind.
-    const bool heal = doMeshScan && (m_healTick++ & 7u) == 0;
+    // The self-heal below is a safety net for a rare path, so it rides every other full scan.
+    const bool heal = fullScan && (m_healTick++ & 1u) == 0;
     const bool seedingIdle = m_seedQueue.empty() && !light.seedInProgress();
-    if (doMeshScan)
-    for (auto& item : m_chunks) {
-        Entry& e = item.second;
+    const auto consider = [&](const ChunkPos pos, Entry& e) {
         // Catch columns that became complete without anyone noticing. A column is only
         // ever put up for seeding from the gen-done drain, keyed on one of ITS chunks
         // finishing generation — so a column that completes by any other route (an entry
@@ -756,7 +772,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         // m_seededColumns with its first evicted chunk while the rest wait their turn still
         // flagged lit, so e.lit says "done" for a column that no longer has a seed to its name.
         if (heal && e.state != ChunkState::Generating && !e.pendingDetail) {
-            const ChunkPos col{item.first.x, 0, item.first.z};
+            const ChunkPos col{pos.x, 0, pos.z};
             if (!m_seededColumns.contains(col) && columnPresent(col)) {
                 bool ready = true;
                 // The resident band, not 0..kWorldChunksY. #27 left this walking the old
@@ -783,7 +799,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                 int cy0 = 0, cy1 = 0;
                 bool colSky = false;
                 columnRange(col.x, col.z, cy0, cy1, colSky);
-                light.seedNewChunk(item.first, colSky && item.first.y >= cy1);
+                light.seedNewChunk(pos, colSky && pos.y >= cy1);
                 e.lit = true;
                 if (e.meshingLod >= 0)
                     e.lightDirty = true;
@@ -793,11 +809,11 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             }
         }
         if (!e.lit || e.pendingDetail) // pendingDetail: a detailed re-gen is landing
-            continue;
-        if (std::abs(item.first.x - center.x) > radius ||
-            std::abs(item.first.z - center.z) > radius)
-            continue;
-        const int desired = lodForDist2(horizontalDist2(item.first, center), lodScale());
+            return;
+        if (std::abs(pos.x - center.x) > radius ||
+            std::abs(pos.z - center.z) > radius)
+            return;
+        const int desired = lodForDist2(horizontalDist2(pos, center), lodScale());
         const bool firstMesh = e.state == ChunkState::Ready;
         const bool reLod = e.state == ChunkState::Meshed && (e.lod != desired || e.remesh);
         // A coarse chunk close enough to want detail re-generates (with caves). The regen is
@@ -827,19 +843,19 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         // the camera: 410 of the 1183 chunks within 6 of it, on average, flying at 45 b/s.
         if (e.state == ChunkState::Meshed && !e.detailed && desired < kCoarseLod &&
             !e.voxels->uniform() && !e.dirty)
-            m_regenScratch.push_back(item.first);
+            m_regenScratch.push_back(pos);
         if (!(firstMesh || reLod) || e.meshingLod == desired)
-            continue;
+            return;
         // Solid air has nothing to draw at any LOD and bakes no light, so it needs neither a job
         // nor its neighbours: at radius 32 it was 25k of the ~35k chunks waiting to mesh, each
         // holding a job slot like a real mesh.
         if (e.meshingLod < 0 && e.voxels->uniform() && e.voxels->uniformId() == blocks::Air) {
-            m_emptyScratch.push_back(item.first);
-            continue;
+            m_emptyScratch.push_back(pos);
+            return;
         }
         bool ready = true;
         for (const auto& o : kFaceOffsets) {
-            const ChunkPos n{item.first.x + o[0], item.first.y + o[1], item.first.z + o[2]};
+            const ChunkPos n{pos.x + o[0], pos.y + o[1], pos.z + o[2]};
             const auto nit = m_chunks.find(n);
             if (nit == m_chunks.end()) {
                 // Outside its column's resident band it will never be loaded, so waiting for it
@@ -860,7 +876,46 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             }
         }
         if (ready)
-            m_meshScratch.push_back(item.first);
+            m_meshScratch.push_back(pos);
+    };
+    std::vector<ChunkPos> carryOn; // waiting candidates not looked at this frame
+    if (fullScan) {
+        for (auto& item : m_chunks)
+            consider(item.first, item.second);
+        m_scanTouched.clear();
+        m_scanCarry.clear();
+        m_lastFullScan = scanNow;
+        m_scanCenter = center;
+        m_scanRadius = radius;
+        m_scanLodScale = scanLod;
+        m_scanConfirm = false;
+    } else if (doMeshScan) {
+        m_scanVisit.clear();
+        for (const ChunkPos p : m_scanTouched) {
+            m_scanVisit.insert(p);
+            for (const auto& o : kFaceOffsets)
+                m_scanVisit.insert({p.x + o[0], p.y + o[1], p.z + o[2]});
+        }
+        m_scanTouched.clear();
+        // Only the nearest waiting candidates are looked at again; the rest keep their place
+        // unchecked. The centre has not moved since they were found (that would have been a
+        // full scan), so nearest stays nearest, and nothing unchecked is ever scheduled.
+        const std::size_t look = std::size_t(4 * inflightCap);
+        if (m_scanCarry.size() > look) {
+            std::nth_element(m_scanCarry.begin(), m_scanCarry.begin() + std::ptrdiff_t(look),
+                             m_scanCarry.end(), [center](ChunkPos a, ChunkPos b) {
+                                 return horizontalDist2(a, center) < horizontalDist2(b, center);
+                             });
+            carryOn.assign(m_scanCarry.begin() + std::ptrdiff_t(look), m_scanCarry.end());
+            m_scanCarry.resize(look);
+        }
+        for (const ChunkPos p : m_scanCarry)
+            m_scanVisit.insert(p);
+        m_scanCarry.clear();
+        for (const ChunkPos p : m_scanVisit)
+            if (const auto it = m_chunks.find(p); it != m_chunks.end())
+                consider(p, it->second);
+        m_scanConfirm = true;
     }
     // schedule detailed re-gens for approached coarse chunks. double-buffered into a fresh
     // chunk so the coarse mesh keeps drawing until the detailed one lands (no hole), and
@@ -879,13 +934,19 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         if (m_regenScratch.size() > room) {
             std::nth_element(m_regenScratch.begin(), m_regenScratch.begin() + std::ptrdiff_t(room),
                              m_regenScratch.end(), nearer);
-            m_regenScratch.resize(room + 1); // one past, so the loop below still flags the backlog
+            // the rest wait for a slot, carried: a partial scan does not walk the world to
+            // find them again
+            m_scanCarry.insert(m_scanCarry.end(), m_regenScratch.begin() + std::ptrdiff_t(room),
+                               m_regenScratch.end());
+            m_regenScratch.resize(room);
         }
         std::sort(m_regenScratch.begin(), m_regenScratch.end(), nearer);
     }
-    for (const ChunkPos pos : m_regenScratch) {
+    for (std::size_t ri = 0; ri < m_regenScratch.size(); ++ri) {
+        const ChunkPos pos = m_regenScratch[ri];
         if (m_jobsInFlight >= inflightCap || m_regenInFlight >= inflightCap / 4) {
-            m_meshScanDirty = true; // backlog: re-scan next frame to schedule the rest
+            m_scanCarry.insert(m_scanCarry.end(), m_regenScratch.begin() + std::ptrdiff_t(ri),
+                               m_regenScratch.end());
             break;
         }
         const auto it = m_chunks.find(pos);
@@ -920,11 +981,13 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     } else {
         std::sort(m_meshScratch.begin(), m_meshScratch.end(), nearer);
     }
-    m_pendingMesh = int(m_meshScratch.size());
+    m_pendingMesh = int(m_meshScratch.size() + carryOn.size());
 
-    for (const ChunkPos pos : m_meshScratch) {
+    for (std::size_t mi = 0; mi < m_meshScratch.size(); ++mi) {
+        const ChunkPos pos = m_meshScratch[mi];
         if (m_jobsInFlight >= inflightCap) {
-            m_meshScanDirty = true; // backlog: keep scanning until the rest get scheduled
+            m_scanCarry.insert(m_scanCarry.end(), m_meshScratch.begin() + std::ptrdiff_t(mi),
+                               m_meshScratch.end());
             break;
         }
         const auto it = m_chunks.find(pos);
@@ -982,6 +1045,10 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         });
     }
 
+    m_scanCarry.insert(m_scanCarry.end(), carryOn.begin(), carryOn.end());
+    if (!m_scanCarry.empty())
+        m_meshScanDirty = true; // backlog: keep going until the rest get scheduled
+
     // land finished re-gens: swap the detailed chunk in once no worker is still reading the
     // old (coarse) voxels, then re-seed the column so the new caves/glow light correctly
     // (which re-meshes it; the coarse mesh stays up until that lands).
@@ -990,6 +1057,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         m_regenDoneScratch.swap(m_regenDone);
     }
     for (const RegenResult& r : m_regenDoneScratch) {
+        touchScan(r.pos);
         const auto it = m_chunks.find(r.pos);
         if (it == m_chunks.end() || it->second.pendingDetail != r.voxels) {
             m_pool.release(r.voxels); // entry evicted or superseded: drop this re-gen
@@ -1053,6 +1121,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     for (auto& r : m_uploads) {
         if (uploaded > 0 && msSince(uploadStart) > kUploadBudgetMs)
             break; // rest carries over to next frame; always at least one per frame
+        touchScan(r.pos); // landed, or dropped stale and wanting a mesh at the right LOD
         const auto it = m_chunks.find(r.pos);
         // accept a first mesh (Meshing) or a re-LOD whose result still matches what we
         // asked for (Meshed, meshingLod == r.lod); a stale re-LOD result is dropped and
@@ -1194,6 +1263,10 @@ void ChunkManager::loadWorld(Renderer& renderer, int seed, std::filesystem::path
     m_lateSeeds = 0;
     renderer.resetArena(); // deliberate, not a failure: every range was just dropped
     m_center = {INT32_MIN, 0, INT32_MIN};
+    m_scanCenter = {INT32_MIN, 0, INT32_MIN}; // the next scan is a full one
+    m_scanTouched.clear();
+    m_scanCarry.clear();
+    m_scanConfirm = false;
     m_lastRadius = -1;
     m_meshScanDirty = true;
     m_dirty = true;
@@ -1426,6 +1499,7 @@ void ChunkManager::saveDirty() {
             ChunkSerializer::serialize(*e.voxels, m_saveScratch);
             m_regions.save(pos, m_saveScratch);
             e.dirty = false;
+            touchScan(pos); // unsaved edits held it coarse; it may regenerate now
             ++saved;
         }
     m_regions.flush();

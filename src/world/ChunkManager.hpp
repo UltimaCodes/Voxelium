@@ -12,6 +12,7 @@
 #include <glm/glm.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
@@ -230,6 +231,7 @@ public:
         // otherwise pull the world out from under it (SPEC #142).
         return !m_genQueue.empty() || m_jobsInFlight > 0 || !m_uploads.empty() ||
                m_pendingMesh > 0 || !m_seedQueue.empty() || m_seedActive || m_meshScanDirty ||
+               m_scanConfirm ||
                m_savesInFlight.load(std::memory_order_acquire) > 0;
     }
 
@@ -384,6 +386,22 @@ private:
     // Columns where a coarse->detailed regen has landed and that need one re-seed, held until
     // the last regen still pending in the column has landed or dropped (see reseedWhenSettled).
     ankerl::unordered_dense::set<ChunkPos, ChunkPosHash> m_reseedColumns;
+    // The mesh scan in update() only walks every resident chunk on a full scan: the camera
+    // changed chunk, the radius or detail changed, kFullScanEvery passed, or a partial scan has
+    // run since the last full one and there is nothing left to look at (busy() waits for that
+    // one). In between it looks at what was touched, their neighbours, and the nearest of the
+    // candidates still waiting for a slot (m_scanCarry).
+    static constexpr std::chrono::milliseconds kFullScanEvery{250};
+    ankerl::unordered_dense::set<ChunkPos, ChunkPosHash> m_scanTouched;
+    ankerl::unordered_dense::set<ChunkPos, ChunkPosHash> m_scanVisit;
+    std::vector<ChunkPos> m_scanCarry;
+    std::chrono::steady_clock::time_point m_lastFullScan{};
+    ChunkPos m_scanCenter{INT32_MIN, 0, INT32_MIN};
+    int m_scanRadius = -1;
+    double m_scanLodScale = -1.0;
+    bool m_scanConfirm = false;
+    // Something about this chunk changed that can make it a mesh or regen candidate.
+    void touchScan(ChunkPos p) { m_scanTouched.insert(p); }
     void reseedWhenSettled(ChunkPos col);
     bool columnPresent(ChunkPos col) const;
 
