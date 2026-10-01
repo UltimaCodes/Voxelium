@@ -225,9 +225,17 @@ public:
         // m_meshScanDirty counts too: a chunk just sent back for a relight has no job and
         // no queue entry until the next scan finds it, so leaving it out reports "settled"
         // one frame early — with stale light still baked into the quads on screen.
+        // An edited chunk's eviction save counts as well: it runs on a worker but is not one of
+        // the counted jobs, and a caller that drains on this before switching worlds would
+        // otherwise pull the world out from under it (SPEC #142).
         return !m_genQueue.empty() || m_jobsInFlight > 0 || !m_uploads.empty() ||
-               m_pendingMesh > 0 || !m_seedQueue.empty() || m_seedActive || m_meshScanDirty;
+               m_pendingMesh > 0 || !m_seedQueue.empty() || m_seedActive || m_meshScanDirty ||
+               m_savesInFlight.load(std::memory_order_acquire) > 0;
     }
+
+    // --smoke only: hold every eviction save this long before it serializes, so the window in
+    // which one is still running can be made wide enough to test.
+    void setSaveDelayForTest(int ms) { m_saveDelayMs.store(ms, std::memory_order_relaxed); }
     Stats stats() const;
     void logSummary() const;
     // force the next stats() to do the full-chunk scan (used before logSummary)
@@ -483,6 +491,9 @@ private:
     std::atomic<std::uint64_t> m_meshNanos{0};
     std::atomic<int> m_genCount{0};
     std::atomic<int> m_meshCount{0};
+    std::atomic<int> m_savesInFlight{0}; // eviction saves still on a worker (see busy())
+    std::atomic<int> m_saveDelayMs{0};
+    void waitForSaves() const;
 };
 
 } // namespace vx

@@ -314,25 +314,29 @@ void ChunkManager::processEvictions(Renderer& renderer, JobSystem& jobs) {
         }
         // an in-flight re-gen whose job already finished: the entry vanishes here, and the
         // regen-done drain releases that orphaned chunk when it can't find the entry
-        // Persist player edits, and also cache DETAILED generated chunks so coming back
-        // reloads them instead of paying full generation again. Coarse chunks are left to
-        // regenerate: they are the cheap half (no caves, which are ~4x the cost) and
-        // caching them would spend main-thread serialize time to save very little.
+        // Persist player edits; everything else regenerates from the seed (caching generated
+        // chunks measured as a no-op, SPEC #16).
         // Serialize on a worker, never here. A teleport evicts thousands of chunks at
         // once and doing this inline measured as a 128 ms freeze — and blocking the main
         // thread on disk work is exactly what the streaming design forbids. The job holds
         // a ref, so the chunk cannot return to the pool underneath it; this entry simply
-        // waits out another pass or two of the evict list, which it is already on.
+        // waits out another pass or two of the evict list, which it is already on. It is
+        // not one of the counted jobs, so it has its own count, which busy(), loadWorld and
+        // saveDirty wait on (SPEC #142).
         if (e.dirty && !e.saving) {
             e.saving = true;
             Chunk* voxels = e.voxels;
             const ChunkPos at = m_evictList[i];
             voxels->retainJob();
+            m_savesInFlight.fetch_add(1, std::memory_order_relaxed);
             jobs.submit([this, voxels, at] {
+                if (const int delay = m_saveDelayMs.load(std::memory_order_relaxed); delay > 0)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(delay));
                 std::vector<std::uint8_t> bytes;
                 ChunkSerializer::serialize(*voxels, bytes);
                 m_regions.save(at, std::move(bytes));
                 voxels->releaseJob();
+                m_savesInFlight.fetch_sub(1, std::memory_order_release);
             });
             ++i; // comes back once the job drops its ref
             continue;
@@ -1109,6 +1113,10 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
 }
 
 void ChunkManager::loadWorld(Renderer& renderer, int seed, std::filesystem::path saveDir) {
+    // An eviction save still running would write the old world's chunk into whichever world
+    // the store points at when it finishes, and keep reading a chunk that is about to go back
+    // to the pool and be regenerated into. Let every one land first.
+    waitForSaves();
     // Point at the new world BEFORE tearing down, so nothing that runs during teardown can
     // write the old world's chunks into the new world's directory.
     m_regions.flush();
@@ -1339,7 +1347,17 @@ void ChunkManager::updateVisibilityIfNeeded(Renderer& renderer, const glm::dvec3
     renderer.updateVisibility(m_visBits);
 }
 
+void ChunkManager::waitForSaves() const {
+    // they are a serialize and a map insert each, so this is microseconds unless a test is
+    // holding them open
+    while (m_savesInFlight.load(std::memory_order_acquire) > 0)
+        std::this_thread::yield();
+}
+
 void ChunkManager::saveDirty() {
+    // an edited chunk evicted a moment ago is still being saved on a worker; flushing
+    // without it would leave that edit out of the files
+    waitForSaves();
     int saved = 0;
     for (auto& [pos, e] : m_chunks)
         if (e.dirty && e.voxels) {

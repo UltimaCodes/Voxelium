@@ -48,6 +48,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace vx {
@@ -384,6 +385,45 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         world.loadWorld(rc.renderer, beforeSeed, outPath.parent_path() / "vxsave_smoke");
         camera.position = {16.0, 110.0, 16.0};
         drain();
+    }
+
+    // An edited chunk is saved on a worker when it is evicted, and that save was invisible to
+    // busy(): switching worlds right after it could flush and repoint the store before it
+    // landed, so the edit never reached its own world and arrived in the next one instead
+    // (SPEC #142). Shrinking the radius evicts the edit with nothing else left to stream, and
+    // the save is held open long enough that the window cannot be missed.
+    {
+        const int homeSeed = world.seed();
+        const auto homeDir = outPath.parent_path() / "vxsave_smoke";
+        const auto otherDir = outPath.parent_path() / "vxsave_raceworld";
+        std::error_code ec;
+        std::filesystem::remove_all(otherDir, ec);
+        const int ex = 16 + 8 * 32, ez = 16;
+        const glm::ivec3 at{ex, world.generator().surfaceHeight(ex, ez) + 1, ez};
+        const vx::ChunkPos cp{at.x >> 5, at.y >> 5, at.z >> 5};
+        world.setBlock(rc.renderer, light, at, vx::blocks::Bricks);
+        drain();
+        world.setSaveDelayForTest(400);
+        world.radius = 3; // the edit sits 8 chunks out, past 3 + the eviction margin
+        drain();
+        world.loadWorld(rc.renderer, homeSeed + 777, otherDir);
+        world.setSaveDelayForTest(0);
+        std::this_thread::sleep_for(std::chrono::milliseconds(600)); // a stray save lands now
+        auto probe = std::make_unique<vx::Chunk>();
+        const bool inOther = world.regions().load(cp, *probe);
+        world.loadWorld(rc.renderer, homeSeed, homeDir);
+        world.radius = 10;
+        camera.position = {16.0, 110.0, 16.0};
+        drain();
+        const bool inHome = world.regions().load(cp, *probe) &&
+                            probe->get(at.x & 31, at.y & 31, at.z & 31) == vx::blocks::Bricks;
+        std::filesystem::remove_all(otherDir, ec);
+        const bool ok = inHome && !inOther;
+        VX_INFO("persistence: edit evicted just before a world switch - in its own world %d "
+                "(want 1), in the next world %d (want 0) -> %s",
+                int(inHome), int(inOther), ok ? "PASS" : "FAIL");
+        if (!ok)
+            return 1;
     }
 
     // lighting checks against the enclosed glow room in the terrain
