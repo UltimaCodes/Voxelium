@@ -428,11 +428,15 @@ void main() {
     // A cloud is translucent: it takes at most about half the sun. Full strength made a cloud
     // shadow as dark as the shadow of a solid block, so the two could not be told apart.
     clouded = 1.0 - kCloudMaxBlock * (1.0 - clouded);
-    // Emitters: layer 4 is glow, 15..39 the 25 lamp swatches. Needed in two places below,
-    // so it is worked out once here rather than written out twice and allowed to disagree.
+    // Emitters: layer 4 is glow, 15..39 the 25 lamp swatches. Needed in several places below,
+    // so it is worked out once here rather than written out over and allowed to disagree.
     float emitMask = (uEmissive > 0.0 && isEmitterLayer(vLayer)) ? 1.0 : 0.0;
 
-    vec3 direct = uSunColor * (ndl * shadow * skyAccess * clouded);
+    // A light's own face does not take the cascade shadow. In daylight the sun is a large part
+    // of what a lamp face shows, so a neighbour's shadow cut a hard dark edge straight across
+    // the glow (INFO #12), which is not what a light in shade looks like. It keeps the sun's
+    // angle, and sky access still takes the sun away entirely underground.
+    vec3 direct = uSunColor * (ndl * mix(shadow, 1.0, emitMask) * skyAccess * clouded);
     // A cloud does not delete the light it blocks, it scatters it. Under one the ground gets
     // a wide, soft, shadowless source instead of a hole in the sun, which is why real cloud
     // shadows are gentle and why ours read as harsh dark patches when they only subtracted.
