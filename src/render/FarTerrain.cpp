@@ -125,7 +125,7 @@ void FarTerrain::build(const TerrainGenerator& gen, std::int64_t originX, std::i
                 col = glm::vec3(0.82f, 0.68f, 0.42f) * (1.0f + 0.10f * jit);
             } else if (h <= float(kSea + 3)) {
                 col = glm::vec3(0.78f, 0.66f, 0.44f); // the beach
-            } else if (h >= 205.0f) {
+            } else if (s.h >= gen.snowLineAt(wx, wz)) {
                 col = glm::vec3(0.90f, 0.92f, 0.96f);
             } else if (h >= 150.0f) {
                 col = glm::mix(glm::vec3(0.36f, 0.42f, 0.22f), glm::vec3(0.46f, 0.45f, 0.47f),

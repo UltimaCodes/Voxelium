@@ -296,6 +296,18 @@ TerrainGenerator::Column TerrainGenerator::column(int wx, int wz) const {
 
 int TerrainGenerator::surfaceHeight(int wx, int wz) const { return column(wx, wz).h; }
 
+int TerrainGenerator::snowLineAt(int wx, int wz) const {
+    // One height, +-3 a column, ended every snowcap on a near-perfect contour, and from far
+    // off a range read as if someone had ruled a line across it (SPEC #126). The line wanders
+    // now, on scales smaller than one mountain face or it still reads straight across each:
+    // tongues of snow some 80 blocks apart, a closer wobble over about 20, and the per-column
+    // jitter that keeps the edge ragged up close.
+    const float broad = valueNoise(float(wx) * 0.0125f, float(wz) * 0.0125f, seedOff(m_seed, 97)) - 0.5f;
+    const float close = valueNoise(float(wx) * 0.05f, float(wz) * 0.05f, seedOff(m_seed, 101)) - 0.5f;
+    const int jitter = int(cellHash(std::uint32_t(wx), std::uint32_t(wz)) & 7u) - 3;
+    return kSnowLine + int(std::lround(broad * 56.0f + close * 16.0f)) + jitter;
+}
+
 TerrainGenerator::BiomeSample TerrainGenerator::biomeAt(int wx, int wz) const {
     const Column col = column(wx, wz);
     BiomeSample b;
@@ -383,9 +395,7 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
             const bool desert = desertW[z][x] > 0.42f + 0.16f * float(cellHash(baseX + x, baseZ + z) & 255u) / 255.0f;
             const bool beach = !desert && h >= kSeaLevel - 1 && h <= kBeachTop;
             const bool seabed = h < kSeaLevel - 1;
-            // ragged snow line so peaks cap in snow without a razor-straight edge
-            const int snowLine = kSnowLine + int(cellHash(baseX + x, baseZ + z) & 7u) - 3;
-            const bool snowy = !desert && !beach && !seabed && h >= snowLine;
+            const bool snowy = !desert && !beach && !seabed && h >= snowLineAt(baseX + x, baseZ + z);
             // patches of gravel on the sea floor break up an otherwise flat sheet of sand
             const bool gravelBed = seabed && h < kSeaLevel - 5 &&
                                    valueNoise(float(baseX + x) * 0.05f, float(baseZ + z) * 0.05f,
@@ -599,7 +609,7 @@ void TerrainGenerator::placeFoliage(Chunk& chunk, ChunkPos pos, const int (*heig
         for (int x = 0; x < kChunkSize; ++x) {
             const int wx = baseX + x, wz = baseZ + z;
             const int surf = heights[z][x];
-            if (surf >= kSnowLine)
+            if (surf >= snowLineAt(wx, wz))
                 continue; // up in the snow
             const int y = surf + 1 - baseY;
             if (y < 0 || y >= kChunkSize)

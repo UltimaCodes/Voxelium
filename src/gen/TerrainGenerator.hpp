@@ -48,6 +48,10 @@ public:
     };
     FarSample farSample(int wx, int wz) const;
 
+    // The height snow starts at in this column. Shared with the far horizon so the two agree
+    // where the snowcaps begin.
+    int snowLineAt(int wx, int wz) const;
+
     // What, if anything, stands in a 96-block structure cell: 0 nothing, 1 shipwreck, 2 desert ruins,
     // 3 lighthouse, with the x/z it is anchored at. Public so a harness can find one to look at.
     struct StructureSite {
