@@ -312,7 +312,6 @@ private:
         // all faces connected until meshed: never cave-cull what isn't known yet
         std::uint16_t connectivity = 0x7FFF;
         std::int32_t metaIndex = -1;   // slot in the cull meta buffer, -1 = not drawn
-        std::uint32_t floodStamp = 0;  // visited marker for the visibility flood
         // Opaque/transparent quads, kept for the chunk's whole residency (arena rebuilds
         // re-upload from them). Borrowed from m_quadPool/m_waterPool, not owned directly —
         // see MeshBufferPool.hpp. null = no geometry of that kind, or nothing meshed yet.
@@ -329,19 +328,13 @@ private:
         std::int8_t lod = 0;
     };
 
-    struct FloodNode {
-        ChunkPos pos;
-        std::int8_t entryFace; // face we came in through; -1 for the camera chunk
-        std::uint8_t dirMask;  // directions traveled so far; no backtracking
-        std::uint16_t connectivity;
-    };
-
     void rescan(ChunkPos center);
     void processEvictions(Renderer& renderer, JobSystem& jobs);
     void rebuildArena(Renderer& renderer);
     void rebuildVisibility(ChunkPos cameraChunk);
     // The same flood written against the hash map, kept as the reference the dense-grid one is
-    // checked against (--smoke). Fills `out` instead of m_visBits.
+    // checked against (--smoke). It walks the six directions in the opposite order, so the check
+    // also proves the result does not depend on the order. Fills `out` instead of m_visBits.
     void floodByHash(ChunkPos cameraChunk, std::vector<std::uint32_t>& out);
     void remeshNow(Renderer& renderer, ChunkPos pos);
     const Chunk* voxelsAt(ChunkPos pos) const;
@@ -486,14 +479,13 @@ private:
 
     // visibility flood state
     std::vector<std::uint32_t> m_visBits;
-    std::vector<FloodNode> m_floodQueue;
+    std::vector<ChunkPos> m_floodQueue;
     // The flood's lookup table: every loaded chunk within the radius, by position, so a step is an
     // array read instead of a hash lookup. Rebuilt per flood (one pass over the loaded chunks) and
     // reused, so it costs nothing after the first.
     std::vector<const Entry*> m_floodGrid;
-    std::vector<std::uint8_t> m_floodSeen;
+    std::vector<std::uint8_t> m_floodSeen; // faces each chunk was entered by (bits 0-5), queued (bit 6)
     ChunkPos m_lastFloodCenter{INT32_MIN, 0, INT32_MIN};
-    std::uint32_t m_floodStamp = 0;
     int m_metaCount = 0;
     bool m_visDirty = true;
     bool m_lastCaveCull = false;

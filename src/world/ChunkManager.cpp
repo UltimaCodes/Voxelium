@@ -108,6 +108,24 @@ std::uint8_t coarseNeighborMask(ChunkPos pos, int lod, ChunkPos center, double s
     return mask;
 }
 
+// The visibility flood (Tommo's cave culling) only ever steps away from the camera: on each axis a
+// path moves one way. So a step in direction d from pos is allowed unless pos already lies on the
+// other side of the camera along d's axis.
+bool floodMayStep(ChunkPos pos, ChunkPos camera, int d) {
+    const int off = d < 2 ? pos.x - camera.x : d < 4 ? pos.y - camera.y : pos.z - camera.z;
+    return (d & 1) ? off <= 0 : off >= 0;
+}
+
+// Air in the chunk joins at least one face it was entered by to the face d leaves through.
+bool floodPasses(std::uint16_t connectivity, std::uint8_t entered, int d) {
+    for (int e = 0; e < 6; ++e)
+        if (e != d && (entered >> e & 1u) && facesConnected(connectivity, e, d))
+            return true;
+    return false;
+}
+
+constexpr std::uint8_t kFloodQueued = 1u << 6;
+
 } // namespace
 
 // What landing a job's empty result would have done, without the job: the chunk is drawn as
@@ -1318,6 +1336,16 @@ void ChunkManager::collectDrawInfo(std::vector<ChunkDrawInfo>& out,
 // hash map (about six lookups per visible chunk, ~1 ms at radius 24) on every frame the chunk set
 // changed, which during streaming is every frame. One pass over the loaded chunks fills the grid;
 // the flood then only reads it.
+//
+// A chunk goes on through every face it was entered by, not just the first. It used to keep only
+// the path that reached it first and drop the rest, so whatever lay behind a chunk whose first way
+// in had no air path onward was culled even when another way in did, and which path came first was
+// only queue order: the same flood walking its directions in reverse disagreed from 27 of 27
+// vantage points (--smoke). Now a chunk is drawn exactly when a path that never turns back toward
+// the camera reaches it through air. A straight line of sight is such a path, so nothing in plain
+// view is culled. Every step lands one step further from the camera, so the queue runs in rings
+// and a chunk has been entered by every face it ever will be before it is taken off it, which is
+// what makes collecting them first exact.
 void ChunkManager::rebuildVisibility(ChunkPos cameraChunk) {
     m_visBits.assign(std::size_t(std::max(1, (m_metaCount + 31) / 32)), 0u);
     const auto markVisible = [&](const Entry& e) {
@@ -1349,32 +1377,33 @@ void ChunkManager::rebuildVisibility(ChunkPos cameraChunk) {
     m_floodQueue.clear();
     markVisible(camIt->second);
     if (const std::size_t c = cellOf(cameraChunk); c != std::size_t(-1))
-        m_floodSeen[c] = 1;
-    m_floodQueue.push_back({cameraChunk, -1, 0, camIt->second.connectivity});
+        m_floodSeen[c] = kFloodQueued;
+    m_floodQueue.push_back(cameraChunk);
 
-    static constexpr int kStep[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
-                                        {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
     for (std::size_t head = 0; head < m_floodQueue.size(); ++head) {
-        const FloodNode node = m_floodQueue[head]; // copy: pushes may reallocate
+        const ChunkPos pos = m_floodQueue[head];
+        const std::size_t here = cellOf(pos);
+        // the camera's own chunk is open every way: it is seen from inside
+        const bool fromCamera = pos == cameraChunk;
+        const std::uint16_t connectivity =
+            fromCamera || here == std::size_t(-1) ? kAllFacesConnected : m_floodGrid[here]->connectivity;
+        const std::uint8_t entered = here == std::size_t(-1) ? 0 : m_floodSeen[here] & 0x3Fu;
         for (int d = 0; d < 6; ++d) {
-            // never step back toward the camera: each axis flows one way per path.
-            // (this is what keeps the flood bounded; it can over-cull wrap-around
-            // paths, which is the algorithm's documented trade)
-            if (node.dirMask & (1u << (d ^ 1)))
+            if (!floodMayStep(pos, cameraChunk, d))
                 continue;
-            // continue only through a face pair this chunk's air actually connects
-            if (node.entryFace >= 0 && !facesConnected(node.connectivity, node.entryFace, d))
+            if (!fromCamera && !floodPasses(connectivity, entered, d))
                 continue;
-            const ChunkPos next{node.pos.x + kStep[d][0], node.pos.y + kStep[d][1],
-                                node.pos.z + kStep[d][2]};
+            const ChunkPos next{pos.x + kFaceOffsets[d][0], pos.y + kFaceOffsets[d][1],
+                                pos.z + kFaceOffsets[d][2]};
             const std::size_t c = cellOf(next);
-            if (c == std::size_t(-1) || m_floodSeen[c] || m_floodGrid[c] == nullptr)
+            if (c == std::size_t(-1) || m_floodGrid[c] == nullptr)
                 continue;
-            m_floodSeen[c] = 1;
-            const Entry& e = *m_floodGrid[c];
-            markVisible(e);
-            m_floodQueue.push_back({next, std::int8_t(d ^ 1),
-                                    std::uint8_t(node.dirMask | (1u << d)), e.connectivity});
+            if (!(m_floodSeen[c] & kFloodQueued)) {
+                m_floodSeen[c] |= kFloodQueued;
+                markVisible(*m_floodGrid[c]);
+                m_floodQueue.push_back(next);
+            }
+            m_floodSeen[c] |= std::uint8_t(1u << (d ^ 1));
         }
     }
 }
@@ -1396,10 +1425,8 @@ bool ChunkManager::floodMatchesReference(ChunkPos cameraChunk, double* gridMs, d
 }
 
 void ChunkManager::floodByHash(ChunkPos cameraChunk, std::vector<std::uint32_t>& out) {
-    ++m_floodStamp;
     out.assign(std::size_t(std::max(1, (m_metaCount + 31) / 32)), 0u);
-    const auto markVisible = [&](Entry& e) {
-        e.floodStamp = m_floodStamp;
+    const auto markVisible = [&](const Entry& e) {
         if (e.metaIndex >= 0)
             out[std::size_t(e.metaIndex) >> 5] |= 1u << (e.metaIndex & 31);
     };
@@ -1411,32 +1438,39 @@ void ChunkManager::floodByHash(ChunkPos cameraChunk, std::vector<std::uint32_t>&
         return;
     }
 
+    ankerl::unordered_dense::map<ChunkPos, std::uint8_t, ChunkPosHash> seen;
     m_floodQueue.clear();
     markVisible(camIt->second);
-    m_floodQueue.push_back({cameraChunk, -1, 0, camIt->second.connectivity});
+    seen[cameraChunk] = kFloodQueued;
+    m_floodQueue.push_back(cameraChunk);
 
-    static constexpr int kStep[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
-                                        {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
     for (std::size_t head = 0; head < m_floodQueue.size(); ++head) {
-        const FloodNode node = m_floodQueue[head]; // copy: pushes may reallocate
-        for (int d = 0; d < 6; ++d) {
-            if (node.dirMask & (1u << (d ^ 1)))
+        const ChunkPos pos = m_floodQueue[head];
+        const bool fromCamera = pos == cameraChunk;
+        const std::uint16_t connectivity =
+            fromCamera ? kAllFacesConnected : m_chunks.find(pos)->second.connectivity;
+        const std::uint8_t entered = seen[pos] & 0x3Fu;
+        for (int d = 5; d >= 0; --d) {
+            if (!floodMayStep(pos, cameraChunk, d))
                 continue;
-            if (node.entryFace >= 0 && !facesConnected(node.connectivity, node.entryFace, d))
+            if (!fromCamera && !floodPasses(connectivity, entered, d))
                 continue;
-            const ChunkPos next{node.pos.x + kStep[d][0], node.pos.y + kStep[d][1],
-                                node.pos.z + kStep[d][2]};
+            const ChunkPos next{pos.x + kFaceOffsets[d][0], pos.y + kFaceOffsets[d][1],
+                                pos.z + kFaceOffsets[d][2]};
             if (next.y < 0 || next.y >= kWorldChunksY)
                 continue;
             if (std::abs(next.x - m_center.x) > radius || std::abs(next.z - m_center.z) > radius)
                 continue;
             const auto it = m_chunks.find(next);
-            if (it == m_chunks.end() || it->second.floodStamp == m_floodStamp)
+            if (it == m_chunks.end())
                 continue;
-            markVisible(it->second);
-            m_floodQueue.push_back({next, std::int8_t(d ^ 1),
-                                    std::uint8_t(node.dirMask | (1u << d)),
-                                    it->second.connectivity});
+            std::uint8_t& s = seen[next];
+            if (!(s & kFloodQueued)) {
+                s |= kFloodQueued;
+                markVisible(it->second);
+                m_floodQueue.push_back(next);
+            }
+            s |= std::uint8_t(1u << (d ^ 1));
         }
     }
 }
