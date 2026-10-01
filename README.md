@@ -93,6 +93,12 @@ through in gaps, so you get dappled floors and shafts rather than a flat dark bl
 night is lit by the moon, not by a raised ambient floor — it rides the same shadow cascades
 the sun does, so hills have a lit side after dark and the fill can stay low.
 
+underground is actually dark. a cave only gets light from what's down there with you (glow
+crystals, lamps) and from the sky near its openings, so a lamp makes a pool of light you walk
+out of into the dark instead of every wall sitting at the same grey. the light hangs in the air
+a little too, so lamps glow rather than just painting the rock around them, and the auto
+exposure only takes the edge off the dark instead of turning a cave into daytime.
+
 ## sound
 
 blocks sound like what they're made of, footsteps included. breaking, placing and walking
