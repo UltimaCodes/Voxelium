@@ -25,8 +25,16 @@ std::uint16_t computeConnectivity(const Chunk& chunk) {
 
     // explicit-queue BFS, seeded only from border air voxels — interior air bubbles
     // can't connect faces, so they are never visited at all
-    thread_local std::vector<std::uint16_t> queue;
-    thread_local std::vector<std::uint64_t> visited; // 32768 bits
+    //
+    // Per-thread scratch that is never destroyed, on purpose. With this toolchain (MinGW-w64
+    // GCC, emulated TLS) a thread_local that has a destructor can have its storage freed by
+    // emutls before that destructor runs when the thread exits, and the destructor then frees
+    // garbage: heap corruption every time a worker exits, which a Debug smoke under gdb caught
+    // at shutdown (c0000374). A ten-line repro hits it 5 runs of 5; held like this, 0 of 5.
+    // Workers live as long as the process, so not freeing it costs nothing. The mesher and the
+    // generator's cave buffers are held the same way.
+    thread_local std::vector<std::uint16_t>& queue = *new std::vector<std::uint16_t>();
+    thread_local std::vector<std::uint64_t>& visited = *new std::vector<std::uint64_t>(); // 32768 bits
     visited.assign(kChunkSize3 / 64, 0);
 
     const auto isVisited = [](int idx) {

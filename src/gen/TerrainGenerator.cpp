@@ -447,9 +447,11 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
     // for coarse (far) chunks — the LOD downsample collapses caves to solid anyway, and
     // the 3d noise + carve is by far the most expensive part of gen.
     if (detailed && baseY <= hMax - 2) {
-        static thread_local std::vector<float> cheeseBuf;
-        static thread_local std::vector<float> wormABuf;
-        static thread_local std::vector<float> wormBBuf;
+        // never destroyed on purpose: see computeConnectivity (a thread_local with a destructor
+        // corrupts the heap when a worker exits, on this toolchain)
+        static thread_local std::vector<float>& cheeseBuf = *new std::vector<float>();
+        static thread_local std::vector<float>& wormABuf = *new std::vector<float>();
+        static thread_local std::vector<float>& wormBBuf = *new std::vector<float>();
         cheeseBuf.resize(std::size_t(kChunkSize3));
         wormABuf.resize(std::size_t(kChunkSize3));
         wormBBuf.resize(std::size_t(kChunkSize3));

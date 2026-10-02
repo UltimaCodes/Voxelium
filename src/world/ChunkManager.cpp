@@ -1045,7 +1045,10 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         std::vector<PackedQuad>* quadBuf = m_quadPool.checkout();
         std::vector<PackedQuad>* waterBuf = m_waterPool.checkout();
         jobs.submit([this, voxels, nb, pos, lod, skirt, quadBuf, waterBuf] {
-            thread_local GreedyMesher mesher; // one per worker thread, reused across jobs
+            // one per worker thread, reused across jobs, and never destroyed on purpose: see
+            // computeConnectivity (a thread_local with a destructor corrupts the heap when a
+            // worker exits, on this toolchain)
+            thread_local GreedyMesher& mesher = *new GreedyMesher();
             const auto t0 = Clock::now();
             const GreedyStats stats =
                 mesher.mesh(*voxels, nb.data(), *quadBuf, *waterBuf, lod, skirt);
