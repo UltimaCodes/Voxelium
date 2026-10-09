@@ -1453,6 +1453,16 @@ void ChunkManager::prepareLightSlice(LightEngine& light) {
         // to be generated, and starting it anyway only aborted and queued it again, every frame
         // - 87,655 aborted starts against 3,504 finished seeds in one ten-chunk walk at radius 32.
         if (!neighborhoodSettled(col) || !columnPresent(col)) {
+            // Past the ring rescan() generates (radius + 2) its missing chunks will never come,
+            // so waiting for them kept it here, and busy() true, for good: a --tour run sat out
+            // the 40000-frame cap at four stops in a row on one such column, and the in-game
+            // world switch drains on busy(). Dropped like requeueSeed drops one; the gen-done
+            // drain queues it again if the camera comes back and it completes.
+            if (std::abs(col.x - m_center.x) > radius + 2 || std::abs(col.z - m_center.z) > radius + 2) {
+                m_seededColumns.erase(col);
+                m_provisionalColumns.erase(col);
+                continue;
+            }
             m_seedDeferred.push_back(col); // retry once the column and neighbours settle
             continue;
         }
