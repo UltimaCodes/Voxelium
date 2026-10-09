@@ -49,6 +49,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace vx {
@@ -411,6 +412,69 @@ int runSmokeTest(RenderContext& rc, vx::ChunkManager& world, vx::JobSystem& jobs
         world.loadWorld(rc.renderer, beforeSeed, outPath.parent_path() / "vxsave_smoke");
         camera.position = {16.0, 110.0, 16.0};
         drain();
+    }
+
+    // The game runs the light phase on the light thread (startLightSlice / finishLightSlice) and
+    // nothing above does. Settle the same fresh world twice, inline and through the thread, and
+    // require identical light chunk by chunk around the camera: light is the same whatever order
+    // it arrives in (SPEC #151), so a difference is the thread doing what the inline path does not.
+    {
+        const int homeSeed = world.seed();
+        const int seed = homeSeed + 31;
+        const auto dir = outPath.parent_path() / "vxsave_lightthread";
+        const auto lightHash = [&] {
+            const int ccx = int(std::floor(camera.position.x / vx::kChunkSize));
+            const int ccz = int(std::floor(camera.position.z / vx::kChunkSize));
+            std::uint64_t h = 1469598103934665603ull;
+            int chunks = 0;
+            for (int dz = -1; dz <= 1; ++dz)
+                for (int dx = -1; dx <= 1; ++dx) {
+                    int y0 = 0, y1 = 0;
+                    bool sky = false;
+                    world.columnRange(ccx + dx, ccz + dz, y0, y1, sky);
+                    for (int cy = y0; cy <= y1; ++cy, ++chunks)
+                        for (int y = 0; y < vx::kChunkSize; ++y)
+                            for (int z = 0; z < vx::kChunkSize; ++z)
+                                for (int x = 0; x < vx::kChunkSize; ++x)
+                                    h = (h ^ light.lightAt({(ccx + dx) * vx::kChunkSize + x, cy * vx::kChunkSize + y,
+                                                            (ccz + dz) * vx::kChunkSize + z})) *
+                                        1099511628211ull;
+                }
+            return std::pair{h, chunks};
+        };
+        const auto fresh = [&] {
+            std::error_code ec;
+            std::filesystem::remove_all(dir, ec);
+            world.loadWorld(rc.renderer, seed, dir);
+            camera.position = {16.0, double(world.generator().surfaceHeight(16, 16) + 8), 16.0};
+        };
+        fresh();
+        drain();
+        const auto inlineLight = lightHash();
+        fresh();
+        int frames = 0;
+        for (; frames < 20000 && (world.busy() || !light.idle() || frames == 0); ++frames) {
+            rc.renderer.beginFrame();
+            world.update(jobs, rc.renderer, light, camera.position);
+            world.startLightSlice(light);
+            world.finishLightSlice(light);
+            rc.renderer.endFrame();
+        }
+        world.refreshStats();
+        const int unlit = world.stats().unlit;
+        const auto threadLight = lightHash();
+        const bool same = inlineLight == threadLight;
+        VX_INFO("light thread: settled in %d frames, %d unlit (want 0), light of %d chunks %s the inline "
+                "path's -> %s",
+                frames, unlit, threadLight.second, same ? "matches" : "DIFFERS from",
+                (same && unlit == 0) ? "PASS" : "FAIL");
+        world.loadWorld(rc.renderer, homeSeed, outPath.parent_path() / "vxsave_smoke");
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+        camera.position = {16.0, 110.0, 16.0};
+        drain();
+        if (!same || unlit != 0)
+            return 1;
     }
 
     // An edited chunk is saved on a worker when it is evicted, and that save was invisible to
