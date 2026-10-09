@@ -205,6 +205,14 @@ vec3 reflection(vec3 P, vec3 R, float jitter) {
 #else
     const int kMarch = 28;
 #endif
+    // Owner report: distant reflections came out as horizontal lines, island and sky in
+    // alternating rows. A sample used to count as a hit only within 2.5 blocks behind the
+    // surface, but the steps grow to tens of blocks out at a far island, so most rays jumped
+    // from in front of it to well behind it in one step, missed, and fell back to sky; which
+    // rows landed inside the window followed the swell crests. Now a hit is the ray crossing:
+    // in front of the scene at the last sample, behind it at this one, by no more than this
+    // step can explain (still bounded, so a ray passing behind a thin trunk does not catch it).
+    bool wasFront = true; // starts at the water, in front of whatever is behind it
     for (int i = 0; i < kMarch; ++i) {
         sp += R * stepLen;
         vec4 clip = uViewProj * vec4(sp, 1.0);
@@ -217,7 +225,10 @@ vec3 reflection(vec3 P, vec3 R, float jitter) {
         if (rawD > 0.0) {
             float sceneZ = -uNear / rawD;   // view-space z of the scene at uv (negative)
             float marchZ = -clip.w;         // view-space z of the marched point
-            if (marchZ < sceneZ && marchZ > sceneZ - 2.5) {
+            float behind = sceneZ - marchZ; // > 0: the marched point is behind the scene
+            bool crossed = behind > 0.0 && wasFront && behind < max(2.5, stepLen * 1.5);
+            wasFront = behind <= 0.0;
+            if (crossed) {
                 // Binary-refine the crossing. A linear march only knows the hit to within
                 // one (growing) step, and at grazing angles that step is metres long — the
                 // reflection then samples well past the silhouette it should have stopped
@@ -237,6 +248,8 @@ vec3 reflection(vec3 P, vec3 R, float jitter) {
                 float edge = e.x * e.y;
                 return mix(skyColor(R), texture(uSceneColor, uv).rgb, edge);
             }
+        } else {
+            wasFront = true; // sky here: nothing to be behind
         }
         stepLen *= 1.18; // grow steps: dense near the surface, coarse far away
     }
