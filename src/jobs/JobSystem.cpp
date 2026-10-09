@@ -16,10 +16,14 @@ namespace vx {
 
 JobSystem::JobSystem() {
     const unsigned hw = std::thread::hardware_concurrency();
-    // Two cores stay free: the main thread, and the GL driver's own submission thread. With
-    // every core running a worker the render thread gets time-sliced against streaming, which
-    // is felt as frame-rate loss exactly while chunks load.
-    const unsigned count = std::max(1u, hw > 2 ? hw - 2 : 1u);
+    // Three hardware threads stay free: the main thread, the GL driver's own submission thread,
+    // and the light thread (ChunkManager::startLightSlice), which runs while the frame is
+    // submitted. With every one running a worker the render thread gets time-sliced against
+    // streaming, which is felt as frame-rate loss exactly while chunks load. Below-normal
+    // priority alone did not stop it: a 1080p Ultra flight with one worker fewer (9 of 12
+    // threads) had the scene pass back from 6.6 to 5.9 ms and the frame 11.5 -> 10.9 ms, and the
+    // ring still finished after a walk as soon as it did before the light thread existed.
+    const unsigned count = std::max(1u, hw > 3 ? hw - 3 : 1u);
     m_workers.reserve(count);
     for (unsigned i = 0; i < count; ++i)
         m_workers.emplace_back([this](std::stop_token stop) { workerLoop(stop); });
