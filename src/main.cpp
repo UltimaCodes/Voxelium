@@ -1284,6 +1284,7 @@ int main(int argc, char** argv) {
             lightning.reset();
             snowCover = 0.0f;
             farTerrain.reset();
+            lightVolume.invalidate();
             int newSeed = 0;
             const char* title = "voxelium";
             if (wantLoad && worldStore.load(worldUi.selected, newSeed)) {

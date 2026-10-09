@@ -82,6 +82,11 @@ void LightVolume::update(const ChunkManager& world, const glm::dvec3& camera, in
     }
 }
 
+void LightVolume::invalidate() {
+    for (Slot& s : m_slots)
+        s = Slot{};
+}
+
 bool LightVolume::anyLight() const {
     for (const Slot& s : m_slots)
         if (s.lit)

@@ -42,6 +42,9 @@ public:
     glm::vec3 regionMinRel() const { return m_minRel; }
     // False when no chunk in range holds any block light: nothing to march.
     bool anyLight() const;
+    // Another world is loading: every slot is re-read on the next update rather than showing
+    // the old world's light until its turn comes round.
+    void invalidate();
 
 private:
     struct Slot {
