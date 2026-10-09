@@ -208,7 +208,7 @@ private:
     unsigned int m_progSsao = 0, m_progBlur = 0, m_progComposite = 0, m_progApplyAo = 0;
     unsigned int m_progBloomDown = 0, m_progBloomUp = 0, m_progFinal = 0;
     unsigned int m_progTaa = 0, m_progSsgi = 0, m_progMotion = 0;
-    unsigned int m_progLumDown = 0, m_progExpose = 0, m_progCloudMap = 0;
+    unsigned int m_progLumDown = 0, m_progExpose = 0, m_progCloudMap = 0, m_progScatter = 0;
     unsigned int m_vao = 0;
 
     // 6 blocks a texel: the field's finest surviving octave is ~150 blocks across, so
@@ -230,6 +230,7 @@ private:
     unsigned int m_ssaoFbo = 0, m_ssaoTex = 0;
     unsigned int m_ssaoBlurFbo = 0, m_ssaoBlurTex = 0;
     unsigned int m_ssgiFbo = 0, m_ssgiTex = 0; // half-res RGBA16F bounce
+    unsigned int m_scatterFbo = 0, m_scatterTex = 0; // half-res light in the air, a = distance
 
     // Auto-exposure. kLumSize must be a power of two: the average is the last mip, so the
     // chain has to bottom out at exactly 1x1.

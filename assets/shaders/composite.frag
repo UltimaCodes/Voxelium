@@ -17,10 +17,9 @@
 #define VX_SHADOW_RES 1536.0
 #endif
 
-// applies SSAO to the scene, paints a real sky for pixels with no geometry (gradient +
-// sun disc + horizon glow — no extra pass), and adds volumetric sun scattering
-// raymarched through the shadow cascades for geometry pixels. output stays HDR; bloom
-// and tonemapping come after.
+// paints a real sky for pixels with no geometry (gradient + sun disc + horizon glow — no extra
+// pass), and adds SSGI, the light in the air (marched at half res by scatter.frag), underwater
+// and distance fog. output stays HDR; bloom and tonemapping come after.
 
 in vec2 vUv;
 layout(location = 0) out vec4 outColor;
@@ -29,7 +28,7 @@ layout(binding = 0) uniform sampler2D uScene;
 layout(binding = 3) uniform sampler2D uDepth;
 layout(binding = 4) uniform sampler2D uSsgi;
 layout(binding = 1) uniform sampler2DArrayShadow uShadowMap;
-layout(binding = 7) uniform sampler3D uLightVol; // voxel light around the camera (LightVolume)
+layout(binding = 5) uniform sampler2D uScatter; // half-res light in the air (scatter.frag), a = its distance
 
 layout(location = 0) uniform vec2 uProjScale; // (aspect/f, 1/f)
 layout(location = 1) uniform float uNear;
@@ -44,8 +43,8 @@ layout(location = 19) uniform float uUnderwater; // 1 when the camera eye is sub
 layout(location = 20) uniform float uCloudsOn;
 layout(location = 21) uniform float uTime;
 layout(location = 22) uniform float uSsgiOn;
+layout(location = 24) uniform float uVolumetricOn; // sun shafts on (underwater ones here; the rest in scatter.frag)
 // location 23 (uAoOn) retired - AO moved to apply_ao.frag, run before water is drawn
-layout(location = 24) uniform float uVolumetricOn; // moved off 4
 layout(location = 25) uniform vec3 uSunColor;      // day/night sun radiance
 layout(location = 26) uniform vec2 uFog;           // (start, end) distance; huge = off
 layout(location = 30) uniform vec3 uLightL;        // toward sun by day, moon by night
@@ -56,9 +55,7 @@ layout(location = 35) uniform vec3 uBiomeTint;     // the air of this place: mul
 layout(location = 36) uniform float uBiomeHaze;    // and thickens it, 0..~0.2
 layout(location = 27) uniform float uFlare;        // lens flare strength, 0 = off
 layout(location = 28) uniform vec3 uCamPos;        // camera world position (clouds are world-anchored)
-layout(location = 37) uniform vec3 uVolCam;        // camera in light-volume texels, axis order (x, z, y)
-layout(location = 38) uniform vec3 uVolMin;        // the volume's low corner relative to the camera
-layout(location = 39) uniform float uVolOn;        // 1 when some block light is in range
+layout(location = 40) uniform float uScatterOn;    // 1 when scatter.frag ran this frame
 // location 29 (uContact) retired - screen-space contact shadows removed entirely (owner
 // call: subtle at best, and every previous tuning pass on this effect - #58's darkening
 // stack, #84's "hard black" fix - was fighting it compounding with AO/cloud shadow/direct
@@ -68,9 +65,6 @@ layout(location = 39) uniform float uVolOn;        // 1 when some block light is
 
 const vec3 kWaterDeep = vec3(0.03, 0.13, 0.20);
 const float kSeaLevel = 62.0; // matches gen/TerrainGenerator kSeaLevel
-// How much a block of air scatters back of the lamp light in it. Tuned against hidden cave
-// shots so a lamp gets a halo a few blocks across without fogging the cave.
-const float kLampAir = 0.03;
 
 // Caustics. Voronoi-ish: two layers of cellular distance, scrolled against each other and
 // sharpened, which is the standard trick for the bright wandering web on a seabed. Two
@@ -321,28 +315,39 @@ vec3 skyWithClouds(vec3 dir) {
     return s;
 }
 
-// 4-tap softened shadow lookup for the raymarch — a single tap makes the light shafts
-// alias into a grid against the shadow texels; averaging a few taps smooths them out.
-float shadowSingle(vec3 pos) {
-    float d = length(pos);
-    if (d >= uCascadeSplit.z)
-        return 1.0;
-    int c = d < uCascadeSplit.x ? 0 : (d < uCascadeSplit.y ? 1 : 2);
-    vec4 sc = uCascadeVp[c] * vec4(pos, 1.0);
-    vec2 uv = sc.xy * 0.5 + 0.5;
-    float z = sc.z - 0.0015;
-    float t = 1.5 / VX_SHADOW_RES;
-    return 0.25 * (texture(uShadowMap, vec4(uv + vec2(t, t), float(c), z)) +
-                   texture(uShadowMap, vec4(uv + vec2(-t, t), float(c), z)) +
-                   texture(uShadowMap, vec4(uv + vec2(t, -t), float(c), z)) +
-                   texture(uShadowMap, vec4(uv + vec2(-t, -t), float(c), z)));
+#include "march.glsl"
+
+// scatter.frag's half-res light back up to full res without halos: the four texels around this
+// pixel, each weighted by how close the distance it was marched to is to this pixel's own, so
+// a tree edge does not pick up the shaft that ran past it to the hills behind. If none is close
+// (a thin pole), the nearest in distance stands in.
+vec3 upsampleScatter(float dist) {
+    ivec2 size = textureSize(uScatter, 0);
+    vec2 p = vUv * vec2(size) - 0.5;
+    ivec2 i0 = ivec2(floor(p));
+    vec2 f = p - vec2(i0);
+    vec3 sum = vec3(0.0);
+    float wsum = 0.0;
+    vec3 nearest = vec3(0.0);
+    float best = 1e9;
+    float tol = 0.04 * dist + 0.5;
+    for (int j = 0; j < 4; ++j) {
+        ivec2 o = ivec2(j & 1, j >> 1);
+        vec4 s = texelFetch(uScatter, clamp(i0 + o, ivec2(0), size - 1), 0);
+        float diff = abs(s.a - dist);
+        float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y) * exp(-diff / tol);
+        sum += s.rgb * w;
+        wsum += w;
+        if (diff < best) {
+            best = diff;
+            nearest = s.rgb;
+        }
+    }
+    return wsum > 1e-4 ? sum / wsum : nearest;
 }
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 
-// interleaved gradient noise — a much better dither than a plain hash, so the raymarch
-// start offset breaks up banding evenly instead of in blotches
-float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
 
 // Screen-space lens flare for the one light that matters. The ghosts are procedural rather
 // than resampled scene colour: the resample trick wants a downsampled thresholded buffer to
@@ -437,77 +442,15 @@ void main() {
         color += texture(uSsgi, vUv).rgb * 1.15; // one-bounce indirect fill (#75 raised to 1.6,
         // walked back after "too bright, no contrast" - see ssgi.frag's kRadius comment)
 
-    // reconstruct the camera-relative world position once, for volumetrics + fog
+    // reconstruct the camera-relative world position once, for the air light + fog
     float viewZ = -uNear / max(rawD, 1e-7);
     vec2 ndc = vUv * 2.0 - 1.0;
     vec3 worldRel = uInvViewRot *
                     vec3(ndc.x * uProjScale.x * -viewZ, ndc.y * uProjScale.y * -viewZ, viewZ);
     float dist = length(worldRel);
 
-    if (uVolumetricOn > 0.5) {
-        float len = min(dist, 150.0);
-        vec3 rd = normalize(worldRel);
-
-#if   VX_QUALITY == 0
-        const int kSteps = 6;
-#elif VX_QUALITY == 1
-        const int kSteps = 8;
-#elif VX_QUALITY == 3
-        const int kSteps = 24;
-#else
-        const int kSteps = 16;
-#endif
-        float stepLen = len / float(kSteps);
-        float t = stepLen * ign(gl_FragCoord.xy); // dithered start, breaks up banding
-        float scatter = 0.0;
-        for (int i = 0; i < kSteps; ++i) {
-            scatter += shadowSingle(rd * t);
-            t += stepLen;
-        }
-        scatter /= float(kSteps);
-        // stronger forward lobe + a touch more intensity so the god-ray shafts read
-        // clearly when looking toward the sun, without bringing the aliased grid back
-        float phase = 0.10 + 0.90 * pow(max(dot(rd, uLightL), 0.0), 5.0);
-        // uSunColor carries the day/night intensity, so the shafts fade out at night.
-        // Raised from 0.00018 (#76): reference shader-pack screenshots show god rays as a
-        // dominant compositional element through gaps in foliage/terrain, not a faint haze.
-        color += uLightColor * (scatter * phase * len * 0.00032);
-    }
-
-    // Lamp light in the air. The cascades give the sun its shafts above; a lamp's light only
-    // ever landed on faces, so a cave lit by one read as walls painted bright around a hole of
-    // darkness, nothing between. This marches the voxel light around the camera (LightVolume,
-    // filtered, so it is smooth between voxels where the faces are stepped) and adds what the
-    // air along the ray would scatter back. Only what lamps and glow give: sky light in the air
-    // is the distance haze's job.
-    if (uVolOn > 0.5) {
-        float len = min(dist, 56.0);
-        vec3 rd = normalize(worldRel);
-#if   VX_QUALITY == 0
-        const int kLampSteps = 6;
-#elif VX_QUALITY == 1
-        const int kLampSteps = 8;
-#elif VX_QUALITY == 3
-        const int kLampSteps = 16;
-#else
-        const int kLampSteps = 12;
-#endif
-        float stepLen = len / float(kLampSteps);
-        float t = stepLen * ign(gl_FragCoord.xy + vec2(37.0, 11.0));
-        vec3 glow = vec3(0.0);
-        for (int i = 0; i < kLampSteps; ++i) {
-            vec3 p = rd * t;
-            vec3 q = p - uVolMin;
-            if (all(greaterThanEqual(q, vec3(0.0))) && all(lessThan(q, vec3(128.0)))) {
-                vec3 l = texture(uLightVol, (uVolCam + p.xzy) / 128.0).rgb;
-                // steeper than a lit face's l * l: the glow stays close round the light
-                // instead of hazing the dark rock the ray passes on its way
-                glow += l * l * l;
-            }
-            t += stepLen;
-        }
-        color += vec3(1.12, 1.0, 0.88) * glow * (stepLen * kLampAir);
-    }
+    if (uScatterOn > 0.5)
+        color += upsampleScatter(dist);
 
     if (uUnderwater > 0.5) {
         // Caustics on whatever the light lands on down here. Driven by world position, so

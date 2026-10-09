@@ -62,9 +62,10 @@ bool PostFx::reloadPrograms(std::string_view defines) {
         submitProgram(fs, shaderDir / "expose.frag", defines),
         submitProgram(fs, shaderDir / "apply_ao.frag", defines),
         submitProgram(fs, shaderDir / "cloudmap.frag", defines),
+        submitProgram(fs, shaderDir / "scatter.frag", defines),
     };
-    unsigned int built[13];
-    for (int i = 0; i < 13; ++i)
+    unsigned int built[14];
+    for (int i = 0; i < 14; ++i)
         built[i] = resolveProgram(jobs[i]);
     for (const unsigned int p : built) {
         if (p == 0) { // leave the working set alone rather than half-swapping it
@@ -78,7 +79,7 @@ bool PostFx::reloadPrograms(std::string_view defines) {
     const unsigned int old[] = {m_progSsao,    m_progBlur,  m_progComposite, m_progBloomDown,
                                 m_progBloomUp, m_progFinal, m_progTaa,       m_progSsgi,
                                 m_progMotion,  m_progLumDown, m_progExpose,  m_progApplyAo,
-                                m_progCloudMap};
+                                m_progCloudMap, m_progScatter};
     for (const unsigned int p : old)
         if (p)
             glDeleteProgram(p);
@@ -96,6 +97,7 @@ bool PostFx::reloadPrograms(std::string_view defines) {
     m_progExpose = built[10];
     m_progApplyAo = built[11];
     m_progCloudMap = built[12];
+    m_progScatter = built[13];
     if (m_vao == 0)
         glCreateVertexArrays(1, &m_vao);
     if (m_cloudTex == 0) {
@@ -110,7 +112,7 @@ void PostFx::shutdown() {
     const GLuint progs[] = {m_progSsao,  m_progBlur,    m_progComposite, m_progBloomDown,
                             m_progBloomUp, m_progFinal, m_progTaa,       m_progSsgi,
                             m_progMotion, m_progLumDown, m_progExpose,   m_progApplyAo,
-                            m_progCloudMap};
+                            m_progCloudMap, m_progScatter};
     for (const GLuint p : progs)
         glDeleteProgram(p);
     glDeleteFramebuffers(1, &m_cloudFbo);
@@ -149,6 +151,8 @@ void PostFx::destroyTargets() {
                             m_sceneCopy, m_taa[0], m_taa[1], m_ssgiTex, m_motionTex};
     glDeleteTextures(10, texes);
     glDeleteFramebuffers(1, &m_ssgiFbo);
+    glDeleteFramebuffers(1, &m_scatterFbo);
+    glDeleteTextures(1, &m_scatterTex);
     glDeleteFramebuffers(1, &m_motionFbo);
     glDeleteFramebuffers(1, &m_lumFbo);
     glDeleteFramebuffers(2, m_adaptFbo);
@@ -190,6 +194,9 @@ void PostFx::createTargets(int width, int height) {
     // half-res coloured bounce; LINEAR so the composite upsample is smooth
     m_ssgiTex = makeTex2D(GL_RGBA16F, hw, hh);
     m_ssgiFbo = makeFbo(m_ssgiTex);
+    // half-res light in the air; read back with texelFetch, so NEAREST
+    m_scatterTex = makeTex2D(GL_RGBA16F, hw, hh, GL_NEAREST);
+    m_scatterFbo = makeFbo(m_scatterTex);
 
     // Auto-exposure: a mipped log-luminance square whose last mip is the scene average, and
     // two 1x1 textures the adaptation ping-pongs between. Fixed size, so this costs the
@@ -303,7 +310,33 @@ void PostFx::run(const RunParams& p) {
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
 
-    // composite: AO + volumetric scattering, still HDR
+    // Light in the air - sun shafts and lamp glow - marched at half res; the composite reads it
+    // back up depth-aware. It was marched per full-res pixel inside the composite.
+    const bool sunShafts = p.toggles.volumetric && p.toggles.shadows;
+    const bool scatter = sunShafts || p.lightVolume != 0;
+    const glm::vec3 splits = p.shadows->splits();
+    if (scatter) {
+        glBindFramebuffer(GL_FRAMEBUFFER, m_scatterFbo);
+        glViewport(0, 0, std::max(m_width / 2, 1), std::max(m_height / 2, 1));
+        glUseProgram(m_progScatter);
+        glProgramUniform2fv(m_progScatter, 0, 1, &p.projScale.x);
+        glProgramUniform1f(m_progScatter, 1, p.nearPlane);
+        glProgramUniformMatrix3fv(m_progScatter, 2, 1, GL_FALSE, &p.invViewRot[0][0]);
+        glProgramUniformMatrix4fv(m_progScatter, 6, 3, GL_FALSE, &p.shadows->cascadeVp()[0][0][0]);
+        glProgramUniform3fv(m_progScatter, 18, 1, &splits.x);
+        glProgramUniform1f(m_progScatter, 24, sunShafts ? 1.0f : 0.0f);
+        glProgramUniform3fv(m_progScatter, 30, 1, &p.lightL.x);
+        glProgramUniform3fv(m_progScatter, 31, 1, &p.lightColor.x);
+        glProgramUniform3fv(m_progScatter, 37, 1, &p.lightVolumeCam.x);
+        glProgramUniform3fv(m_progScatter, 38, 1, &p.lightVolumeMin.x);
+        glProgramUniform1f(m_progScatter, 39, p.lightVolume != 0 ? 1.0f : 0.0f);
+        glBindTextureUnit(1, p.shadows->texture());
+        glBindTextureUnit(3, m_depth);
+        glBindTextureUnit(7, p.lightVolume);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+
+    // composite: sky, SSGI, the air light, fog - still HDR
     glBindFramebuffer(GL_FRAMEBUFFER, m_hdr2Fbo);
     glViewport(0, 0, m_width, m_height);
     glUseProgram(m_progComposite);
@@ -311,8 +344,7 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform1f(m_progComposite, 1, p.nearPlane);
     glProgramUniformMatrix3fv(m_progComposite, 2, 1, GL_FALSE, &p.invViewRot[0][0]);
     // location 23 (uAoOn) retired - AO now applied in applyOpaqueSsao(), before water draws
-    glProgramUniform1f(m_progComposite, 24,
-                       p.toggles.volumetric && p.toggles.shadows ? 1.0f : 0.0f);
+    glProgramUniform1f(m_progComposite, 24, sunShafts ? 1.0f : 0.0f);
     glProgramUniform3fv(m_progComposite, 5, 1, &p.sunL.x);
     glProgramUniform3fv(m_progComposite, 25, 1, &p.sunColor.x);
     glProgramUniform2fv(m_progComposite, 26, 1, &p.fog.x);
@@ -328,16 +360,13 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform1f(m_progComposite, 36, p.toggles.biomeHaze);
     glProgramUniformMatrix4fv(m_progComposite, 6, 3, GL_FALSE,
                               &p.shadows->cascadeVp()[0][0][0]);
-    const glm::vec3 splits = p.shadows->splits();
     glProgramUniform3fv(m_progComposite, 18, 1, &splits.x);
     glProgramUniform1f(m_progComposite, 19, p.underwater ? 1.0f : 0.0f);
     glProgramUniform1f(m_progComposite, 20, p.toggles.clouds ? 1.0f : 0.0f);
     glProgramUniform1f(m_progComposite, 21, p.time);
     glProgramUniform1f(m_progComposite, 22, p.toggles.ssgi ? 1.0f : 0.0f);
-    glProgramUniform3fv(m_progComposite, 37, 1, &p.lightVolumeCam.x);
-    glProgramUniform3fv(m_progComposite, 38, 1, &p.lightVolumeMin.x);
-    glProgramUniform1f(m_progComposite, 39, p.lightVolume != 0 ? 1.0f : 0.0f);
-    glBindTextureUnit(7, p.lightVolume);
+    glProgramUniform1f(m_progComposite, 40, scatter ? 1.0f : 0.0f);
+    glBindTextureUnit(5, m_scatterTex);
     glBindTextureUnit(0, m_hdrColor);
     glBindTextureUnit(1, p.shadows->texture());
     glBindTextureUnit(3, m_depth);
