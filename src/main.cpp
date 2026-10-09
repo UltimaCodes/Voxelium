@@ -1069,8 +1069,44 @@ int main(int argc, char** argv) {
         // the beds, and settles the submerged filter. None of that can happen at play time.
         audio.update(float(dt));
 
+        // Before the world update: these change blocks and light, and from the end of the update
+        // until the frame is drawn the light thread owns the light (see startLightSlice).
+        //
+        // Fluid runs on its own slow clock, not per frame: water moving at 60 Hz looks
+        // like a nervous twitch rather than a flow, and each tick is a batched edit that
+        // remeshes whatever it touched. 6 Hz reads as liquid and keeps the cost off most
+        // frames entirely.
+        static double fluidClock = 0.0;
+        fluidClock += dt;
+        if (fluidClock >= 1.0 / 6.0) {
+            fluidClock = 0.0;
+            world->stepFluid(renderer, *light, camera.position);
+        }
+        // Falling runs faster than water: 6 Hz makes a collapsing pile look like it is
+        // being dragged down a step at a time, where gravity should read as quick. Costs
+        // nothing when nothing has been disturbed — the queue is empty and it returns.
+        static double fallClock = 0.0;
+        fallClock += dt;
+        if (fallClock >= 1.0 / 12.0) {
+            fallClock = 0.0;
+            int landed = 0;
+            glm::ivec3 landedAt{0};
+            world->stepFalling(renderer, *light, &landed, &landedAt);
+            if (landed > 0) {
+                // One sound for the whole collapse, not one per block — thirty grains of
+                // sand arriving in the same tick is a single event to the ear. The count
+                // only sets how big it sounds.
+                const glm::dvec3 at(landedAt);
+                const vx::BlockId what = world->blockAtWorld(landedAt);
+                audioHit(audio, "break", int(what), at, occlusionTo(at), 0.85f,
+                         std::min(0.30f + 0.06f * float(landed), 0.75f));
+            }
+        }
         world->detailScale = fx.lodDetail;
         world->update(*jobs, renderer, *light, camera.position);
+        // Light seeding and propagation run on the light thread from here until the frame is
+        // drawn: everything in between only reads the world.
+        world->startLightSlice(*light);
         if (fx.farTerrain)
             farTerrain.update(world->generator(), *jobs, camera.position);
         {
@@ -1107,36 +1143,6 @@ int main(int argc, char** argv) {
             wildlife.update(float(dt), *world, camera.position, we);
         }
 
-        // Fluid runs on its own slow clock, not per frame: water moving at 60 Hz looks
-        // like a nervous twitch rather than a flow, and each tick is a batched edit that
-        // remeshes whatever it touched. 6 Hz reads as liquid and keeps the cost off most
-        // frames entirely.
-        static double fluidClock = 0.0;
-        fluidClock += dt;
-        if (fluidClock >= 1.0 / 6.0) {
-            fluidClock = 0.0;
-            world->stepFluid(renderer, *light, camera.position);
-        }
-        // Falling runs faster than water: 6 Hz makes a collapsing pile look like it is
-        // being dragged down a step at a time, where gravity should read as quick. Costs
-        // nothing when nothing has been disturbed — the queue is empty and it returns.
-        static double fallClock = 0.0;
-        fallClock += dt;
-        if (fallClock >= 1.0 / 12.0) {
-            fallClock = 0.0;
-            int landed = 0;
-            glm::ivec3 landedAt{0};
-            world->stepFalling(renderer, *light, &landed, &landedAt);
-            if (landed > 0) {
-                // One sound for the whole collapse, not one per block — thirty grains of
-                // sand arriving in the same tick is a single event to the ear. The count
-                // only sets how big it sounds.
-                const glm::dvec3 at(landedAt);
-                const vx::BlockId what = world->blockAtWorld(landedAt);
-                audioHit(audio, "break", int(what), at, occlusionTo(at), 0.85f,
-                         std::min(0.30f + 0.06f * float(landed), 0.75f));
-            }
-        }
         if (world->consumeDirty()) {
             world->collectDrawInfo(drawInfo, waterInfo);
             renderer.updateChunkMeta(drawInfo);
@@ -1187,6 +1193,7 @@ int main(int argc, char** argv) {
                 overlay.drawHotbar(fbW, fbH, kHotbar, kHotbarCount, hotbarSel, blockTex);
         }
 
+        world->finishLightSlice(*light); // before anything below can change the world
         const vx::ChunkManager::Stats ws = world->stats();
         const vx::Renderer::ArenaStats as = renderer.arenaStats();
         const std::uint64_t allocsNow = vx::heapAllocCount();

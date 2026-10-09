@@ -507,192 +507,17 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     }
     m_genDoneScratch.clear();
 
-    // budgeted light seeding + propagation, then remesh whatever light touched.
-    // seeding costs ~0.5-1 ms per column, so keep the per-frame count low.
-    //
-    // seedColumn reads the column's 4 horizontal neighbors too (cave-mouth spread), so
-    // none of them may be mid-generation on a worker — a Generating chunk has a live
-    // writer racing makeUniform's clear()/push_back() and would read a torn palette.
-    // absent neighbors are fine (blockAt treats them as stone); only Generating blocks.
-    //
-    // The whole resident band, with room for chunks still waiting to be evicted after a move -
-    // not 0..kWorldChunksY, a #27 leftover that never looked below y=0 or above the old world
-    // top. The band reaches seven chunks under the camera, so standing anywhere below y=224
-    // made deep-stone chunks resident at negative y, and a seed could read one while a
-    // worker was clearing its palette to regenerate it: an index into an emptied palette, which
-    // is the exact signature of a bounds assert one Debug smoke run hit during a world switch,
-    // when every chunk is new.
-    const auto neighborhoodSettled = [this](ChunkPos col) {
-        static constexpr int kCols[5][2] = {{0, 0}, {1, 0}, {-1, 0}, {0, 1}, {0, -1}};
-        for (const auto& c : kCols)
-            for (int cy = m_center.y - kVerticalRadius - 3; cy <= m_center.y + kVerticalRadius + 3; ++cy) {
-                const auto it = m_chunks.find({col.x + c[0], cy, col.z + c[1]});
-                if (it != m_chunks.end() && it->second.state == ChunkState::Generating)
-                    return false;
-            }
-        return true;
-    };
-    // seed as many columns as fit a small time budget (always at least one). a fixed
-    // count/frame was far too slow once the default radius grew — columns backed up and
-    // their chunks sat dark/unmeshed for seconds.
-    const auto seedStart = Clock::now();
-    {
-        // A column only counts as lit once it is FULLY seeded — a half-seeded one would
-        // otherwise get meshed dark.
-        const auto markLit = [&](ChunkPos col) {
-            int my0 = 0, my1 = 0;
-            bool mSky = false;
-            columnRange(col.x, col.z, my0, my1, mSky);
-            for (int cy = my0; cy <= my1; ++cy)
-                if (const auto cit = m_chunks.find({col.x, cy, col.z}); cit != m_chunks.end()) {
-                    cit->second.lit = true;
-                    touchScan(cit->first);
-                    // A RE-seed changes light in a chunk that is already meshed, and the
-                    // seeder writes through Chunk::setLight directly (the sky descent and
-                    // fillLight) rather than LightEngine::setLevel, which is the only thing
-                    // that marks a chunk touched. So nothing asked for a remesh and the
-                    // chunk kept its stale baked light until some unrelated edit forced
-                    // one - that is the lighting that looks frozen until you break a block
-                    // next to it. Meshes bake light, so a re-seed has to invalidate them.
-                    // ...and a mesh job already in flight can't be invalidated by a state
-                    // flip, because its result lands afterwards and puts it straight back.
-                    if (cit->second.meshingLod >= 0)
-                        cit->second.lightDirty = true;
-                    else if (cit->second.state == ChunkState::Meshed)
-                        cit->second.remesh = true;
-                }
-            m_meshScanDirty = true; // newly lit -> meshable
-            light.checkColumnEdges(col.x, col.z, my0, my1);
-            // Sky light spreads sideways out of this column, and an absent neighbour reads
-            // as stone — so a column lit before its neighbours exist gets a dark edge that
-            // nothing would ever correct. Remember it and redo it when they turn up.
-            static constexpr int kSide[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
-            bool missing = false;
-            for (const auto& d : kSide)
-                missing = missing || !columnPresent({col.x + d[0], 0, col.z + d[1]});
-            if (missing)
-                m_provisionalColumns.insert(col);
-            else
-                m_provisionalColumns.erase(col);
-        };
-        // A column whose chunks were not all resident when its turn came was never lit.
-        // It must go back on the queue AND out of m_seededColumns, or it stays marked
-        // seeded forever holding sky light 0 - open sky reading as pitch black, at any
-        // time of day, which is exactly what it looked like.
-        //
-        // Unless it is past the ring rescan() generates (radius + 2): nothing will ever fill
-        // its missing chunks there, so it failed again every frame, forever, and busy() never
-        // cleared (a --tour stop ran out its 40000 frames on one such column). It gets queued
-        // again the normal way if the camera comes back and its chunks are generated.
-        const auto requeueSeed = [&](ChunkPos col) {
-            m_seededColumns.erase(col);
-            m_provisionalColumns.erase(col);
-            if (std::abs(col.x - center.x) <= radius + 2 && std::abs(col.z - center.z) <= radius + 2)
-                m_seedDeferred.push_back(col);
-        };
-        const auto remaining = [&] {
-            return std::max(0.1, kSeedBudgetMs - msSince(seedStart));
-        };
-
-        // Finish a column left mid-seed by an earlier frame before starting a new one.
-        if (light.seedInProgress()) {
-            const ChunkPos col{light.seedColumnX(), 0, light.seedColumnZ()};
-            if (!neighborhoodSettled(col)) {
-                // a neighbour went back to Generating under it (coarse->detailed re-gen):
-                // drop the partial work and retry later. re-seeding is idempotent.
-                light.abortSeedColumn();
-                m_seedDeferred.push_back(col);
-            } else if (light.stepSeedColumn(remaining())) {
-                if (light.seedAborted())
-                    requeueSeed(col);
-                else
-                    markLit(col);
-            }
-        }
-
-        // Nearest column first, same reason m_genQueue is sorted the same way: columns
-        // finish generating in WORKER COMPLETION order, not distance order, and a coarse
-        // (no-cave) far column generates roughly 4x faster than a detailed near one — so
-        // under real load, far columns push_back continuously while a near column (quite
-        // possibly the one the camera is standing in) is still generating. The queue used
-        // to be consumed pure LIFO (pop_back, whatever pushed most recently), which meant
-        // every fresh far-column completion cut in line ahead of anything already waiting —
-        // an old entry can be starved indefinitely for as long as new ones keep arriving
-        // faster than the 2ms/frame budget drains them. That is "nothing generates in the
-        // area I spawn in and I have to fly to the nearest chunk": voxels exist (gen queue
-        // is fine), but light-seeding — which meshing waits on — never reached the one
-        // column that mattered most, while whichever far columns won the completion race
-        // got lit and meshed instead. Sorting by distance every frame, right before
-        // consuming, guarantees the camera's own column always wins that race regardless of
-        // completion order — same fix shape as m_genQueue, just applied per-frame since this
-        // queue receives new entries continuously instead of all at once from rescan().
-        std::sort(m_seedQueue.begin(), m_seedQueue.end(), [center](ChunkPos a, ChunkPos b) {
-            return horizontalDist2(a, center) > horizontalDist2(b, center);
-        });
-        // The budget has to apply even when nothing seeds — right after a teleport every
-        // column's neighbourhood is still mid-generation, and the old "only check the
-        // clock once something seeded" walked the whole queue every frame for no work.
-        const std::size_t queued = m_seedQueue.size();
-        for (std::size_t examined = 0; examined < queued && !light.seedInProgress();
-             ++examined) {
-            if (msSince(seedStart) > kSeedBudgetMs)
-                break;
-            const ChunkPos col = m_seedQueue.back();
-            m_seedQueue.pop_back();
-            // Wait for every chunk of the band to be there before starting: a column queued
-            // whole loses that the moment the camera changes chunk height and its band grows
-            // a chunk still to be generated, and starting it anyway only aborted and queued it
-            // again, every frame - 87,655 aborted starts against 3,504 finished seeds in one
-            // ten-chunk walk at radius 32, all of it spent from the seeding budget.
-            if (!neighborhoodSettled(col) || !columnPresent(col)) {
-                m_seedDeferred.push_back(col); // retry once the column and neighbours settle
-                continue;
-            }
-            light.beginSeedColumn(col.x, col.z);
-            if (light.stepSeedColumn(remaining())) {
-                if (light.seedAborted())
-                    requeueSeed(col);
-                else
-                    markLit(col);
-            }
-        }
-        // Deferred columns go back in at their normal distance priority (next frame's sort
-        // places them correctly) rather than a fixed front/back slot — a near column that
-        // was momentarily deferred still deserves to be seeded before a far one once ready.
-        if (!m_seedDeferred.empty()) {
-            m_seedQueue.insert(m_seedQueue.end(), m_seedDeferred.begin(), m_seedDeferred.end());
-            m_seedDeferred.clear();
-        }
+    // Budgeted light seeding and propagation, then remesh whatever light touched. In the game
+    // the middle step runs on the light thread while the frame draws (startLightSlice /
+    // finishLightSlice) and the last frame's slice is already applied by now; anything else
+    // that calls update() gets all three steps here.
+    if (m_sliceRunning)
+        finishLightSlice(light);
+    if (!std::exchange(m_sliceDriven, false)) {
+        prepareLightSlice(light);
+        runLightSlice(light);
+        applyLightSlice(light);
     }
-    m_seedActive = light.seedInProgress(); // a part-seeded column still counts as busy()
-    const double seedMs = msSince(seedStart);
-    m_phase.seedMs = std::max(m_phase.seedMs, seedMs);
-    m_phaseSum.seedMs += seedMs;
-    // one shared deadline for the whole light phase: if seeding ran long, propagation
-    // gives way rather than stacking a second overshoot on top of the first
-    const auto propStart = Clock::now();
-    light.process(std::max(0.25, kLightBudgetMs - msSince(seedStart)));
-    for (const ChunkPos pos : light.touched()) {
-        const auto it = m_chunks.find(pos);
-        if (it == m_chunks.end())
-            continue;
-        touchScan(pos);
-        Entry& e = it->second;
-        // A mesh job reading this chunk right now sampled the light as it was when it
-        // started, and its result lands after this loop — so flipping the state here would
-        // just be overwritten and the change lost until an unrelated edit forced a remesh.
-        // That race is why the same seed settled to a different quad count run to run.
-        if (e.meshingLod >= 0)
-            e.lightDirty = true;
-        else if (e.state == ChunkState::Meshed) {
-            e.remesh = true; // back through the mesh pipeline, still drawn meanwhile
-            m_meshScanDirty = true;
-        }
-    }
-    light.clearTouched();
-    const double propagateMs = msSince(propStart);
-    m_phase.propagateMs = std::max(m_phase.propagateMs, propagateMs);
-    m_phaseSum.propagateMs += propagateMs;
 
     // keep enough jobs in flight to feed the workers without racing miles ahead of
     // the camera — stale far-away work is wasted work when it moves
@@ -1242,6 +1067,13 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
 }
 
 void ChunkManager::loadWorld(Renderer& renderer, int seed, std::filesystem::path saveDir) {
+    // A light slice still running reads the chunks about to go back to the pool. Its results are
+    // for the old world and go with it.
+    if (m_sliceRunning) {
+        m_lightDone.acquire();
+        m_sliceRunning = false;
+    }
+    m_sliceDriven = false;
     // An eviction save still running would write the old world's chunk into whichever world
     // the store points at when it finishes, and keep reading a chunk that is about to go back
     // to the pool and be regenerated into. Let every one land first.
@@ -1495,6 +1327,243 @@ void ChunkManager::updateVisibilityIfNeeded(Renderer& renderer, const glm::dvec3
     m_visDirty = false;
     rebuildVisibility(cameraChunk);
     renderer.updateVisibility(m_visBits);
+}
+
+// seedColumn reads the column's 4 horizontal neighbors too (cave-mouth spread), so none of
+// them may be mid-generation on a worker — a Generating chunk has a live writer racing
+// makeUniform's clear()/push_back() and would read a torn palette. Absent neighbors are fine
+// (blockAt treats them as stone); only Generating blocks.
+//
+// The whole resident band, with room for chunks still waiting to be evicted after a move - not
+// 0..kWorldChunksY, a #27 leftover that never looked below y=0 or above the old world top. The
+// band reaches seven chunks under the camera, so standing anywhere below y=224 made deep-stone
+// chunks resident at negative y, and a seed could read one while a worker was clearing its
+// palette to regenerate it.
+bool ChunkManager::neighborhoodSettled(ChunkPos col) const {
+    static constexpr int kCols[5][2] = {{0, 0}, {1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+    for (const auto& c : kCols)
+        for (int cy = m_center.y - kVerticalRadius - 3; cy <= m_center.y + kVerticalRadius + 3; ++cy) {
+            const auto it = m_chunks.find({col.x + c[0], cy, col.z + c[1]});
+            if (it != m_chunks.end() && it->second.state == ChunkState::Generating)
+                return false;
+        }
+    return true;
+}
+
+// A column only counts as lit once it is FULLY seeded — a half-seeded one would otherwise get
+// meshed dark.
+void ChunkManager::markColumnLit(ChunkPos col, LightEngine& light) {
+    int my0 = 0, my1 = 0;
+    bool mSky = false;
+    columnRange(col.x, col.z, my0, my1, mSky);
+    for (int cy = my0; cy <= my1; ++cy)
+        if (const auto cit = m_chunks.find({col.x, cy, col.z}); cit != m_chunks.end()) {
+            cit->second.lit = true;
+            touchScan(cit->first);
+            // A RE-seed changes light in a chunk that is already meshed, and the seeder writes
+            // through Chunk::setLight directly (the sky descent and fillLight) rather than
+            // LightEngine::setLevel, which is the only thing that marks a chunk touched. So
+            // nothing asked for a remesh and the chunk kept its stale baked light until some
+            // unrelated edit forced one - that is the lighting that looks frozen until you break
+            // a block next to it. Meshes bake light, so a re-seed has to invalidate them.
+            // ...and a mesh job already in flight can't be invalidated by a state flip, because
+            // its result lands afterwards and puts it straight back.
+            if (cit->second.meshingLod >= 0)
+                cit->second.lightDirty = true;
+            else if (cit->second.state == ChunkState::Meshed)
+                cit->second.remesh = true;
+        }
+    m_meshScanDirty = true; // newly lit -> meshable
+    light.checkColumnEdges(col.x, col.z, my0, my1);
+    // Sky light spreads sideways out of this column, and an absent neighbour reads as stone — so
+    // a column lit before its neighbours exist gets a dark edge that nothing would ever correct.
+    // Remember it and redo it when they turn up.
+    static constexpr int kSide[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+    bool missing = false;
+    for (const auto& d : kSide)
+        missing = missing || !columnPresent({col.x + d[0], 0, col.z + d[1]});
+    if (missing)
+        m_provisionalColumns.insert(col);
+    else
+        m_provisionalColumns.erase(col);
+}
+
+// A column whose chunks were not all resident when its turn came was never lit. It must go back
+// on the queue AND out of m_seededColumns, or it stays marked seeded forever holding sky light
+// 0 - open sky reading as pitch black, at any time of day, which is exactly what it looked like.
+//
+// Unless it is past the ring rescan() generates (radius + 2): nothing will ever fill its missing
+// chunks there, so it failed again every frame, forever, and busy() never cleared (a --tour stop
+// ran out its 40000 frames on one such column). It gets queued again the normal way if the
+// camera comes back and its chunks are generated.
+void ChunkManager::requeueSeed(ChunkPos col) {
+    m_seededColumns.erase(col);
+    m_provisionalColumns.erase(col);
+    if (std::abs(col.x - m_center.x) <= radius + 2 && std::abs(col.z - m_center.z) <= radius + 2)
+        m_seedDeferred.push_back(col);
+}
+
+// Main thread: decide what the slice seeds. Everything here reads the chunk map, which the
+// light thread may only read while the main thread is not changing it.
+void ChunkManager::prepareLightSlice(LightEngine& light) {
+    LightSlice& s = m_slice;
+    s.toSeed.clear();
+    s.finished.clear();
+    s.aborted.clear();
+    s.unstarted.clear();
+    s.continueSeed = false;
+    // Finish a column left mid-seed by an earlier frame before starting a new one.
+    if (light.seedInProgress()) {
+        const ChunkPos col{light.seedColumnX(), 0, light.seedColumnZ()};
+        if (!neighborhoodSettled(col)) {
+            // a neighbour went back to Generating under it (coarse->detailed re-gen): drop the
+            // partial work and retry later. re-seeding is idempotent.
+            light.abortSeedColumn();
+            m_seedDeferred.push_back(col);
+        } else {
+            s.continueSeed = true;
+            s.continued = col;
+        }
+    }
+
+    // Nearest column first, same reason m_genQueue is sorted the same way: columns finish
+    // generating in WORKER COMPLETION order, not distance order, and a coarse (no-cave) far
+    // column generates roughly 4x faster than a detailed near one — so under real load, far
+    // columns push_back continuously while a near column (quite possibly the one the camera is
+    // standing in) is still generating. The queue used to be consumed pure LIFO, which meant
+    // every fresh far-column completion cut in line ahead of anything already waiting, and the
+    // one column that mattered most could starve: "nothing generates in the area I spawn in".
+    // Sorting by distance every frame, right before consuming, guarantees the camera's own
+    // column always wins that race regardless of completion order.
+    const ChunkPos center = m_center;
+    std::sort(m_seedQueue.begin(), m_seedQueue.end(), [center](ChunkPos a, ChunkPos b) {
+        return horizontalDist2(a, center) > horizontalDist2(b, center);
+    });
+    // Bounded by count and by time even when nothing is ready - right after a teleport every
+    // column's neighbourhood is still mid-generation, and checking them all is real work.
+    const auto t0 = Clock::now();
+    const std::size_t queued = m_seedQueue.size();
+    for (std::size_t examined = 0; examined < queued && s.toSeed.size() < kSliceColumns; ++examined) {
+        if (msSince(t0) > kSlicePrepareMs)
+            break;
+        const ChunkPos col = m_seedQueue.back();
+        m_seedQueue.pop_back();
+        // Wait for every chunk of the band to be there before starting: a column queued whole
+        // loses that the moment the camera changes chunk height and its band grows a chunk still
+        // to be generated, and starting it anyway only aborted and queued it again, every frame
+        // - 87,655 aborted starts against 3,504 finished seeds in one ten-chunk walk at radius 32.
+        if (!neighborhoodSettled(col) || !columnPresent(col)) {
+            m_seedDeferred.push_back(col); // retry once the column and neighbours settle
+            continue;
+        }
+        s.toSeed.push_back(col);
+    }
+}
+
+// The work itself: on the light thread in the game, inline otherwise. Touches only the light
+// engine (and through it chunk light, which readers take as atomics) and m_slice.
+void ChunkManager::runLightSlice(LightEngine& light) {
+    LightSlice& s = m_slice;
+    const auto t0 = Clock::now();
+    const auto remaining = [&] { return std::max(0.1, kSeedBudgetMs - msSince(t0)); };
+    if (s.continueSeed && light.stepSeedColumn(remaining()))
+        (light.seedAborted() ? s.aborted : s.finished).push_back(s.continued);
+    std::size_t i = 0;
+    for (; i < s.toSeed.size() && !light.seedInProgress(); ++i) {
+        if (msSince(t0) > kSeedBudgetMs)
+            break;
+        const ChunkPos col = s.toSeed[i];
+        light.beginSeedColumn(col.x, col.z);
+        if (light.stepSeedColumn(remaining()))
+            (light.seedAborted() ? s.aborted : s.finished).push_back(col);
+    }
+    s.unstarted.assign(s.toSeed.begin() + std::ptrdiff_t(i), s.toSeed.end());
+    s.seedMs = msSince(t0);
+    // one shared deadline for the whole light phase: if seeding ran long, propagation gives way
+    // rather than stacking a second overshoot on top of the first
+    const auto t1 = Clock::now();
+    light.process(std::max(0.25, kLightBudgetMs - msSince(t0)));
+    s.propagateMs = msSince(t1);
+}
+
+// Main thread again: take in what the slice did.
+void ChunkManager::applyLightSlice(LightEngine& light) {
+    LightSlice& s = m_slice;
+    for (const ChunkPos col : s.finished)
+        markColumnLit(col, light);
+    for (const ChunkPos col : s.aborted)
+        requeueSeed(col);
+    // Deferred and unstarted columns go back in at their normal distance priority (the next
+    // sort places them) rather than a fixed slot.
+    m_seedQueue.insert(m_seedQueue.end(), s.unstarted.begin(), s.unstarted.end());
+    m_seedQueue.insert(m_seedQueue.end(), m_seedDeferred.begin(), m_seedDeferred.end());
+    m_seedDeferred.clear();
+    m_seedActive = light.seedInProgress(); // a part-seeded column still counts as busy()
+    m_phase.seedMs = std::max(m_phase.seedMs, s.seedMs);
+    m_phaseSum.seedMs += s.seedMs;
+    m_phase.propagateMs = std::max(m_phase.propagateMs, s.propagateMs);
+    m_phaseSum.propagateMs += s.propagateMs;
+
+    for (const ChunkPos pos : light.touched()) {
+        const auto it = m_chunks.find(pos);
+        if (it == m_chunks.end())
+            continue;
+        touchScan(pos);
+        Entry& e = it->second;
+        // A mesh job reading this chunk right now sampled the light as it was when it started,
+        // and its result lands after this loop — so flipping the state here would just be
+        // overwritten and the change lost until an unrelated edit forced a remesh. That race
+        // is why the same seed settled to a different quad count run to run.
+        if (e.meshingLod >= 0)
+            e.lightDirty = true;
+        else if (e.state == ChunkState::Meshed) {
+            e.remesh = true; // back through the mesh pipeline, still drawn meanwhile
+            m_meshScanDirty = true;
+        }
+    }
+    light.clearTouched();
+}
+
+void ChunkManager::startLightSlice(LightEngine& light) {
+    if (m_sliceRunning)
+        return;
+    if (!m_lightThread.joinable())
+        m_lightThread = std::jthread([this](std::stop_token stop) {
+            for (;;) {
+                m_lightGo.acquire();
+                if (stop.stop_requested())
+                    return;
+                runLightSlice(*m_sliceLight);
+                m_lightDone.release();
+            }
+        });
+    prepareLightSlice(light);
+    m_sliceLight = &light;
+    m_sliceRunning = true;
+    m_lightGo.release();
+}
+
+void ChunkManager::finishLightSlice(LightEngine& light) {
+    if (!m_sliceRunning)
+        return;
+    const auto t0 = Clock::now();
+    m_lightDone.acquire();
+    const double waitMs = msSince(t0);
+    m_phase.lightWaitMs = std::max(m_phase.lightWaitMs, waitMs);
+    m_phaseSum.lightWaitMs += waitMs;
+    m_sliceRunning = false;
+    applyLightSlice(light);
+    m_sliceDriven = true;
+}
+
+ChunkManager::~ChunkManager() {
+    if (m_sliceRunning)
+        m_lightDone.acquire();
+    if (m_lightThread.joinable()) {
+        m_lightThread.request_stop();
+        m_lightGo.release();
+        m_lightThread.join();
+    }
 }
 
 void ChunkManager::reseedWhenSettled(ChunkPos col) {

@@ -16,7 +16,9 @@
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
+#include <semaphore>
 #include <span>
+#include <thread>
 #include <vector>
 
 namespace vx {
@@ -46,6 +48,9 @@ public:
     // The seed is a runtime value, not a constant: every launch generates a fresh world, so
     // a world you want to keep has to be saved deliberately (see Worlds in main).
     ChunkManager(std::filesystem::path saveDir, int seed);
+    ~ChunkManager();
+    ChunkManager(const ChunkManager&) = delete;
+    ChunkManager& operator=(const ChunkManager&) = delete;
 
     struct Stats {
         int loaded = 0;
@@ -70,6 +75,14 @@ public:
 
     void update(JobSystem& jobs, Renderer& renderer, LightEngine& light,
                 const glm::dvec3& cameraPos);
+
+    // The light phase off the main thread, for the game loop: start hands this frame's seeding
+    // and propagation to the light thread, finish waits for it and takes in what it did, and
+    // the next update() skips doing it again. Between the two the main thread may READ chunks
+    // and their light (draw, sample) but change nothing in the world or the light engine.
+    // Without the pair, update() runs the same steps inline, as the harnesses rely on.
+    void startLightSlice(LightEngine& light);
+    void finishLightSlice(LightEngine& light);
 
     // A chunk's voxels once generated, null while a worker is still writing them. The light
     // engine reads and writes through these, and light spreading sideways used to walk straight
@@ -212,6 +225,10 @@ public:
         double seedMs = 0.0;
         double propagateMs = 0.0;
         double uploadMs = 0.0;
+        // How long the main thread stood waiting for the light thread at finishLightSlice. Seed
+        // and propagate are the light thread's own time when it runs them; this is what of it
+        // the frame still paid.
+        double lightWaitMs = 0.0;
     };
     PhasePeak phasePeak() const { return m_phase; }
     // Same phases summed over every update instead of maxed. A peak tells you how bad one
@@ -238,7 +255,7 @@ public:
         // otherwise pull the world out from under it (SPEC #142).
         return !m_genQueue.empty() || m_jobsInFlight > 0 || !m_uploads.empty() ||
                m_pendingMesh > 0 || !m_seedQueue.empty() || m_seedActive || m_meshScanDirty ||
-               m_scanConfirm ||
+               m_scanConfirm || m_sliceRunning ||
                m_savesInFlight.load(std::memory_order_acquire) > 0;
     }
 
@@ -351,6 +368,28 @@ private:
     // deadline for both so their overshoots can't stack.
     static constexpr double kSeedBudgetMs = 2.0;
     static constexpr double kLightBudgetMs = 3.5;
+    // Columns one slice may take on, and how long picking them may take.
+    static constexpr std::size_t kSliceColumns = 12;
+    static constexpr double kSlicePrepareMs = 0.5;
+
+    struct LightSlice {
+        bool continueSeed = false;
+        ChunkPos continued{0, 0, 0};
+        std::vector<ChunkPos> toSeed, finished, aborted, unstarted;
+        double seedMs = 0.0, propagateMs = 0.0;
+    };
+    LightSlice m_slice;
+    bool m_sliceRunning = false; // the light thread holds the slice right now
+    bool m_sliceDriven = false;  // the last frame's slice ran on the light thread
+    LightEngine* m_sliceLight = nullptr;
+    std::binary_semaphore m_lightGo{0}, m_lightDone{0};
+    std::jthread m_lightThread;
+    bool neighborhoodSettled(ChunkPos col) const;
+    void markColumnLit(ChunkPos col, LightEngine& light);
+    void requeueSeed(ChunkPos col);
+    void prepareLightSlice(LightEngine& light);
+    void runLightSlice(LightEngine& light);
+    void applyLightSlice(LightEngine& light);
 
     ankerl::unordered_dense::map<ChunkPos, Entry, ChunkPosHash> m_chunks;
     ankerl::unordered_dense::set<ChunkPos, ChunkPosHash> m_seededColumns; // y always 0
@@ -429,6 +468,8 @@ private:
         int top = 0;
     };
     ColumnHeights columnHeights(int cx, int cz) const;
+    // Filled on demand, including from the light thread (seeding calls columnRange), so while a
+    // light slice runs nothing on the main thread may call columnRange/columnHeights.
     mutable ankerl::unordered_dense::map<ChunkPos, ColumnHeights, ChunkPosHash> m_columnHeights;
     void landEmpty(ChunkPos pos, int lod, Renderer& renderer);
     std::vector<ChunkPos> m_emptyScratch; // solid air ready to land without a mesh job
