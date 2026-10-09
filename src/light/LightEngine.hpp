@@ -69,6 +69,12 @@ public:
     void onBlockChanged(const glm::ivec3& wp, BlockId oldId, BlockId newId);
 
     void process(double budgetMs);
+    // An edit settles its own light at once, ahead of the streaming backlog: beginEdit parks the
+    // queued work, the caller runs process() until idle(), and endEdit puts the backlog back.
+    // Settling everything instead made the first block broken after walking into new ground
+    // wait for millions of queued voxels - a freeze of up to three seconds.
+    void beginEdit();
+    void endEdit();
     bool idle() const {
         for (int c = 0; c < kChannels; ++c)
             if (!m_queue[c].empty() || !m_removal[c].empty())
@@ -198,6 +204,11 @@ private:
     std::vector<Removal> m_removal[kChannels];
     std::size_t m_queueHead[kChannels] = {};
     std::size_t m_removalHead[kChannels] = {};
+    // the background queues while an edit settles (beginEdit/endEdit)
+    std::vector<glm::ivec3> m_parkedQueue[kChannels];
+    std::vector<Removal> m_parkedRemoval[kChannels];
+    std::size_t m_parkedQueueHead[kChannels] = {};
+    std::size_t m_parkedRemovalHead[kChannels] = {};
     // Every light write that changes a value marks its chunk, plus a neighbour per border
     // face — up to seven membership tests per write. That was a linear scan of m_touched,
     // which grows to hundreds of chunks over a streaming frame, so the dedup cost rose

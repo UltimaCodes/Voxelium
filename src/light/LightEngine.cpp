@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <utility>
 
 namespace vx {
 
@@ -279,11 +280,28 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
                 if (nx >= 0 && nx < kChunkSize && nz >= 0 && nz < kChunkSize)
                     reach = std::max(reach, m_seed.heights[nz][nx]);
             }
-            for (int sy = h + 1; sy <= reach && sy < spreadTop; ++sy)
-                enqueue(Sky, {baseX + dx, sy, baseZ + dz});
-            if (reach == h && h >= botY && h + 1 < spreadTop &&
-                !blocks::blocksLight(stack[(h >> 5) - m_seed.y0]->get(dx, h & 31, dz)))
-                enqueue(Sky, {baseX + dx, h + 1, baseZ + dz});
+            // ...and only where light from here has somewhere to go: the voxel the descent
+            // stopped on lets light through (leaves), or a neighbouring cell at this height is
+            // below its own descent but open (an overhang, a cave mouth, under a canopy). Every
+            // sky voxel beside a taller neighbour went in before, solid hillside or not: tens of
+            // thousands of no-op entries a column on steep ground, a light backlog of tens of
+            // millions while streaming, and the first block edit after it drained the lot.
+            // Still read off the blocks and the descent alone, never off the light.
+            const bool openBelow =
+                h >= botY && !blocks::blocksLight(stack[(h >> 5) - m_seed.y0]->get(dx, h & 31, dz));
+            for (int sy = h + 1; sy <= std::max(reach, h + 1) && sy < spreadTop; ++sy) {
+                bool open = sy == h + 1 && openBelow;
+                const Chunk* layer = stack[(sy >> 5) - m_seed.y0];
+                for (const auto& n : kNb) {
+                    const int nx = dx + n[0], nz = dz + n[1];
+                    if (open || nx < 0 || nx >= kChunkSize || nz < 0 || nz >= kChunkSize ||
+                        m_seed.heights[nz][nx] < sy)
+                        continue;
+                    open = !blocks::blocksLight(layer->get(nx, sy & 31, nz));
+                }
+                if (open)
+                    enqueue(Sky, {baseX + dx, sy, baseZ + dz});
+            }
             ++m_seed.cursor;
         }
         m_seed.cursor = 0;
@@ -405,16 +423,52 @@ void LightEngine::seedNewChunk(ChunkPos pos, bool skyAbove) {
                     enqueue(Sky, {baseX + x, baseY + kChunkSize, baseZ + z});
     } else if (skyAbove) {
         // New top of the band on a column that reaches daylight. Nothing above to descend
-        // from, so this chunk IS the sky — the generator never writes solid above
-        // kTerrainTop, which is what makes that safe to assert rather than trace.
-        for (int y = 0; y < kChunkSize; ++y)
+        // from, so the sky comes straight in at the top face. This used to set every open voxel
+        // to full sky and queue all of them: 32768 entries for a chunk of plain air, times every
+        // column in view each time the camera climbed a chunk - 219M queued over one hill, far
+        // faster than the light could ever be spread, and the first block edit afterwards
+        // settled the lot (a freeze of seconds). Now the same descent and the same
+        // only-where-it-can-go sources as the column seed; the faces are settled below.
+        if (c->uniform() && c->uniformId() == blocks::Air) {
+            c->fillSky(255); // all sky, nothing inside to spread
+        } else {
+            int stop[kChunkSize][kChunkSize]; // where each cell's descent stopped, -1 = went through
             for (int z = 0; z < kChunkSize; ++z)
                 for (int x = 0; x < kChunkSize; ++x) {
-                    if (blocks::blocksLight(c->get(x, y, z)))
-                        continue;
-                    c->setLight(x, y, z, light::withSky(c->lightAt(x, y, z), 255));
-                    enqueue(Sky, {baseX + x, baseY + y, baseZ + z});
+                    int y = kChunkSize - 1;
+                    for (; y >= 0; --y) {
+                        const BlockId id = c->get(x, y, z);
+                        if (blocks::blocksLight(id) || blocks::lightCost(id) > 1)
+                            break;
+                        c->setLight(x, y, z, light::withSky(c->lightAt(x, y, z), 255));
+                    }
+                    stop[z][x] = y;
                 }
+            static constexpr int kNb[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+            for (int z = 0; z < kChunkSize; ++z)
+                for (int x = 0; x < kChunkSize; ++x) {
+                    const int h = stop[z][x];
+                    int reach = h;
+                    for (const auto& n : kNb) {
+                        const int nx = x + n[0], nz = z + n[1];
+                        if (nx >= 0 && nx < kChunkSize && nz >= 0 && nz < kChunkSize)
+                            reach = std::max(reach, stop[nz][nx]);
+                    }
+                    const bool openBelow = h >= 0 && !blocks::blocksLight(c->get(x, h, z));
+                    for (int y = h + 1; y <= std::max(reach, h + 1) && y < kChunkSize; ++y) {
+                        bool open = y == h + 1 && openBelow;
+                        for (const auto& n : kNb) {
+                            const int nx = x + n[0], nz = z + n[1];
+                            if (open || nx < 0 || nx >= kChunkSize || nz < 0 || nz >= kChunkSize ||
+                                stop[nz][nx] < y)
+                                continue;
+                            open = !blocks::blocksLight(c->get(nx, y, nz));
+                        }
+                        if (open)
+                            enqueue(Sky, {baseX + x, baseY + y, baseZ + z});
+                    }
+                }
+        }
     }
 
     // Emitters inside it. Natural cave lamps live at exactly the depths the band's bottom
@@ -552,6 +606,33 @@ static void compact(std::vector<T>& q, std::size_t& head) {
         return;
     q.erase(q.begin(), q.begin() + std::ptrdiff_t(head));
     head = 0;
+}
+
+void LightEngine::beginEdit() {
+    for (int ch = 0; ch < kChannels; ++ch) {
+        m_parkedQueue[ch].swap(m_queue[ch]);
+        m_parkedQueueHead[ch] = std::exchange(m_queueHead[ch], 0);
+        m_queue[ch].clear();
+        m_parkedRemoval[ch].swap(m_removal[ch]);
+        m_parkedRemovalHead[ch] = std::exchange(m_removalHead[ch], 0);
+        m_removal[ch].clear();
+    }
+}
+
+void LightEngine::endEdit() {
+    for (int ch = 0; ch < kChannels; ++ch) {
+        // whatever of the edit is still queued goes behind the parked work
+        m_parkedQueue[ch].insert(m_parkedQueue[ch].end(), m_queue[ch].begin() + std::ptrdiff_t(m_queueHead[ch]),
+                                 m_queue[ch].end());
+        m_queue[ch].swap(m_parkedQueue[ch]);
+        m_queueHead[ch] = m_parkedQueueHead[ch];
+        m_parkedQueue[ch].clear();
+        m_parkedRemoval[ch].insert(m_parkedRemoval[ch].end(),
+                                   m_removal[ch].begin() + std::ptrdiff_t(m_removalHead[ch]), m_removal[ch].end());
+        m_removal[ch].swap(m_parkedRemoval[ch]);
+        m_removalHead[ch] = m_parkedRemovalHead[ch];
+        m_parkedRemoval[ch].clear();
+    }
 }
 
 void LightEngine::process(double budgetMs) {

@@ -1716,7 +1716,9 @@ int ChunkManager::setBlocks(Renderer& renderer, LightEngine& light,
 
     // Pass 1: apply every voxel write and tell the light engine about each one. Nothing
     // is meshed yet — a chunk hit by several edits in this batch must not be rebuilt once
-    // per edit, and light must not settle against a half-applied batch.
+    // per edit, and light must not settle against a half-applied batch. The streaming backlog
+    // is parked meanwhile, so what Pass 2 settles is this batch's light and nothing else.
+    light.beginEdit();
     int applied = 0;
     for (const BlockEdit& e : edits) {
         if (e.pos.y < 0 || e.pos.y >= kWorldHeight)
@@ -1788,6 +1790,7 @@ int ChunkManager::setBlocks(Renderer& renderer, LightEngine& light,
         if (lz == 31) want({pos.x, pos.y, pos.z + 1});
     }
     if (applied == 0) {
+        light.endEdit();
         light.clearTouched();
         return 0;
     }
@@ -1797,6 +1800,7 @@ int ChunkManager::setBlocks(Renderer& renderer, LightEngine& light,
     // settling per edit — and it means no chunk is ever meshed against half-updated light.
     while (!light.idle())
         light.process(4.0);
+    light.endEdit();
     for (const ChunkPos p : light.touched())
         want(p);
     light.clearTouched();
