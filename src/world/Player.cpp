@@ -64,6 +64,13 @@ void Player::step(const ChunkManager& world, const PlayerInput& input) {
     moveAxis(world, 2, velocity.z * kTickDt);
 }
 
+void Player::nudge(const ChunkManager& world, const glm::dvec2& d) {
+    if (d.x != 0.0)
+        moveAxis(world, 0, d.x);
+    if (d.y != 0.0)
+        moveAxis(world, 2, d.y);
+}
+
 // chest-deep test: water at the AABB centre means we're swimming, not wading
 bool Player::submergedAt(const ChunkManager& world) const {
     const glm::dvec3 c = position + glm::dvec3(0.0, kHeight * 0.5, 0.0);

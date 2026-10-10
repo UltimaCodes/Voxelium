@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Builds the four recorded ambience beds from CC0 recordings (see sounds/README.md for sources).
+"""Builds the four recorded ambience beds from CC0 recordings (the sources are credited in README.md).
 
     python scripts/build_ambience_recordings.py <folder of decoded 16-bit mono 48 kHz wavs> [out dir]
 

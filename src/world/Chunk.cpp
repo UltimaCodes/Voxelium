@@ -75,7 +75,7 @@ void fillTestTerrain(Chunk& chunk) {
         }
     }
 
-    // air pocket under the surface — its walls must be meshed, the solid faces around
+    // air pocket under the surface, its walls must be meshed, the solid faces around
     // it must not; keeps hidden-face culling honest in the oracle numbers
     for (int z = 0; z < kChunkSize; ++z) {
         for (int y = 0; y < kChunkSize; ++y) {

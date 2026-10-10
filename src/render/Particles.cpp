@@ -71,8 +71,8 @@ Particles::Particle& Particles::acquire() {
         return m_pool[m_live++];
     // Full: overwrite in turn. It used to be slot 0 every time, so a whole burst landed in one
     // slot and a storm (a bolt is a couple of thousand particles) left one shard of every
-    // block broken during it. No slot is reliably the oldest - compaction swaps the newest into
-    // each freed slot - so this only spreads the damage, which is all a full pool can do.
+    // block broken during it. No slot is reliably the oldest, compaction swaps the newest into
+    // each freed slot, so this only spreads the damage, which is all a full pool can do.
     m_victim = (m_victim + 1) % kCapacity;
     return m_pool[m_victim];
 }

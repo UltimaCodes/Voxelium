@@ -41,7 +41,7 @@ public:
     void discardAll();
 
     // Point at a different world's directory, dropping every cached region first. Nothing
-    // on disk is touched — switching worlds must not delete the one being left.
+    // on disk is touched, switching worlds must not delete the one being left.
     void setDir(std::filesystem::path dir);
     const std::filesystem::path& dir() const { return m_dir; }
 
@@ -55,7 +55,7 @@ public:
 private:
     struct Region {
         // Sparse, keyed by (chunkY, localX, localZ). It used to be a dense vector sized
-        // kRegionSize^2 * kWorldChunksY, which cannot address a world with no ceiling —
+        // kRegionSize^2 * kWorldChunksY, which cannot address a world with no ceiling,
         // and would be almost entirely empty even if it could, since only edited chunks
         // are ever stored.
         ankerl::unordered_dense::map<std::int64_t, std::vector<std::uint8_t>> slots;

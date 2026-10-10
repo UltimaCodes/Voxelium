@@ -13,7 +13,7 @@ namespace vx {
 class ChunkManager;
 
 // Block + sky light over the loaded world. All propagation runs on the main thread
-// through explicit BFS queues under a per-frame time budget — light is memory-bound
+// through explicit BFS queues under a per-frame time budget, light is memory-bound
 // pointer chasing that's miserable to parallelize safely, and budgeted-incremental
 // means it can never stall a frame. Chunks whose light changes land in touched() and
 // get remeshed through the normal pipeline.
@@ -27,12 +27,12 @@ public:
     explicit LightEngine(ChunkManager& world) : m_world(world) {}
 
     // Seeds sky columns + emissive blocks for one 32x32 column of chunks (all
-    // kWorldChunksY of them at once — sky descent doesn't care about chunk seams).
+    // kWorldChunksY of them at once, sky descent doesn't care about chunk seams).
     // Runs to completion; fine for tests and one-off re-seeds.
     void seedColumn(std::int32_t chunkX, std::int32_t chunkZ);
 
     // Incremental form. A column is 32x32x256 voxels and costs 5-10 ms as one lump,
-    // which no per-frame budget can slice — it was the largest remaining streaming
+    // which no per-frame budget can slice, it was the largest remaining streaming
     // hitch. begin/step spreads it over frames, splitting at (dx,dz) cell granularity.
     // The caller must not treat the column as lit until step returns true.
     void beginSeedColumn(std::int32_t chunkX, std::int32_t chunkZ);
@@ -44,7 +44,7 @@ public:
     void checkColumnEdges(std::int32_t cx, std::int32_t cz, int y0, int y1);
     bool stepSeedColumn(double budgetMs); // true = column finished (check seedAborted!)
     // True when the last seed gave up because the column's chunks were not all resident.
-    // stepSeedColumn still returns "finished" in that case — there is nothing left to do —
+    // stepSeedColumn still returns "finished" in that case, there is nothing left to do,
     // but the column was NOT lit, so the caller must re-queue it instead of marking it
     // done. Getting this wrong marks a column seeded forever with sky light 0.
     bool seedAborted() const { return m_seedAborted; }
@@ -54,8 +54,8 @@ public:
     std::int32_t seedColumnZ() const { return m_seed.chunkZ; }
 
     // One chunk that appeared inside a column already marked seeded. The band can grow
-    // without anything being evicted — the load range is center.y +- kVerticalRadius while
-    // eviction only fires past kVerticalRadius + 1 — so descend one chunk and every column
+    // without anything being evicted, the load range is center.y +- kVerticalRadius while
+    // eviction only fires past kVerticalRadius + 1, so descend one chunk and every column
     // you are standing in gains a chunk while staying in m_seededColumns. The column seed
     // never runs again, and since meshing waits on light, that chunk is never meshed.
     //
@@ -72,7 +72,7 @@ public:
     // An edit settles its own light at once, ahead of the streaming backlog: beginEdit parks the
     // queued work, the caller runs process() until idle(), and endEdit puts the backlog back.
     // Settling everything instead made the first block broken after walking into new ground
-    // wait for millions of queued voxels - a freeze of up to three seconds.
+    // wait for millions of queued voxels, a freeze of up to three seconds.
     void beginEdit();
     void endEdit();
     bool idle() const {
@@ -91,10 +91,10 @@ public:
     }
 
     // debug/verification. Packs getLevel()'s 0..15 step-count values (the BFS's own domain,
-    // unrelated to Chunk's wider stored representation - see Chunk.hpp's light namespace),
+    // unrelated to Chunk's wider stored representation, see Chunk.hpp's light namespace),
     // so callers comparing against 0..15 (as every existing caller does) are unaffected by
     // the storage widening. Returns uint32_t (Chunk's own light word type) purely because
-    // that's what light::pack now produces - the values packed are still 0..15 per channel.
+    // that's what light::pack now produces, the values packed are still 0..15 per channel.
     std::uint32_t lightAt(const glm::ivec3& wp) const;
     int queueDepth() const {
         std::size_t n = 0;
@@ -106,7 +106,7 @@ public:
     // For SPEC #3's "where does column-seeding time actually go" question: descent bulk-skips
     // uniform-air chunks and stops at the first blocker, so it was suspected cheap even for a
     // radius-32 settle's thousands of coarse (no-cave) columns already, before spending any
-    // engineering on an analytical fast path for them — this is what actually measures that
+    // engineering on an analytical fast path for them, this is what actually measures that
     // suspicion instead of assuming it. Spread is where a cave column's cost lives: every cave
     // mouth/overhang reachable from the surface is a boundary case pure heightmap terrain never
     // hits (see stepSeedColumn's own comments). Nanoseconds, cumulative since the last reset.
@@ -131,7 +131,7 @@ private:
 
     // Direct-mapped chunk lookup cache. The BFS probes six neighbours per voxel and
     // nearly all of them land in the chunk it just read, yet every probe went through a
-    // wyhash of the chunk coords plus a map lookup — up to nineteen of them per voxel
+    // wyhash of the chunk coords plus a map lookup, up to nineteen of them per voxel
     // once blockAt, getLevel and setLevel are counted. Slotting on the low coord bits
     // makes that an index and a compare instead. A 4x4 horizontal by 8 vertical block of
     // chunks maps to distinct slots, which is wider than a BFS front ever spans, so the
@@ -140,8 +140,8 @@ private:
     // Caching a null is the point as much as caching a hit: probes off the loaded edge
     // are common and used to pay a full lookup each time to be told "nothing there".
     //
-    // Only valid within one main-thread entry point. Between calls the chunk set moves —
-    // eviction, and the coarse->detailed re-gen swapping a chunk's voxels out — so a
+    // Only valid within one main-thread entry point. Between calls the chunk set moves,
+    // eviction, and the coarse->detailed re-gen swapping a chunk's voxels out, so a
     // pointer held across one would be the same use-after-free seedStackValid refetches
     // to avoid. Every public entry point drops the cache on the way in.
     static constexpr int kChunkCacheSize = 128;
@@ -165,7 +165,7 @@ private:
     // whenever a chunk is lit, every face it shares with a lit neighbour is compared, in all four
     // channels, and whichever side holds more than one step across would explain is queued to
     // carry it over. Done each time the later of two neighbours is lit, that settles every border
-    // whatever order the chunks arrived in - which is what makes the same place light the same
+    // whatever order the chunks arrived in, which is what makes the same place light the same
     // way on every load.
     void settleFace(ChunkPos pa, int face);
     // by value on purpose: both steps push into the queue they were popped from, and a
@@ -194,7 +194,7 @@ private:
     bool m_seedAborted = false;
     SeedPhaseNanos m_seedPhaseNanos;
     // Refetch + validate the column's resident chunks. The range is no longer 0..world
-    // top — there is no world top — so it comes back through y0/y1, and skyAtTop says
+    // top, there is no world top, so it comes back through y0/y1, and skyAtTop says
     // whether the descent starts in open sky or buried.
     static constexpr int kMaxStack = 2 * kVerticalRadius + 4; // band, plus the surface reach
     bool seedStackValid(Chunk** stack, int& y0, int& y1, bool& skyAtTop) const;
@@ -210,7 +210,7 @@ private:
     std::size_t m_parkedQueueHead[kChannels] = {};
     std::size_t m_parkedRemovalHead[kChannels] = {};
     // Every light write that changes a value marks its chunk, plus a neighbour per border
-    // face — up to seven membership tests per write. That was a linear scan of m_touched,
+    // face, up to seven membership tests per write. That was a linear scan of m_touched,
     // which grows to hundreds of chunks over a streaming frame, so the dedup cost rose
     // with the number of chunks already touched. The set makes it flat; the vector stays
     // because the manager wants a stable order to walk.

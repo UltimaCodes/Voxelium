@@ -23,7 +23,7 @@ ma_sound_group* groups(void* p) { return static_cast<ma_sound_group*>(p); }
 constexpr int kBusCount = 3;
 
 // Attenuation. miniaudio's defaults are inverse/rolloff 1/min-distance 1, which puts a
-// source ten blocks away at about a tenth volume — everything more than a few blocks off
+// source ten blocks away at about a tenth volume, everything more than a few blocks off
 // was inaudible and nothing in the engine ever set them. These are tuned by ear against
 // footsteps and block breaks at walking distance: silent by ~48 blocks, no falloff at all
 // inside 2 so standing on top of a source does not blow up.
@@ -34,7 +34,7 @@ constexpr float kRolloff = 1.15f;
 ma_lpf_node* lpf(void* p) { return static_cast<ma_lpf_node*>(p); }
 
 // Underwater muffle. A real low-pass on the world and ambient buses, because ducking the
-// volume is not what water does — it takes the top off, and the difference between those two
+// volume is not what water does, it takes the top off, and the difference between those two
 // is the entire effect. 700 Hz reads as submerged without sounding broken; 18 kHz is the dry
 // end, high enough to be inaudible and far enough from Nyquist to stay well-behaved.
 constexpr double kWetCutoff = 700.0;
@@ -51,17 +51,17 @@ bool AudioEngine::init(const std::filesystem::path& soundsDir, JobSystem* jobs,
                        bool offline) {
     // Bank first, and unconditionally. The old code returned before ever scanning the
     // directory when there was no output device, which meant the decode path could not be
-    // exercised headless — so --smoke could never assert anything about it.
+    // exercised headless, so --smoke could never assert anything about it.
     m_bank.load(soundsDir, jobs);
 
     m_engine = new ma_engine{};
     ma_engine_config cfg = ma_engine_config_init();
     // PIN THE RATE, both online and off. A ma_audio_buffer_ref reports a sample rate of 0
-    // (miniaudio hardcodes it — see ma_audio_buffer_ref_init), and an engine node reading 0
+    // (miniaudio hardcodes it, see ma_audio_buffer_ref_init), and an engine node reading 0
     // assumes the PCM is already at the engine's own rate. Left to itself the engine takes
     // the device's native rate, so on a machine whose output is not 48 kHz every clip in the
     // bank plays at the wrong speed. Measured against the real device: a 0.373 s footstep
-    // takes 0.408 s at 44.1 kHz and 0.183 s at 96 kHz — an octave up, which is a click
+    // takes 0.408 s at 44.1 kHz and 0.183 s at 96 kHz, an octave up, which is a click
     // rather than a footstep. Requesting the rate costs one resample in the device layer and
     // makes the buffer-ref assumption true.
     cfg.sampleRate = SoundBank::kSampleRate;
@@ -72,7 +72,7 @@ bool AudioEngine::init(const std::filesystem::path& soundsDir, JobSystem* jobs,
         m_offline = true;
     }
     if (ma_engine_init(&cfg, eng(m_engine)) != MA_SUCCESS) {
-        // no audio device (headless, no drivers) is not fatal — the engine plays silently
+        // no audio device (headless, no drivers) is not fatal, the engine plays silently
         delete eng(m_engine);
         m_engine = nullptr;
         VX_INFO("audio: no output device, running silent (%d clip(s) still loaded)",
@@ -241,7 +241,7 @@ void AudioEngine::setBed(const std::string& name, float gain) {
         m_bed[i].named = true;
         return;
     }
-    // Not running. A bed asked for at zero is not worth a voice — that is the common case
+    // Not running. A bed asked for at zero is not worth a voice, that is the common case
     // every frame for every bed the player is nowhere near.
     if (gain <= 0.0f)
         return;
@@ -316,7 +316,7 @@ void AudioEngine::updateBeds(float dt) {
             b = {};
             continue;
         }
-        // Submerging muffles the beds too — an above-water bird bed heard from under the
+        // Submerging muffles the beds too, an above-water bird bed heard from under the
         // surface at full brightness is the thing that gives away a fake underwater.
         ma_sound_set_volume(&sounds(m_bedSounds)[i], b.gain * (1.0f - 0.55f * m_wet));
     }
@@ -397,7 +397,7 @@ int AudioEngine::acquireVoice() {
         }
     }
     // Everything is still playing. Steal the oldest, but FADE it rather than calling uninit
-    // on a sound mid-waveform — that is an instant amplitude step, which is a click. The
+    // on a sound mid-waveform, that is an instant amplitude step, which is a click. The
     // stolen voice keeps its slot until the fade expires, so find a genuinely free one; if
     // there is none, take the oldest non-retiring slot and accept the fade being cut short.
     for (int i = 0; i < kVoices; ++i) {

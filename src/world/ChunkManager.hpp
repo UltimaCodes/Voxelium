@@ -27,7 +27,7 @@ struct Frustum;
 class JobSystem;
 class LightEngine;
 
-// Per-chunk pipeline state. Only the main thread reads or writes it — workers are pure
+// Per-chunk pipeline state. Only the main thread reads or writes it, workers are pure
 // functions that hand results back through queues, so no state needs to be atomic. The
 // one cross-thread liveness concern (a mesh job reading a neighbor while it unloads)
 // is handled by the job refcount on Chunk itself.
@@ -47,7 +47,9 @@ class ChunkManager {
 public:
     // The seed is a runtime value, not a constant: every launch generates a fresh world, so
     // a world you want to keep has to be saved deliberately (see Worlds in main).
-    ChunkManager(std::filesystem::path saveDir, int seed);
+    // genVersion: which TerrainGenerator made this world (a saved world keeps its own).
+    ChunkManager(std::filesystem::path saveDir, int seed,
+                 int genVersion = TerrainGenerator::kLatestVersion);
     ~ChunkManager();
     ChunkManager(const ChunkManager&) = delete;
     ChunkManager& operator=(const ChunkManager&) = delete;
@@ -65,7 +67,7 @@ public:
         std::size_t quadBytes = 0;
         // Chunks that arrived into a column already marked seeded and were lit on the
         // spot. Nonzero is normal (it is what vertical movement does); it is here because
-        // the smoke asserts it is nonzero — without that, a change that stops chunks ever
+        // the smoke asserts it is nonzero, without that, a change that stops chunks ever
         // landing this way would leave the vertical group passing while testing nothing.
         int lateSeeds = 0;
         double genMsAvg = 0.0;
@@ -104,7 +106,7 @@ public:
 
     BlockId blockAtWorld(const glm::ivec3& wp) const;
     // Sky light 0..15 at a world voxel, 0 where nothing is loaded. The ambience director
-    // wants "how enclosed is the ear", and this already answers it exactly — the light BFS
+    // wants "how enclosed is the ear", and this already answers it exactly, the light BFS
     // has done the work, so asking costs one chunk lookup instead of a cover raycast every
     // frame. An absent chunk reads 0 (sealed) rather than 15, so streaming in never makes a
     // cave briefly sound like open sky.
@@ -115,7 +117,7 @@ public:
 
     // The block-edit fast path: sets the voxel, settles light, and synchronously
     // remeshes the affected chunk (plus border neighbors and anything light touched)
-    // on the main thread — edit to visible in the same frame, per the spec target.
+    // on the main thread, edit to visible in the same frame, per the spec target.
     bool setBlock(Renderer& renderer, LightEngine& light, const glm::ivec3& wp, BlockId id);
 
     // Batch form. A simulation (flowing water, falling sand, break progress) changes many
@@ -134,7 +136,7 @@ public:
 
     // One fluid step over the cells queued by edits (near `around` first). Cellular, not
     // particle-based: every non-source water cell recomputes its depth from its neighbours,
-    // so the field is stateless and self-correcting — no per-cell velocity to keep
+    // so the field is stateless and self-correcting, no per-cell velocity to keep
     // consistent, and an interrupted or budget-truncated tick just resolves on the next one.
     // Returns the number of voxels that changed. Drives the batched edit path, because a
     // tick changes many voxels and one-at-a-time would settle light and remesh per voxel.
@@ -146,11 +148,11 @@ public:
     //
     // Event-driven, not a scan. A box scan looked simpler and was unusable: the box is
     // ~118k cells of hash lookups per tick, and worse, terrain generates gravel inside
-    // stone that caves then undercut — so a scan finds thousands of unsupported blocks the
+    // stone that caves then undercut, so a scan finds thousands of unsupported blocks the
     // moment a world loads and never stops moving them, remeshing continuously. Gravel
     // that nobody has touched staying put is also the behaviour you want.
     // `landed` counts blocks that came to rest THIS tick having actually fallen, and
-    // `landedAt` is one of them — enough for a sound, since a collapsing pile is one event to
+    // `landedAt` is one of them, enough for a sound, since a collapsing pile is one event to
     // the ear rather than thirty. The distinction matters: a block that cannot fall was not
     // necessarily falling, it may have just been placed on solid ground, and that already
     // made its own noise.
@@ -159,7 +161,7 @@ public:
     // A voxel worth re-testing for falling: the block itself, and whatever sits on it.
     void queueFallCheck(const glm::ivec3& p);
     // A voxel whose water depth may have changed: itself and its six neighbours. Fluid is
-    // event-driven for the same reason falling is - a scan finds nothing almost every tick.
+    // event-driven for the same reason falling is, a scan finds nothing almost every tick.
     void queueFluidCheck(const glm::ivec3& p);
 
     const TerrainGenerator& generator() const { return m_gen; }
@@ -173,10 +175,12 @@ public:
     // Release everything resident and come up on a different world: new seed, new save
     // directory. Used by "new world" and by loading a saved one. Safe only when no jobs are
     // in flight, which the caller guarantees by draining first, and the caller must put a
-    // loading screen in front of the re-stream — otherwise the whole world generates around
+    // loading screen in front of the re-stream, otherwise the whole world generates around
     // the player, which is both ugly and a long stall.
-    void loadWorld(Renderer& renderer, int seed, std::filesystem::path saveDir);
+    void loadWorld(Renderer& renderer, int seed, std::filesystem::path saveDir,
+                   int genVersion = TerrainGenerator::kLatestVersion);
     int seed() const { return m_seed; }
+    int genVersion() const { return m_gen.version(); }
 
     // How many chunks a settled world at the current radius will have meshed. The loading
     // screen divides by this, so it has to be the real figure: radius*radius*kWorldChunksY
@@ -249,7 +253,7 @@ public:
         // were still dark.
         // m_meshScanDirty counts too: a chunk just sent back for a relight has no job and
         // no queue entry until the next scan finds it, so leaving it out reports "settled"
-        // one frame early — with stale light still baked into the quads on screen.
+        // one frame early, with stale light still baked into the quads on screen.
         // An edited chunk's eviction save counts as well: it runs on a worker but is not one of
         // the counted jobs, and a caller that drains on this before switching worlds would
         // otherwise pull the world out from under it (SPEC #142).
@@ -271,19 +275,19 @@ public:
     void refreshStats() const { m_scanAge = 999; }
 
     // For --smoke, specifically a live radius change (SPEC #57): once busy() is false
-    // (settled — every queue drained, mesh scan clean), every resident chunk's LOD/detail
+    // (settled, every queue drained, mesh scan clean), every resident chunk's LOD/detail
     // state should agree with what its distance and the CURRENT radius call for. Any of
-    // these being nonzero after a full settle is a real bug, not a mid-stream snapshot —
+    // these being nonzero after a full settle is a real bug, not a mid-stream snapshot,
     // see auditLod()'s own comment for why each one specifically means that.
     struct LodAudit {
-        int stranded = 0;          // resident past the eviction threshold — should be gone
+        int stranded = 0;          // resident past the eviction threshold, should be gone
         int lodMismatch = 0;       // Meshed at an LOD other than what desired-now calls for
         int coarseInDetailBand = 0; // wants detail (self-heal condition true) but never got it
     };
     LodAudit auditLod() const;
 
     // For --smoke: is this specific chunk actually meshed and lit, as opposed to "voxels
-    // exist but nothing drew it yet" — the distinction a starved light-seed queue can leave
+    // exist but nothing drew it yet", the distinction a starved light-seed queue can leave
     // indefinitely on exactly the column that matters most (SPEC: "nothing generates in the
     // area I spawn in").
     bool chunkMeshedAndLit(ChunkPos pos) const {
@@ -295,8 +299,8 @@ public:
     int radius = 16; // render radius in chunks, horizontal
     // How far out full detail reaches, as a cap on how much the LOD bands may widen with the
     // radius: 1 keeps them at their radius-16 size at any radius, 2 lets them double at 32.
-    // Full detail is most of the frame at a big radius — at radius 32, 2 against 1 was 22.4M
-    // quads against 5.6M and about twice the frame time — so this is the player's trade. Each
+    // Full detail is most of the frame at a big radius, at radius 32, 2 against 1 was 22.4M
+    // quads against 5.6M and about twice the frame time, so this is the player's trade. Each
     // quality preset sets it (Ultra 2); the default is High's.
     static constexpr float kDefaultDetailScale = 1.5f;
     float detailScale = kDefaultDetailScale;
@@ -313,8 +317,8 @@ private:
         bool lit = false;      // sky/emissive seeding done; meshing waits for it
         // Light moved after a mesh job for this chunk was already in flight, so the quads
         // it is producing bake values that are stale before they land. The state flip that
-        // normally sends a chunk back round can't be used here — the landing result would
-        // overwrite it — so the intent is parked until the drain can act on it.
+        // normally sends a chunk back round can't be used here, the landing result would
+        // overwrite it, so the intent is parked until the drain can act on it.
         bool lightDirty = false;
         // Baked light is stale on an already-drawn chunk. The chunk stays Meshed and keeps
         // drawing its old quads until the fresh mesh lands; flipping it back to Ready made it
@@ -337,7 +341,7 @@ private:
         std::uint16_t connectivity = 0x7FFF;
         std::int32_t metaIndex = -1;   // slot in the cull meta buffer, -1 = not drawn
         // Opaque/transparent quads, kept for the chunk's whole residency (arena rebuilds
-        // re-upload from them). Borrowed from m_quadPool/m_waterPool, not owned directly —
+        // re-upload from them). Borrowed from m_quadPool/m_waterPool, not owned directly,
         // see MeshBufferPool.hpp. null = no geometry of that kind, or nothing meshed yet.
         std::vector<PackedQuad>* quadBuf = nullptr;
         std::vector<PackedQuad>* waterBuf = nullptr;
@@ -401,7 +405,7 @@ private:
     RegionStore m_regions;
     GreedyMesher m_mesher; // main-thread instance for the synchronous edit remesh path
     // Every chunk's quad data, kept for its whole residency, lives in a slot here rather
-    // than in a vector it owns directly — see MeshBufferPool.hpp. The async mesh-job path
+    // than in a vector it owns directly, see MeshBufferPool.hpp. The async mesh-job path
     // (workers) and the synchronous edit-remesh path (remeshNow, main-thread-only) share
     // both pools; only checkout()/checkin() need to run on the main thread, which both
     // paths already do (the async path via the upload-drain loop, this one directly).
@@ -446,14 +450,14 @@ private:
 
 public:
     // Resident chunk-Y range for a column, inclusive. There is no world ceiling, so this
-    // is the vertical band around the camera — EXCEPT that it is extended upward to just
+    // is the vertical band around the camera, EXCEPT that it is extended upward to just
     // above the terrain surface whenever the band comes near it. That extension is what
     // makes sky light exact without a world top to descend from: the generator never puts
     // a solid voxel above kTerrainTop, so a descent starting above the surface starts in
     // open sky by construction.
     //
     // skyAtTop says whether the top of that range is open sky (15) or buried (0). When the
-    // band sits well below the surface the answer is 0 and no descent is needed at all —
+    // band sits well below the surface the answer is 0 and no descent is needed at all,
     // sky attenuates 1 per step, so it cannot reach more than 15 blocks below the lowest
     // lit voxel, and a whole chunk of separation is 32. That bound is what keeps digging
     // deep from having to load every chunk back up to daylight.

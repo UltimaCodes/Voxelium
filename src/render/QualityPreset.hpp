@@ -8,7 +8,7 @@ namespace vx {
 
 // Quality presets (#42).
 //
-// A preset that only flips booleans is a toggle list wearing a hat — the cost in this
+// A preset that only flips booleans is a toggle list wearing a hat, the cost in this
 // renderer lives in loop bounds that are compile-time constants in GLSL, and in the shadow
 // map's resolution and cascade count. So a preset drives three different KINDS of knob:
 //
@@ -38,7 +38,7 @@ struct PresetValues {
     float leafSss;
     float relief;
     // How far full detail reaches (ChunkManager::detailScale). Each preset holds the reach its
-    // radius had before this became a setting - 1 up to radius 16, radius/16 above - so Ultra
+    // radius had before this became a setting (1 up to radius 16, radius/16 above), so Ultra
     // sees its mountains in full at 32 again, as it did when the presets were measured.
     float lodDetail;
 };
@@ -46,14 +46,14 @@ struct PresetValues {
 const PresetValues& presetValues(Preset p);
 const char* presetName(Preset p);
 
-// Writes a preset's values into `fx` and `radius`. Everything a preset does NOT own — the
-// grade, exposure, audio, crosshair, time of day — is left exactly as it was, because those
+// Writes a preset's values into `fx` and `radius`. Everything a preset does NOT own, the
+// grade, exposure, audio, crosshair, time of day, is left exactly as it was, because those
 // are taste rather than performance and resetting them on a preset change would be a
 // surprise.
 void applyPreset(Preset p, FxToggles& fx, int& radius);
 
 // Which preset (if any) the current values correspond to. Returns Custom as soon as one
-// preset-owned knob has been touched — that is the whole state machine behind the menu's
+// preset-owned knob has been touched, that is the whole state machine behind the menu's
 // "Custom" entry, and it means a preset never has to be remembered, only recognised.
 Preset detectPreset(const FxToggles& fx, int radius);
 

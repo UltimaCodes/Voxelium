@@ -4,7 +4,6 @@ dist/
 saves/
 screenshots/
 crashes/
-vxsave_smoke/
 .vs/
 .cache/
 .idea/
@@ -13,8 +12,8 @@ cmake-build-*/
 *.log
 
 # Working memory, not shipped documentation. INFO.md/SPEC.md/docs/ are how an agent (or a
-# fresh contributor) picks this project back up — architecture, the roadmap, current known
-# problems — and they are edited constantly, but that history is noise, not signal, in a
+# fresh contributor) picks this project back up, architecture, the roadmap, current known
+# problems, and they are edited constantly, but that history is noise, not signal, in a
 # repo whose real record is the commit log itself. README.md is the one exception: it is
 # what a stranger sees first and is the only doc meant to be read outside this checkout.
 INFO.md
@@ -24,12 +23,11 @@ docs/
 # Audio. The bundled CC0 set is tracked; anything else you drop in stays yours and is not
 # swept into a commit by a stray `git add sounds/`.
 #
-# wav is whitelisted because the #62 clip set converts to it — the packs it came from ship
+# wav is whitelisted because the #62 clip set converts to it, the packs it came from ship
 # ogg, which the engine rejects, and there is no flac encoder on this toolchain. That does
 # mean a wav YOU add is no longer ignored by default, so check `git status` before staging.
-# The rule that matters is in sounds/README.md and is not negotiable: only CC0 or equivalent
-# goes in here, and no Minecraft audio, ever.
+# The rule that matters is not negotiable: only CC0 or equivalent goes in here (credit it in
+# README.md), and no Minecraft audio, ever.
 sounds/*
-!sounds/README.md
 !sounds/*.flac
 !sounds/*.wav

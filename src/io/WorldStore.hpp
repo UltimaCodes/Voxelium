@@ -9,12 +9,12 @@ namespace vx {
 // Saved worlds on disk.
 //
 // The world you are playing is always the scratch one in `current/`, and it is wiped at
-// launch — every run starts on a fresh seed. Keeping a world is therefore a deliberate act:
+// launch, every run starts on a fresh seed. Keeping a world is therefore a deliberate act:
 // save it under a name, and it is copied into `worlds/<name>/` alongside the seed that
 // generated it. Loading copies it back.
 //
 // Only edited chunks are ever stored (unedited terrain regenerates from the seed), so a
-// saved world is the seed plus the player's diffs — usually a few tens of KB, which is why
+// saved world is the seed plus the player's diffs, usually a few tens of KB, which is why
 // copying rather than renaming is affordable and keeps the live world independent of the
 // snapshot it came from.
 class WorldStore {
@@ -22,6 +22,7 @@ public:
     struct Entry {
         std::string name;
         int seed = 0;
+        int gen = 1; // TerrainGenerator version; a world saved before versions existed is 1
         std::size_t bytes = 0;
     };
 
@@ -35,13 +36,14 @@ public:
 
     std::vector<Entry> list() const;
 
-    // Copy the live world into worlds/<name>/, recording `seed`. Overwrites a world of the
-    // same name, which is what you want when re-saving one you have been playing.
-    bool save(const std::string& name, int seed) const;
+    // Copy the live world into worlds/<name>/, recording `seed` and the generator version that
+    // made it. Overwrites a world of the same name, which is what you want when re-saving one
+    // you have been playing.
+    bool save(const std::string& name, int seed, int gen) const;
 
-    // Copy worlds/<name>/ over the live world and hand back its seed. False if the world
-    // is missing or has no readable seed, in which case the live world is left alone.
-    bool load(const std::string& name, int& seedOut) const;
+    // Copy worlds/<name>/ over the live world and hand back its seed and generator version. False
+    // if the world is missing or has no readable seed, in which case the live world is left alone.
+    bool load(const std::string& name, int& seedOut, int& genOut) const;
 
     bool remove(const std::string& name) const;
 

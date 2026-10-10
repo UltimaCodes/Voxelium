@@ -43,7 +43,7 @@ void Weather::draw(const Params& p) {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     // Depth test but no write: drops occlude against the world for free, and never against
-    // each other — which is what stops a dense field turning into a stack of visible planes.
+    // each other, which is what stops a dense field turning into a stack of visible planes.
     glDepthMask(GL_FALSE);
     glDisable(GL_CULL_FACE); // billboards face the camera; winding is not meaningful
     glDrawArrays(GL_TRIANGLES, 0, kDrops * 6);

@@ -23,7 +23,7 @@ class ChunkManager;
 //
 // Rendering is vertex-pulled from one buffer in three batches. The glows (fireflies, motes,
 // bubbles) are camera-facing sprites, since a round soft dot looks the same from every side.
-// Everything with a body - butterflies, birds, fish, leaves - is real geometry built from small
+// Everything with a body, butterflies, birds, fish, leaves, is real geometry built from small
 // boxes (see wildlife3d.vert), because a flat sprite turns edge-on and vanishes when seen from
 // the side. It runs BEFORE the water pass so a fish under a lake is seen through the water,
 // tinted and refracted like everything else beneath it.
@@ -50,26 +50,43 @@ public:
     void clear() { m_live = 0; }
 
     void update(float dt, const ChunkManager& world, const glm::dvec3& cam, const Env& env);
-    // Call inside the HDR scene pass, after the opaque world and BEFORE water. Depth tested,
-    // no depth write.
+    // Call inside the HDR scene pass, after the opaque world and BEFORE water. Depth tested; the
+    // bodies write depth, the glows do not.
     void draw(const glm::mat4& viewProj, const glm::dvec3& cam, const glm::vec3& right,
               const glm::vec3& up, bool underwater);
 
     int liveCount() const { return m_live; }
 
-    // Harness only (--tour, VX_TOUR_WILD=zoo): one of each animal in a row in front of the camera,
-    // close enough to judge the models from any side. The game never calls this.
-    // set 1 is just the crab, turtle and jellyfish, larger and closer together.
-    void placeDemo(const glm::dvec3& cam, const glm::vec3& forward, int set = 0);
+    // The player, as the animals see them: a box to keep out of and a velocity to read intent
+    // off. solid = false in fly mode, where they still scatter but nothing is shoved.
+    struct Body {
+        glm::dvec3 feet{0.0};
+        float halfWidth = 0.3f;
+        float height = 1.8f;
+        glm::vec3 vel{0.0f};
+        bool solid = true;
+    };
+    // Every animal with a body is solid to the player: an overlap is pushed apart, the animal
+    // taking most of it (it is the lighter one) and running off. Walking straight at one, or
+    // swimming into a school, scatters them before it comes to that. Returns how far the player
+    // has to give way, in xz.
+    glm::dvec2 interact(const Body& player, const ChunkManager& world);
+    // The animal a ray meets first within maxDist: its index, or -1. dist gets the distance.
+    int pick(const glm::dvec3& origin, const glm::vec3& dir, float maxDist, float& dist) const;
+    // A punch along dir: knocked away and running for a few seconds. Nothing is hurt.
+    void punch(int index, const glm::vec3& dir);
+    // For the punch sound: where it is and whether it lives in the water.
+    glm::dvec3 positionOf(int index) const { return m_pool[index].pos; }
+    bool swimsAt(int index) const;
+
 
 private:
     enum Kind : std::uint8_t { Butterfly = 1, Firefly, Gull, Fish, Leaf, Mote, Bubble, Bird, Crab, Turtle, Jelly };
-    // Solid, airborne things write depth (composite paints sky over any pixel still at the far
-    // plane, so they would be erased otherwise). Fish are solid too but stay depth-free: one that
-    // wrote depth would read to the water pass as shallow water and grow foam around itself.
-    static bool writesDepth(Kind k) {
-        return k == Butterfly || k == Gull || k == Leaf || k == Bird;
-    }
+    // Everything with a body writes depth. The swimmers used to be left out so a fish near the
+    // surface would not grow the water's shoreline foam around itself, and that made them
+    // see-through: their own boxes drew over each other in any order, and the water tint and
+    // the underwater fog went by the seabed behind them, which under the sea fogged them out
+    // entirely. The foam now measures to a depth taken before the animals are drawn.
     static bool isSolid(Kind k) { return k != Firefly && k != Mote && k != Bubble; }
 
     struct Critter {
@@ -86,7 +103,15 @@ private:
         float aux3 = 0.0f;
         int group = -1;     // fish: which school
         Kind kind = Mote;
+        glm::vec3 kick{0.0f};    // a shove or a punch, on top of whatever it is doing; decays
+        glm::vec3 fleeDir{0.0f}; // away from the player, xz
+        float flee = 0.0f;       // seconds left of running from the player
     };
+    // Size of an animal's body for the player to bump into or hit: horizontal radius and half
+    // height around its position, scaled by its size, from the boxes in wildlife3d.vert.
+    static glm::vec2 bodyExtent(const Critter& c);
+    // Starts (or keeps up) a run from the player along `away`.
+    void scare(Critter& c, const glm::vec3& away, float seconds);
     struct School {
         glm::dvec3 center{0.0};
         glm::vec3 vel{0.0f};

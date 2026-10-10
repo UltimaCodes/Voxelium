@@ -42,7 +42,7 @@ struct FrameStats {
 
 // ImGui debug/settings overlay: F3 diagnostics (frame graph, timings, alloc counter,
 // camera state, log) and the ESC settings menu (every toggle + slider). Debug/settings
-// tooling only — the in-world gameplay HUD (crosshair, hotbar, block outline) is real GL,
+// tooling only, the in-world gameplay HUD (crosshair, hotbar, block outline) is real GL,
 // never ImGui.
 class DebugHud {
 public:
@@ -59,8 +59,8 @@ public:
     // colours that exist, so offering more would mean quietly snapping the answer.
     bool lampPicker(bool& open, int& swatch);
 
-    // Full-screen loading panel. Shown while a world settles — at startup and on every
-    // world change — so the first frame the player sees has its LOD, shadows and chunks
+    // Full-screen loading panel. Shown while a world settles, at startup and on every
+    // world change, so the first frame the player sees has its LOD, shadows and chunks
     // already in place instead of assembling itself around them.
     void loadingScreen(float progress, const char* title, const char* phase);
 
@@ -86,7 +86,7 @@ public:
     // Shown before any world exists, once at launch. Separate from WorldUi/settings() above:
     // that panel always assumes a live world already exists (it can save/replace it), where
     // this one is choosing what to create or open in the first place, and it is the only
-    // place a SPECIFIC seed can be entered at all — the in-game "new world" button has never
+    // place a SPECIFIC seed can be entered at all, the in-game "new world" button has never
     // taken one, it only ever rolls a random one.
     struct TitleUi {
         char seedText[32] = ""; // pre-filled with a rolled seed; the terrain behind the menu is this

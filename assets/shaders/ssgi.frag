@@ -65,12 +65,12 @@ void main() {
     vec3 T = normalize(rot - N * dot(rot, N));
     vec3 B = cross(N, T);
 
-    // #75 widened this to 4.0 (composite weight 0.9 -> 1.6) for more pronounced bounce -
+    // #75 widened this to 4.0 (composite weight 0.9 -> 1.6) for more pronounced bounce,
     // owner report afterward: "everything is too bright, darks and lights don't work
     // together." SSGI's entire job is injecting fill light into shadowed areas, so pushing
     // both radius AND weight up at once, on top of this session's other floor-raising fixes,
     // overshot straight into flattening the image's dark end. Settled on a smaller, more
-    // measured increase over the ORIGINAL 2.2 - real, but not double.
+    // measured increase over the ORIGINAL 2.2, real, but not double.
     const float kRadius = 2.6;
     vec3 gi = vec3(0.0);
 #if   VX_QUALITY <= 1

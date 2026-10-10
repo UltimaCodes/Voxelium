@@ -33,7 +33,7 @@ struct FxToggles {
     // against nobody having opinions about a "fashionable" default. That's still the reason
     // saturation stays untouched, but the owner's own reference images (shader-pack style:
     // warm highlights, a touch more contrast) are now an explicit ask, not a drive-by
-    // preference (#78) - a SUBTLE lift, not a stylised grade, and --smoke/--bench/--tour all
+    // preference (#78), a SUBTLE lift, not a stylised grade, and --smoke/--bench/--tour all
     // inherit it same as a fresh player would, which is the point: the default look, not a
     // slider someone has to find first.
     float saturation = 1.0f;   // 0 = greyscale, 1 = untouched
@@ -44,7 +44,7 @@ struct FxToggles {
     // default and left off by --smoke/--bench/--tour, for the same reason TAA is.
     float grain = 0.0f;
     // Eye adaptation. Its state is one texel carried across frames, so the image depends on
-    // how many frames were rendered before it — the offscreen harnesses turn it off so
+    // how many frames were rendered before it, the offscreen harnesses turn it off so
     // their reference images stay comparable, exactly as they do for TAA.
     bool autoExposure = true;
     // Lens flare strength. Screen-space, gated on the sun actually being visible.
@@ -61,15 +61,15 @@ struct FxToggles {
     // Share of a leaf canopy that lets sun straight through to the ground, as columns of
     // light rather than per-block holes (see shadow.frag). 0 = only the texture's own holes.
     float canopyLight = 0.22f;
-    // Surface relief derived from the albedo's luminance — no authored normal maps, and no
+    // Surface relief derived from the albedo's luminance, no authored normal maps, and no
     // room in the quad for tangent data. Costs four texture samples per opaque fragment.
     float relief = 0.6f;
     // crosshair tint (RGBA, straight alpha). not a post effect, but it rides along in the
     // same struct so the settings menu and the settings file only have one thing to carry.
     float crosshair[4] = {1.0f, 1.0f, 1.0f, 0.85f};
     // Which lamp swatch to place, as an index into blocks::kLampRGB. An index rather than
-    // an rgb triple because these are the only colours that exist — a lamp's colour is its
-    // block id — so storing a free colour would only invite snapping it back again. Set by
+    // an rgb triple because these are the only colours that exist, a lamp's colour is its
+    // block id, so storing a free colour would only invite snapping it back again. Set by
     // the picker that opens on middle-clicking a lamp, and reused for everything placed
     // after that.
     int lampSwatch = 1;
@@ -93,6 +93,12 @@ struct FxToggles {
     // Let the weather change on its own (render/WeatherDirector). precip and snow are then
     // driven, and the sliders only apply with this off.
     bool autoWeather = true;
+    // Water within ~100 blocks moves with the swell (render/WaterWaves). Off leaves the surface
+    // flat, with the swell in its shading only, as it was before the waves were real.
+    bool waves = true;
+    // Runtime only: how much the weather has built the swell up, 0 calm .. 1 the worst storm.
+    // Eased by the caller so a squall takes a while to raise a sea and longer to let it settle.
+    float waveStorm = 0.0f;
     // The coarse heightfield past the streamed chunks (render/FarTerrain), so the view reaches
     // kilometres instead of ending in haze at the chunk radius.
     bool farTerrain = true;
@@ -111,7 +117,7 @@ struct FxToggles {
     float mist = 0.0f;      // 0..1, pulls the fog in (dawn, over water)
     float farInner = -1.0f; // runtime: radius the far horizon skips; < 0 means "the fog end", as in the game
     // Shader quality tier, 0 Low .. 3 Ultra. Injected as VX_QUALITY and baked into the
-    // programs, so changing it costs a shader rebuild — not a per-frame branch. 2 is the
+    // programs, so changing it costs a shader rebuild, not a per-frame branch. 2 is the
     // build that existed before presets, which is what every other tier is judged against.
     int quality = 2;
     // Shadow cascade texture size. A resource knob: changing it reallocates the depth array
@@ -132,7 +138,7 @@ public:
     bool init(const std::filesystem::path& shaderDir, std::string_view defines = {});
     void shutdown();
     // Rebuild every program at a new quality tier. Costs a compile the first time a tier is
-    // seen and a cache hit thereafter — the binary cache keys on the injected source, so the
+    // seen and a cache hit thereafter, the binary cache keys on the injected source, so the
     // second visit to a preset is nearly free (#15 measured the whole set at 349 ms cold,
     // 56 ms warm). Returns false and leaves the old programs in place if anything fails, so
     // a bad tier cannot leave the renderer with no shaders.
@@ -144,11 +150,16 @@ public:
     // Snapshot the opaque HDR color so the water pass can read it for screen-space
     // reflections/refraction, then rebind the HDR framebuffer to draw water into.
     void captureOpaqueForWater();
+    // Snapshot the depth of the world alone, before the animals are drawn into it. They write
+    // depth (a fish without it is fogged and tinted as if it were the seabed behind it, i.e.
+    // invisible), but the water's shoreline foam has to measure to the bed, or every fish near
+    // the surface would read as shallow water and grow a ring of foam.
+    void captureTerrainDepth();
     // Computes SSAO from the current (opaque-only) depth buffer and multiplies it onto the
-    // opaque scene right now - call this AFTER captureOpaqueForWater() and BEFORE water is
+    // opaque scene right now, call this AFTER captureOpaqueForWater() and BEFORE water is
     // drawn. Water never writes depth, so SSAO computed later (the old approach, once part
     // of the end-of-frame composite step) would be reading the LAKE BED's geometry under any
-    // water on screen and darkening the water surface by however occluded the bed is - see
+    // water on screen and darkening the water surface by however occluded the bed is, see
     // apply_ao.frag. Uses the snapshot captureOpaqueForWater() just took as the emitter-check
     // input, so it must run after that call, not before.
     void applyOpaqueSsao(bool enabled, const glm::vec2& projScale, float nearPlane);
@@ -163,6 +174,7 @@ public:
 
     unsigned int sceneCopyTex() const { return m_sceneCopy; }
     unsigned int depthTex() const { return m_depth; }
+    unsigned int terrainDepthTex() const { return m_terrainDepth; }
     int width() const { return m_width; }
     int height() const { return m_height; }
 
@@ -171,7 +183,7 @@ public:
         float nearPlane;
         glm::mat3 invViewRot;
         glm::vec3 sunL;           // toward the TRUE sun: sky gradient, sun disc, lens flare
-        // Toward whatever is lighting the world — sun by day, moon by night — and its
+        // Toward whatever is lighting the world, sun by day, moon by night, and its
         // radiance. Volumetrics, contact shadows and caustics march against the cascades,
         // which are rendered from this direction, so they must use it and not sunL.
         glm::vec3 lightL{0.0f, 1.0f, 0.0f};
@@ -220,6 +232,7 @@ private:
 
     unsigned int m_hdrFbo = 0, m_hdrColor = 0, m_depth = 0;
     unsigned int m_sceneCopy = 0; // opaque snapshot for water SSR
+    unsigned int m_terrainDepth = 0; // depth before the animals, for the water's foam
     unsigned int m_hdr2Fbo = 0, m_hdr2 = 0;
     unsigned int m_motionFbo = 0, m_motionTex = 0; // camera motion blur output
 

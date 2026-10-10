@@ -19,7 +19,7 @@ namespace vx {
 
 namespace {
 // Stock ImGui dark is a flat, undifferentiated grey that reads as a debug overlay rather
-// than part of the game — every window, button and slider the same colour regardless of
+// than part of the game: every window, button and slider the same colour regardless of
 // what it does. This reuses the same palette the loading/title screens already paint by
 // hand (the sky-gradient darks, the blue progress-bar accent, the off-white title text),
 // so the menus read as this game's own UI instead of ImGui's defaults with the game
@@ -41,13 +41,13 @@ void applyTheme() {
     style.FrameBorderSize = 0.0f;
 
     ImVec4* c = style.Colors;
-    const ImVec4 bgDark(0.070f, 0.094f, 0.149f, 1.00f);   // 18,24,38 — the sky gradient's top
+    const ImVec4 bgDark(0.070f, 0.094f, 0.149f, 1.00f);   // 18,24,38: the sky gradient's top
     const ImVec4 bgMid(0.114f, 0.133f, 0.176f, 1.00f);    // between bgDark and the panel fields
-    const ImVec4 bgLight(0.149f, 0.180f, 0.227f, 1.00f);  // 38,46,58 — the gradient's bottom
-    const ImVec4 accent(0.494f, 0.769f, 1.00f, 1.00f);    // 126,196,255 — the progress-bar blue
+    const ImVec4 bgLight(0.149f, 0.180f, 0.227f, 1.00f);  // 38,46,58: the gradient's bottom
+    const ImVec4 accent(0.494f, 0.769f, 1.00f, 1.00f);    // 126,196,255: the progress-bar blue
     const ImVec4 accentDim(0.494f, 0.769f, 1.00f, 0.55f);
-    const ImVec4 text(0.886f, 0.910f, 0.941f, 1.00f);     // 226,232,240 — the title text
-    const ImVec4 textDim(0.627f, 0.682f, 0.753f, 1.00f);  // 160,174,192 — the phase label
+    const ImVec4 text(0.886f, 0.910f, 0.941f, 1.00f);     // 226,232,240: the title text
+    const ImVec4 textDim(0.627f, 0.682f, 0.753f, 1.00f);  // 160,174,192: the phase label
 
     c[ImGuiCol_Text] = text;
     c[ImGuiCol_TextDisabled] = textDim;
@@ -343,7 +343,7 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
                     ImGui::PopStyleColor();
             }
             if (current == Preset::Custom)
-                ImGui::TextDisabled("custom - a preset knob has been changed");
+                ImGui::TextDisabled("custom: a preset knob has been changed");
             else
                 ImGui::TextDisabled("preset: %s", presetName(current));
 
@@ -403,6 +403,12 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
                 ImGui::SetTooltip("a coarse copy of the terrain out to ~5 km past the loaded\n"
                                   "chunks, so mountains far away are visible instead of the\n"
                                   "world ending in haze. costs almost nothing.");
+            ImGui::SameLine();
+            ImGui::Checkbox("waves", &fx.waves);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("open water near you rises and falls with the swell, bigger in\n"
+                                  "storms. off leaves the surface flat, with the swell only in\n"
+                                  "how it catches the light.");
             ImGui::BeginDisabled(!fx.clouds);
             ImGui::SetNextItemWidth(-125.0f);
             ImGui::SliderFloat("cloud shadow", &fx.cloudShadow, 0.0f, 1.0f, "%.2f");
@@ -611,7 +617,7 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
                 {"W A S D", "move"},
                 {"space / ctrl", "up / down flying, jump when walking"},
                 {"shift", "sprint"},
-                {"LMB (hold)", "break - blocks have hardness"},
+                {"LMB (hold)", "break (blocks have hardness)"},
                 {"MMB", "place"},
                 {"MMB on a lamp", "recolour it"},
                 {"scroll", "fly speed, or hotbar when F4 is open"},

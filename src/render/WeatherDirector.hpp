@@ -8,7 +8,7 @@ namespace vx {
 //
 // A slow state machine over real seconds: clear for a few minutes, then the cloud cover builds
 // for a while (the sky gets heavier before anything falls), then it rains or snows for a minute
-// or two, then it clears again. Deserts stay dry - the clouds still come and go, nothing falls -
+// or two, then it clears again. Deserts stay dry, the clouds still come and go, nothing falls,
 // and precipitation turns to snow up on the peaks.
 //
 // Mist is the odd one out: it is not a state, just a function of where and when you are. It

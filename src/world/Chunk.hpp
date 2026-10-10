@@ -23,7 +23,7 @@ inline constexpr int kVerticalRadius = 7; // 7 => 480 blocks of resident column
 
 // Where the GENERATOR puts terrain. This is a property of the noise, not of the world, and
 // exists so light and generation can bound their work: the generator never writes a solid
-// voxel above kTerrainTop, so everything above it is open sky by construction — which is
+// voxel above kTerrainTop, so everything above it is open sky by construction, which is
 // what lets sky light be seeded without a world top to descend from.
 inline constexpr int kTerrainTop = 384;
 inline constexpr int kTerrainBottom = 0; // bedrock floor; nothing generates below
@@ -49,26 +49,26 @@ inline constexpr BlockId CoalOre = 12;
 inline constexpr BlockId IronOre = 13;
 // Flowing water. There is no per-voxel metadata in this engine, so a fluid's depth is
 // carried by its block id: Water is a full source, WaterL1..L7 are the shallower steps
-// (L1 is the thinnest film). Seven ids is cheap - the palette stores whatever a chunk
-// actually uses - and it keeps fluid depth inside the existing voxel storage, the
+// (L1 is the thinnest film). Seven ids is cheap, the palette stores whatever a chunk
+// actually uses, and it keeps fluid depth inside the existing voxel storage, the
 // serializer and the region format with no format change anywhere.
 inline constexpr BlockId WaterL1 = 14;
 inline constexpr BlockId WaterL7 = 20;
 inline constexpr BlockId Gravel = 21;
-// Coloured lamps. One lamp BLOCK as far as the player is concerned — you recolour it in
-// place — but the colour has to live somewhere, and this engine has no per-voxel metadata
+// Coloured lamps. One lamp BLOCK as far as the player is concerned, you recolour it in
+// place, but the colour has to live somewhere, and this engine has no per-voxel metadata
 // at all. So the hue IS the id, the same block-id-as-data trick the water levels use: no
 // storage, serializer or region-format change, and a hue costs exactly one id.
 //
 // Twelve hues at two saturations, plus white. Block light is 4 bits per channel, so the
 // emitted colour is coarse before it ever leaves the lamp and finer steps would be
-// quantised away by the light itself — 25 is near the point where more ids buy nothing.
+// quantised away by the light itself, 25 is near the point where more ids buy nothing.
 // The player picks from these swatches directly rather than from a free colour control, so
 // what is offered is exactly what is storable and nothing has to be silently snapped.
 inline constexpr int kLampHues = 12;
 inline constexpr int kLampShades = 2; // saturated, then washed halfway to white
 // +1 for plain white. A wheel of saturated hues alone cannot express "a white lamp", and a
-// nearest-colour search over saturated entries answers a pale pick with a vivid one — which
+// nearest-colour search over saturated entries answers a pale pick with a vivid one, which
 // is exactly what made picking white do nothing sensible.
 inline constexpr int kLampCount = kLampHues * kLampShades + 1;
 inline constexpr BlockId LampFirst = 22;
@@ -99,7 +99,7 @@ inline constexpr std::array<LampRgb, kLampCount> kLampRGB = makeLampTable();
 
 // Cross-plane foliage: grass tufts and flowers, drawn as two diagonal quads through the
 // voxel rather than as a cube. They ride the ordinary opaque quad list using dir 6 and 7,
-// which the quad format's 3-bit dir field always had spare — so no third mesh layer, no
+// which the quad format's 3-bit dir field always had spare, so no third mesh layer, no
 // second meta buffer and no extra draw call. Non-opaque, so they neither block light nor
 // hide the faces behind them, and non-solid, so you walk through them.
 inline constexpr BlockId GrassTuft = 47;
@@ -143,7 +143,7 @@ inline constexpr bool isLogBlock(BlockId id) {
 
 inline constexpr bool isCoral(BlockId id) { return id >= BrainCoral && id <= BubbleCoral; }
 // Plants that grow underwater. The cell holds the plant instead of water, so it has to count
-// as water everywhere the mesher, fluid and player ask - otherwise every one would sit inside
+// as water everywhere the mesher, fluid and player ask, otherwise every one would sit inside
 // a pane-walled pocket of air, and you could not swim through a kelp forest.
 inline constexpr bool isWaterlogged(BlockId id) {
     return id == Seagrass || id == Kelp || (id >= CoralFanPink && id <= CoralFanOrange);
@@ -152,7 +152,7 @@ inline constexpr bool isCross(BlockId id) {
     return id == GrassTuft || id == Flower || id == DeadBush || id == Shell || isWaterlogged(id);
 }
 
-// Blocks with nothing under them fall. Sand and gravel only — dirt and stone staying put
+// Blocks with nothing under them fall. Sand and gravel only, dirt and stone staying put
 // is what keeps a cliff a cliff.
 inline constexpr bool falls(BlockId id) { return id == Sand || id == Gravel; }
 
@@ -217,7 +217,7 @@ inline constexpr bool opaque(BlockId id) {
     return id != Air && !isWater(id) && !isCross(id);
 }
 
-// CUTOUT blocks. The material is opaque where it exists, but the block is full of holes —
+// CUTOUT blocks. The material is opaque where it exists, but the block is full of holes,
 // leaves. Three things follow, and they used to be one flag:
 //   - it does NOT hide what is behind it, so faces against it are still drawn and you can
 //     see into and through a canopy (this is Minecraft's "fancy" leaves)
@@ -229,7 +229,7 @@ inline constexpr bool isCutout(BlockId id) { return isLeafBlock(id); }
 // Hides the faces behind it, and blocks the cave-cull visibility flood. A cutout does not.
 inline constexpr bool occludes(BlockId id) { return opaque(id) && !isCutout(id); }
 
-// Hard stop for light propagation. Cutouts are not — see lightCost.
+// Hard stop for light propagation. Cutouts are not, see lightCost.
 inline constexpr bool blocksLight(BlockId id) { return occludes(id); }
 
 // What one step THROUGH this voxel costs the light BFS. Ordinary air is 1. Leaves take a
@@ -302,7 +302,7 @@ inline constexpr const char* soundMaterial(BlockId id) {
 // 0..255 storage with a linear stored=level*17 (exact: 15*17=255, lossless round trip).
 // The banding improvement comes from GreedyMesher's existing per-corner light averaging
 // finally landing on genuine intermediate values instead of truncating straight back to
-// one of only 16 integers the instant the average is computed — nothing here changes BFS
+// one of only 16 integers the instant the average is computed, nothing here changes BFS
 // itself. This is a wire format shared with chunk.vert / water.vert AND with
 // mesh/QuadFormat.hpp's packed quad, which doubled from 64 to 128 bits to fit the wider
 // light field with no spare bits to reclaim.
@@ -346,12 +346,12 @@ static_assert(kFullSky == 0xFF000000, "full sky is the top byte");
 } // namespace light
 
 // Palette-compressed voxel storage. A uniform chunk (bits == 0) stores one id and no
-// index array — most of a world is air or deep stone and must cost nothing. Otherwise
+// index array, most of a world is air or deep stone and must cost nothing. Otherwise
 // indices into the palette are bit-packed at ceil(log2(palette size)) bits per voxel,
 // growing one bit at a time (repack) as the palette grows.
 //
 // Packing is straddled: index i lives at bit i*bits and may span two words. The read
-// is a multiply and two shifts — no division, no per-width magic numbers. A value's
+// is a multiply and two shifts, no division, no per-width magic numbers. A value's
 // second word is only touched when it actually straddles, which the branch guards.
 //
 // Palette entries are never garbage collected when blocks are overwritten; stale ids
@@ -390,7 +390,7 @@ public:
     bool hasJobRefs() const { return m_jobRefs.load(std::memory_order_acquire) != 0; }
 
     // Atomic 32-bit words (see namespace light above) so mesh jobs can
-    // read while the main-thread BFS writes — relaxed loads/stores are plain MOVs on
+    // read while the main-thread BFS writes, relaxed loads/stores are plain MOVs on
     // x86, so this costs nothing and is formally race-free. A stale read only means the
     // chunk gets remeshed again when the light engine marks it touched.
     //
@@ -398,7 +398,7 @@ public:
     // up front), so the POINTER is raced on too, not just the bytes: a worker can be in
     // lightAt() while the main thread's first setLight() allocates. It is published with
     // release / read with acquire so a worker that sees the pointer also sees the filled
-    // array — otherwise it could read uninitialized heap. Same reason m_uniformLight is
+    // array, otherwise it could read uninitialized heap. Same reason m_uniformLight is
     // atomic: it is the value lightAt() returns before the array exists.
     std::uint32_t lightAt(int x, int y, int z) const {
         const auto* l = m_light.load(std::memory_order_acquire);

@@ -12,6 +12,7 @@ struct RaycastHit {
     bool hit = false;
     glm::ivec3 voxel{0};  // the solid voxel that was hit
     glm::ivec3 normal{0}; // face normal; voxel + normal is where a block would go
+    double distance = 0.0; // along the ray to where it entered that voxel
 };
 
 // Amanatides & Woo voxel DDA. `solid` is any callable ivec3 -> bool.
@@ -47,6 +48,7 @@ RaycastHit raycastVoxels(const glm::dvec3& origin, const glm::vec3& dir, double 
             result.hit = true;
             result.voxel = voxel;
             result.normal = lastStepAxisNormal;
+            result.distance = t;
             return result;
         }
         const int axis = tMax.x < tMax.y ? (tMax.x < tMax.z ? 0 : 2)

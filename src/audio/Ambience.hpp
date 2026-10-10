@@ -10,7 +10,7 @@ class AudioEngine;
 // pure state -> gains function can be asserted directly in --smoke with no device, no clips
 // and no timing, which is the only way to test "a cave sounds like a cave" at all.
 struct AmbienceState {
-    float daylight = 1.0f;   // 1 full day, 0 after dusk — FrameRenderer's SkyLight.daylight
+    float daylight = 1.0f;   // 1 full day, 0 after dusk, FrameRenderer's SkyLight.daylight
     float skyAccess = 1.0f;  // 0 sealed in, 1 open sky, from the voxel sky light at the ear
     float depth = 0.0f;      // blocks below the local surface; negative above it
     float precip = 0.0f;     // weather intensity, 0..1

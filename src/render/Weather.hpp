@@ -10,7 +10,7 @@ namespace vx {
 //
 // No CPU simulation and no buffer: every drop's position is a pure function of its instance
 // id and the clock, worked out in the vertex shader (see weather.vert). Drawing 30k drops
-// therefore costs one draw call and no upload — where routing them through the existing
+// therefore costs one draw call and no upload, where routing them through the existing
 // particle pool would have meant simulating and re-uploading them every frame, for a pool
 // that is 4096 and carries per-drop physics precipitation does not need.
 //

@@ -3,7 +3,7 @@
 // camera motion blur. reproject each pixel's world position into the previous frame (same
 // camera-relative reconstruction as TAA) to get its screen-space velocity, then average a
 // few taps along that velocity. only the camera moves the world here, so this is a
-// per-pixel velocity from depth — no velocity buffer needed.
+// per-pixel velocity from depth, no velocity buffer needed.
 
 in vec2 vUv;
 layout(location = 0) out vec4 outColor;

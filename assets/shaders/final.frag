@@ -1,6 +1,6 @@
 #version 460 core
 
-// bloom mix, white balance, exposure, ACES filmic (Narkowicz fit), manual sRGB encode —
+// bloom mix, white balance, exposure, ACES filmic (Narkowicz fit), manual sRGB encode,
 // manual so the output is identical on every driver instead of trusting GL_FRAMEBUFFER_SRGB
 // support. Then grade (contrast + saturation), vignette, grain, and an optional unsharp
 // pass to claw back the softness TAA leaves (done in LDR so bright HDR highlights ring).
@@ -21,7 +21,7 @@ layout(location = 6) uniform float uGrain;       // 0 = off
 layout(location = 7) uniform float uTime;        // grain animation only
 layout(location = 8) uniform float uSaturation;  // 1 = untouched
 layout(location = 9) uniform float uContrast;    // 1 = untouched
-layout(location = 10) uniform float uTemperature; // 0 = neutral, + warm, - cool
+layout(location = 10) uniform float uTemperature; // 0 = neutral, + warm, cool
 layout(location = 12) uniform float uScotopic;    // night rod-vision shift, 0 = off
 layout(location = 14) uniform float uDither;      // 8-bit output dither, 0 = off
 
@@ -30,7 +30,7 @@ vec3 aces(vec3 x) {
 }
 
 // Ordered dither before the 8-bit write. A sky gradient spans a few hundred code values over
-// a thousand pixels, so the steps land as visible bands — the one artefact in this renderer
+// a thousand pixels, so the steps land as visible bands, the one artefact in this renderer
 // that is purely a quantisation problem. A triangular-PDF dither of one code value turns the
 // step into noise below the threshold of vision, for about three instructions.
 float triDither(vec2 p) {
@@ -42,7 +42,7 @@ float triDither(vec2 p) {
 }
 
 // White balance belongs BEFORE the tonemap: it is a property of the light in the scene,
-// not of the print. Channel gains rather than a Planckian-locus conversion — this is a
+// not of the print. Channel gains rather than a Planckian-locus conversion, this is a
 // slider nobody calibrates against a colour chart, and the gains keep luminance roughly
 // put so the exposure slider does not have to be re-touched after moving it.
 vec3 whiteBalance(vec3 c) {
@@ -53,7 +53,7 @@ vec3 whiteBalance(vec3 c) {
 
 // Manual exposure, times the adaptation factor when auto-exposure is on. The factor is
 // clamped hard: an all-sky frame and a frame inside a sealed cave are several stops apart,
-// and letting the auto term chase that fully turns a dark cave into a grey one — the point
+// and letting the auto term chase that fully turns a dark cave into a grey one, the point
 // is to take the edge off, not to erase the difference between day and underground.
 //
 // The upper bound was 3.0, and night is precisely the case that pins to it: a dark frame
@@ -76,7 +76,7 @@ float exposureScale() {
 }
 
 // Scotopic (rod) vision: below about 0.01 cd/m2 the cones stop contributing, so night
-// vision is desaturated and shifted blue — the Purkinje effect. Worth having because it
+// vision is desaturated and shifted blue, the Purkinje effect. Worth having because it
 // makes a frame READ as night at a higher actual brightness than a purely dark frame does,
 // which is the opposite of the trap this engine fell into (crank the fill until you can see,
 // then wonder why night looks like overcast afternoon).
@@ -121,7 +121,7 @@ void main() {
         vec3 d = tonemap(texture(uHdr, vUv + vec2(0.0, uTexel.y)).rgb);
 
         // Contrast-adaptive, not a plain unsharp mask. The old version added the laplacian
-        // straight on, which overshoots at every edge — and an overshoot reads as a bright
+        // straight on, which overshoots at every edge, and an overshoot reads as a bright
         // halo along terrain silhouettes, which at render scale below 1 is a worse artefact
         // than the softness it was meant to fix.
         //
@@ -143,7 +143,7 @@ void main() {
     if (uVignette > 0.0) {
         // Aspect-corrected, so the falloff is an ellipse that matches the frame instead of
         // a circle that clips the short edge first. Squared smoothstep keeps the centre
-        // completely untouched — a vignette you can see starting is a vignette set wrong.
+        // completely untouched, a vignette you can see starting is a vignette set wrong.
         vec2 d = (vUv - 0.5) * vec2(uTexel.y / max(uTexel.x, 1e-6), 1.0);
         float r = length(d) * 1.41421356;
         float v = smoothstep(0.55, 1.15, r);
@@ -153,7 +153,7 @@ void main() {
     if (uGrain > 0.0) {
         // Scaled by (1 - luma): film grain lives in the midtones and shadows, and grain in
         // a blown highlight reads as sensor noise instead. Animated, so this is the one
-        // effect that makes consecutive frames differ — the offscreen harnesses leave it
+        // effect that makes consecutive frames differ, the offscreen harnesses leave it
         // at 0 for exactly the reason TAA is off there.
         float n = hash21(vUv * (1.0 / max(uTexel.x, 1e-6)) + fract(uTime) * 137.0) - 0.5;
         float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));

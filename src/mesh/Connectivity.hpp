@@ -6,7 +6,7 @@
 
 namespace vx {
 
-// Which of a chunk's 6 faces can see each other through its non-solid voxels — 15
+// Which of a chunk's 6 faces can see each other through its non-solid voxels, 15
 // face-pair bits (Tommo's "advanced cave culling"). Computed at mesh time on a worker;
 // the per-frame visibility flood in ChunkManager walks these to decide which chunks
 // can possibly be seen from the camera.

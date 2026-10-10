@@ -1,7 +1,7 @@
 #version 460 core
 
 // depth-aware (bilateral) blur of the half-res AO: taps that straddle a depth edge are
-// rejected, so AO no longer smears across silhouettes — that smearing was the "blur when
+// rejected, so AO no longer smears across silhouettes, that smearing was the "blur when
 // you get close to a block". carries the view depth through in .g for the composite.
 
 in vec2 vUv;

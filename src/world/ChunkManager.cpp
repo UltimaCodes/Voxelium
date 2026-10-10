@@ -15,8 +15,8 @@
 
 namespace vx {
 
-ChunkManager::ChunkManager(std::filesystem::path saveDir, int seed)
-    : m_seed(seed), m_gen(seed), m_regions(std::move(saveDir)) {}
+ChunkManager::ChunkManager(std::filesystem::path saveDir, int seed, int genVersion)
+    : m_seed(seed), m_gen(seed, genVersion), m_regions(std::move(saveDir)) {}
 
 
 namespace {
@@ -41,11 +41,11 @@ std::int64_t horizontalDist2(ChunkPos p, ChunkPos center) {
 // detail level from squared chunk distance. near chunks full res; far chunks downsample
 // so their meshes collapse to a fraction of the triangles (main pass + shadows). the far
 // bands (L4 16x, L5 32x = one dominant block per chunk) make big render distances almost
-// free — a very-distant chunk is a handful of quads. near bands are unchanged, so raising
+// free, a very-distant chunk is a handful of quads. near bands are unchanged, so raising
 // the radius only adds cheap coarse geometry out on the horizon.
 // Bands scale with the render distance instead of sitting at fixed chunk counts, by `s`
 // (ChunkManager::lodScale). They were tuned at radius 16 and stayed there, so raising the
-// radius did not push detail outward with it — it just added more of the coarsest band, and
+// radius did not push detail outward with it, it just added more of the coarsest band, and
 // full detail still ran out at 8 chunks no matter how far you could see. The ratios below
 // reproduce the old 8/14/22/30/42 exactly at radius 16, so that case is unchanged.
 int lodForDist2(std::int64_t d2, double s) {
@@ -59,7 +59,7 @@ int lodForDist2(std::int64_t d2, double s) {
     //
     // ONLY that band moved. The 1 -> 2 transition is where kCoarseLod kicks in and chunks
     // start generating without caves, and at the default radius 16 the loaded ring
-    // is only 17 chunks — push that threshold out to 24 and nothing is ever coarse, which
+    // is only 17 chunks, push that threshold out to 24 and nothing is ever coarse, which
     // silently turns the whole coarse-gen optimisation off and costs +78% quads. It stays
     // at 14. The smoke regen group samples a column at 15 chunks precisely to hold this.
     if (d2 <= band(12)) return 0;
@@ -71,16 +71,28 @@ int lodForDist2(std::int64_t d2, double s) {
 }
 
 // chunks meshed at this LOD or coarser generate without caves (they'd be averaged away by
-// the downsample; trees still generate, see TerrainGenerator::generate). approaching one —
-// desired LOD drops below this — re-generates it detailed. caves cost ~4x gen/mesh/quads,
+// the downsample; trees still generate, see TerrainGenerator::generate). approaching one,
+// desired LOD drops below this, re-generates it detailed. caves cost ~4x gen/mesh/quads,
 // so skipping them far out is the big win.
 constexpr int kCoarseLod = 2;
 
 constexpr int kFaceOffsets[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
                                     {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+// Everything a mesh reads: the six faces, then the four horizontal diagonals in
+// GreedyMesher::kDiagonalOffsets order. The diagonals only feed the water's wave corners, but a
+// corner shared by four chunks has to come out the same in all of them, so a chunk waits for
+// them like it waits for its faces, and a change at a corner column re-meshes the diagonal.
+constexpr int kMeshOffsets[GreedyMesher::kMeshNeighbors][3] = {
+    {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1},
+    {0, 0, -1}, {1, 0, 1}, {1, 0, -1}, {-1, 0, 1}, {-1, 0, -1}};
+static_assert(GreedyMesher::kDiagonalOffsets[0][0] == kMeshOffsets[6][0] &&
+              GreedyMesher::kDiagonalOffsets[0][1] == kMeshOffsets[6][2] &&
+              GreedyMesher::kDiagonalOffsets[3][0] == kMeshOffsets[9][0] &&
+              GreedyMesher::kDiagonalOffsets[3][1] == kMeshOffsets[9][2],
+              "mesh neighbour order must match the mesher's diagonal order");
 
 // Faces whose neighbour meshes coarser than we do. The mesher skirts those borders
-// instead of culling against voxels the neighbour isn't actually drawing — see
+// instead of culling against voxels the neighbour isn't actually drawing, see
 // GreedyMesher::mesh. LOD comes from horizontal distance alone, so the two vertical
 // faces always match and never end up in the mask.
 //
@@ -89,7 +101,7 @@ constexpr int kFaceOffsets[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
 // that neighbour actually coarsens. That is what lets the mask go stale harmlessly. A
 // mesh is built against one camera centre and keeps that mask until the chunk re-meshes
 // for its own reasons, so an exact mask would need every LOD change to invalidate its
-// finer neighbours — and after a teleport (where half the world re-LODs) that cost 4.5x
+// finer neighbours, and after a teleport (where half the world re-LODs) that cost 4.5x
 // the frames to re-stream. Over-skirting only leaves a hidden wall behind the neighbour's
 // geometry; under-skirting leaves a hole, so this errs to the side that can't be seen.
 // The margin is safe because neighbours are one chunk apart: by the time the camera has
@@ -187,8 +199,8 @@ ChunkManager::ColumnHeights ChunkManager::columnHeights(int cx, int cz) const {
     // steep peak stands tens of blocks higher at a corner, and the band stopped short of it.
     // The chunk holding those blocks then had no neighbour above it and never meshed, and
     // anything over it was never even generated (reproduced: a peak at radius 32 seen from a
-    // low camera). The margin covers what grows on the ground - a spruce reaches ~17 above it,
-    // a lighthouse ~21 - and terrain rising between the samples.
+    // low camera). The margin covers what grows on the ground, a spruce reaches ~17 above it,
+    // a lighthouse ~21, and terrain rising between the samples.
     constexpr int kMargin = kChunkSize;
     constexpr int kAt[3] = {0, kChunkSize / 2, kChunkSize - 1};
     ColumnHeights h;
@@ -230,7 +242,7 @@ void ChunkManager::columnRange(int cx, int cz, int& y0, int& y1, bool& skyAtTop)
 
 bool ChunkManager::columnPresent(ChunkPos col) const {
     // "Complete" now means the resident range is present, because that is all there ever
-    // will be — an unbounded column can never be fully loaded.
+    // will be, an unbounded column can never be fully loaded.
     int y0 = 0, y1 = 0;
     bool sky = false;
     columnRange(col.x, col.z, y0, y1, sky);
@@ -247,9 +259,9 @@ const Chunk* ChunkManager::voxelsAt(ChunkPos pos) const {
 
 void ChunkManager::rescan(ChunkPos center) {
     m_meshScanDirty = true; // moved: LOD bands shifted, new chunks incoming
-    // +2, not +1: owner report, live — chunks visibly popping in/unrendering when moving
+    // +2, not +1: owner report, live, chunks visibly popping in/unrendering when moving
     // fast (fly speed is user-scrollable well past what generation can keep pace with, by
-    // design — there's no fix for that end of the range, only more runway before you reach
+    // design, there's no fix for that end of the range, only more runway before you reach
     // it). One extra ring of pre-generated buffer ahead of the camera is real runway: it
     // does not make generation faster, but it means outrunning it takes one more ring of
     // travel at any given speed, which is where "how far can I go before I see it" actually
@@ -289,14 +301,14 @@ ChunkManager::LodAudit ChunkManager::auditLod() const {
         const ChunkPos pos = item.first;
         const Entry& e = item.second;
         // Matches rescan()'s own eviction threshold (dataR + 1 where dataR = radius + 2)
-        // exactly — anything past this should have been on the evict list and gone by now.
+        // exactly, anything past this should have been on the evict list and gone by now.
         if (std::abs(pos.x - m_center.x) > radius + 3 || std::abs(pos.z - m_center.z) > radius + 3 ||
             std::abs(pos.y - m_center.y) > kVerticalRadius + 1) {
             ++a.stranded;
             continue;
         }
         // Beyond `radius` itself is the buffer band the scan loop deliberately skips too
-        // (rescan()'s evict threshold is radius+3, the scan's is radius) — nothing to check
+        // (rescan()'s evict threshold is radius+3, the scan's is radius), nothing to check
         // for a chunk sitting in that gap on purpose.
         if (std::abs(pos.x - m_center.x) > radius || std::abs(pos.z - m_center.z) > radius)
             continue;
@@ -306,7 +318,7 @@ ChunkManager::LodAudit ChunkManager::auditLod() const {
         if (e.lod != desired)
             ++a.lodMismatch;
         // Exactly the self-heal condition in update() that queues a coarse->detailed regen
-        // (dirty is excluded there on purpose too — see #64 — an unsaved edit keeps a chunk
+        // (dirty is excluded there on purpose too, see #64, an unsaved edit keeps a chunk
         // coarse until it's saved, which is correct, not stuck).
         if (desired < kCoarseLod && !e.detailed && !e.voxels->uniform() && !e.dirty)
             ++a.coarseInDetailBand;
@@ -327,7 +339,7 @@ void ChunkManager::processEvictions(Renderer& renderer, JobSystem& jobs) {
                               e.state == ChunkState::Meshing || e.voxels->hasJobRefs() ||
                               (e.pendingDetail && e.pendingDetail->hasJobRefs());
         if (inFlight) {
-            ++i; // a worker still holds it — retry next frame
+            ++i; // a worker still holds it, retry next frame
             continue;
         }
         // an in-flight re-gen whose job already finished: the entry vanishes here, and the
@@ -335,7 +347,7 @@ void ChunkManager::processEvictions(Renderer& renderer, JobSystem& jobs) {
         // Persist player edits; everything else regenerates from the seed (caching generated
         // chunks measured as a no-op, SPEC #16).
         // Serialize on a worker, never here. A teleport evicts thousands of chunks at
-        // once and doing this inline measured as a 128 ms freeze — and blocking the main
+        // once and doing this inline measured as a 128 ms freeze, and blocking the main
         // thread on disk work is exactly what the streaming design forbids. The job holds
         // a ref, so the chunk cannot return to the pool underneath it; this entry simply
         // waits out another pass or two of the evict list, which it is already on. It is
@@ -368,7 +380,7 @@ void ChunkManager::processEvictions(Renderer& renderer, JobSystem& jobs) {
             noteDirty(m_evictList[i]);
         }
         // Return the mesh buffers to the pool before the Entry (and its pointers) are gone
-        // for good — miss this and the slot is still sitting in m_slots, just unreachable
+        // for good, miss this and the slot is still sitting in m_slots, just unreachable
         // from the free list, so the pool grows a little every eviction for the rest of the
         // session instead of steady-stating.
         if (e.quadBuf)
@@ -380,7 +392,7 @@ void ChunkManager::processEvictions(Renderer& renderer, JobSystem& jobs) {
         // bottom or top when the camera changes height leaves the rest of the column lit
         // correctly, and if the chunk comes back it is lit on arrival like any other band
         // growth. Dropping the seed there made the self-heal relight every column in view on
-        // each vertical chunk step - ~4000 at radius 32, half a minute of seeding during which
+        // each vertical chunk step, ~4000 at radius 32, half a minute of seeding during which
         // nothing new anywhere could light or mesh: walk over a hill and the world stopped
         // rendering a few chunks out (owner report).
         const ChunkPos gone = m_evictList[i];
@@ -391,7 +403,7 @@ void ChunkManager::processEvictions(Renderer& renderer, JobSystem& jobs) {
         }
         m_chunks.erase(it);
         // a neighbour waiting on this chunk may count it as out of its band now
-        for (const auto& o : kFaceOffsets)
+        for (const auto& o : kMeshOffsets)
             touchScan({gone.x + o[0], gone.y + o[1], gone.z + o[2]});
         m_visDirty = true; // reshuffles meta order; see the note at try_emplace
         m_evictList[i] = m_evictList.back();
@@ -408,7 +420,7 @@ void ChunkManager::rebuildArena(Renderer& renderer) {
         if (e.quadBuf && !e.quadBuf->empty()) {
             e.range = renderer.alloc(*e.quadBuf);
             if (e.range.count == 0)
-                VX_ERROR("arena rebuild: chunk still does not fit — arena too small");
+                VX_ERROR("arena rebuild: chunk still does not fit, arena too small");
         }
         if (e.waterBuf && !e.waterBuf->empty())
             e.waterRange = renderer.alloc(*e.waterBuf);
@@ -420,7 +432,7 @@ void ChunkManager::rebuildArena(Renderer& renderer) {
 void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& light,
                           const glm::dvec3& cameraPos) {
     // Y is part of the centre now. It was hard-coded to 0 because the world was a fixed
-    // stack of columns and the vertical extent never moved — with the ceiling gone, that
+    // stack of columns and the vertical extent never moved, with the ceiling gone, that
     // pinned the resident band around y=0 no matter where the camera actually was, so
     // flying up left you outside your own loaded world.
     const ChunkPos center{int(std::floor(cameraPos.x / kChunkSize)),
@@ -486,7 +498,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             }
         } else if (it != m_chunks.end() && !it->second.lit) {
             // The column was already seeded when this chunk turned up, so the column seed
-            // will never run for it — and meshing waits on lit, so it would never be
+            // will never run for it, and meshing waits on lit, so it would never be
             // meshed either. The band grows without evicting anything: the load range is
             // center.y +- kVerticalRadius while eviction only fires past
             // kVerticalRadius + 1, so descending one chunk hands every column you are
@@ -520,11 +532,11 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     }
 
     // keep enough jobs in flight to feed the workers without racing miles ahead of
-    // the camera — stale far-away work is wasted work when it moves
+    // the camera, stale far-away work is wasted work when it moves
     const auto scanStart = Clock::now();
     const int inflightCap = std::max(8, jobs.workerCount() * 6);
     // Generation used to go first and take every slot, and while the camera moves its queue
-    // never empties - so meshing only got what generation left over, which flying at radius 32
+    // never empties, so meshing only got what generation left over, which flying at radius 32
     // was nothing most frames, and ~10k chunks sat ready to mesh. With meshes waiting it now
     // keeps to half the slots, counted on its own jobs so meshing cannot starve it either.
     const int genCap = m_pendingMesh > 0 ? inflightCap / 2 : inflightCap;
@@ -550,7 +562,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         entry.detailed = detailed;
         m_chunks.try_emplace(pos, std::move(entry));
         // The cave-cull visibility bits are indexed by META ORDER, and collectDrawInfo
-        // rebuilds that order by walking m_chunks — an open-addressed map, so ANY insert
+        // rebuilds that order by walking m_chunks, an open-addressed map, so ANY insert
         // or erase can reshuffle every index. Leaving the bits alone across that reshuffle
         // points each one at a different chunk, which culls whatever it lands on: chunk
         // tops blinking out and the caves under them showing through while you fly.
@@ -573,7 +585,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     }
 
     // schedule meshing for chunks whose whole neighborhood has data AND light, nearest
-    // first — meshes bake light values into quads, so lighting has to land first. also
+    // first, meshes bake light values into quads, so lighting has to land first. also
     // re-mesh already-meshed chunks whose LOD should change as the camera moves (they
     // stay drawn at the old LOD until the new mesh swaps in, so no flicker).
     // this loop is O(loaded chunks); skip it whenever nothing could have changed the mesh
@@ -583,8 +595,8 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
                             !m_genQueue.empty() || !m_uploads.empty();
     // Walking every resident chunk was 5.4 ms of a 12 ms frame flying at radius 32, nearly all
     // of it finding again the same chunks still waiting for a slot. The whole world is only
-    // walked when the answer can have changed everywhere at once - the camera changed chunk
-    // (LOD bands, band and ring all move), the radius or detail changed - plus every
+    // walked when the answer can have changed everywhere at once, the camera changed chunk
+    // (LOD bands, band and ring all move), the radius or detail changed, plus every
     // kFullScanEvery as a safety net, and once after the last partial scan before busy() can
     // clear. In between: what something touched, their neighbours (a chunk's readiness is its
     // neighbours'), and the nearest of the candidates still waiting.
@@ -604,7 +616,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     const auto consider = [&](const ChunkPos pos, Entry& e) {
         // Catch columns that became complete without anyone noticing. A column is only
         // ever put up for seeding from the gen-done drain, keyed on one of ITS chunks
-        // finishing generation — so a column that completes by any other route (an entry
+        // finishing generation, so a column that completes by any other route (an entry
         // erased while its job was in flight, a re-gen swap, a rescan reshuffling what was
         // queued) is never offered at all, and stays unseeded forever holding sky light 0.
         // That is open sky rendering pitch black regardless of time of day.
@@ -662,21 +674,21 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         // A coarse chunk close enough to want detail re-generates (with caves). The regen is
         // deliberately NOT keyed off a LOD
         // change: it used to require reLod, so a chunk that got its FIRST mesh at a fine LOD
-        // while still coarse was stuck cave-less forever — e.lod already equalled desired,
+        // while still coarse was stuck cave-less forever, e.lod already equalled desired,
         // so reLod could never fire for it again. That happens whenever the camera moves
         // between a chunk being queued for generation (which picks coarse/detailed) and
         // being meshed (which picks the LOD), which vertical streaming made common.
         //
         // `!e.dirty` is load-bearing, not an optimisation. The regen job below tries
-        // `m_regions.load` first and only calls the generator if nothing is saved yet — so a
+        // `m_regions.load` first and only calls the generator if nothing is saved yet, so a
         // chunk edited while coarse but not yet WRITTEN to disk (saveDirty hasn't run, it
         // hasn't been evicted) would regenerate from the seed and silently discard the edit
         // the moment it crossed into the detail band, which for a coarse chunk means gaining
         // caves it never had. That reads as "I dig a hole and the world corrupts, stone
-        // reappears" — found by reading the swap below, which replaces e.voxels outright
+        // reappears", found by reading the swap below, which replaces e.voxels outright
         // with no check for unsaved edits. The correct fix is not to serialize it inline
         // here to unblock the regen (INFO.md: never block the main thread on disk I/O, and
-        // this scan runs every frame) — it is to leave a dirty coarse chunk coarse until it
+        // this scan runs every frame), it is to leave a dirty coarse chunk coarse until it
         // is saved by the normal path (F2, or eviction), at which point this condition opens
         // and it regens detailed like any other chunk, loading back exactly what was saved.
         //
@@ -697,7 +709,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             return;
         }
         bool ready = true;
-        for (const auto& o : kFaceOffsets) {
+        for (const auto& o : kMeshOffsets) {
             const ChunkPos n{pos.x + o[0], pos.y + o[1], pos.z + o[2]};
             const auto nit = m_chunks.find(n);
             if (nit == m_chunks.end()) {
@@ -736,7 +748,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         m_scanVisit.clear();
         for (const ChunkPos p : m_scanTouched) {
             m_scanVisit.insert(p);
-            for (const auto& o : kFaceOffsets)
+            for (const auto& o : kMeshOffsets)
                 m_scanVisit.insert({p.x + o[0], p.y + o[1], p.z + o[2]});
         }
         m_scanTouched.clear();
@@ -768,7 +780,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     // meshing left, which flying was nothing, so chunks came right up to the camera cave-less.
     {
         // every coarse chunk in the detail band lands here each frame, thousands while flying,
-        // and at most a quarter of the slots can start - so only those are put in order
+        // and at most a quarter of the slots can start, so only those are put in order
         const auto nearer = [center](ChunkPos a, ChunkPos b) {
             return horizontalDist2(a, center) < horizontalDist2(b, center);
         };
@@ -844,11 +856,10 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
 
         const std::uint8_t skirt = coarseNeighborMask(pos, lod, center, lodScale());
 
-        std::array<const Chunk*, 6> nb{
-            voxelsAt({pos.x + 1, pos.y, pos.z}), voxelsAt({pos.x - 1, pos.y, pos.z}),
-            voxelsAt({pos.x, pos.y + 1, pos.z}), voxelsAt({pos.x, pos.y - 1, pos.z}),
-            voxelsAt({pos.x, pos.y, pos.z + 1}), voxelsAt({pos.x, pos.y, pos.z - 1}),
-        };
+        std::array<const Chunk*, GreedyMesher::kMeshNeighbors> nb{};
+        for (int k = 0; k < GreedyMesher::kMeshNeighbors; ++k)
+            nb[std::size_t(k)] =
+                voxelsAt({pos.x + kMeshOffsets[k][0], pos.y + kMeshOffsets[k][1], pos.z + kMeshOffsets[k][2]});
         e.voxels->retainJob();
         for (const Chunk* n : nb)
             if (n)
@@ -857,15 +868,15 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         ++m_jobsInFlight;
         --m_pendingMesh;
         Chunk* voxels = e.voxels;
-        // Checked out here, on the main thread, and captured as raw pointers — the worker
+        // Checked out here, on the main thread, and captured as raw pointers, the worker
         // dereferences them directly and never touches the pool's own bookkeeping (the free
         // list, or growing its storage), so there is nothing for it to race the main thread
         // over; see MeshBufferPool.hpp for why that matters. It also gets exclusive access
         // to the pointee for the job's duration, the same ownership discipline
         // retainJob()/releaseJob() already gives it over the voxels. The mesher writes
         // STRAIGHT into pool storage now: no thread_local scratch, no copy at the end. That
-        // copy — `{scratch.begin(), scratch.end()}`, a fresh heap allocation once per
-        // meshed chunk — was the ~11 heap-allocs/update left over after JobSystem stopped
+        // copy, `{scratch.begin(), scratch.end()}`, a fresh heap allocation once per
+        // meshed chunk, was the ~11 heap-allocs/update left over after JobSystem stopped
         // allocating on submit (SPEC.md #67).
         std::vector<PackedQuad>* quadBuf = m_quadPool.checkout();
         std::vector<PackedQuad>* waterBuf = m_waterPool.checkout();
@@ -920,7 +931,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             continue;
         }
         // The chunk was edited AFTER this regen was submitted (selection only checks dirty
-        // at the moment it queues the job) — the edit landed on e.voxels, the coarse chunk,
+        // at the moment it queues the job), the edit landed on e.voxels, the coarse chunk,
         // while r.voxels was being built from the pre-edit seed on a worker. Swapping in
         // r.voxels now would discard that edit exactly like the selection guard above is
         // meant to prevent. Drop the stale regen instead: the chunk stays coarse, and once
@@ -993,8 +1004,8 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             e.waterQuads = int(r.waterBuf->size());
             if (!r.quadBuf->empty()) {
                 e.range = renderer.alloc(*r.quadBuf);
-                if (e.range.count == 0) { // arena full — defrag and retry once
-                    // e.quadBuf is still the OLD buffer here, untouched — rebuildArena walks
+                if (e.range.count == 0) { // arena full, defrag and retry once
+                    // e.quadBuf is still the OLD buffer here, untouched, rebuildArena walks
                     // every Meshed entry including this one, and this entry's e.range was
                     // just freed above, so it needs e.quadBuf to still hold valid data to
                     // re-upload. Only swap in the new buffer once nothing can read the old
@@ -1008,7 +1019,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             } else {
                 if (e.quadBuf)
                     m_quadPool.checkin(e.quadBuf);
-                m_quadPool.checkin(r.quadBuf); // fresh but empty — nothing worth keeping
+                m_quadPool.checkin(r.quadBuf); // fresh but empty, nothing worth keeping
                 e.quadBuf = nullptr;
             }
             if (!r.waterBuf->empty()) {
@@ -1034,7 +1045,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             m_visDirty = true;
             // A landed mesh is a state change the LOD scan has to see. reLod only fires for
             // chunks in state Meshed, so one that was still Meshing when the camera moved
-            // was skipped — and nothing re-flagged the scan afterwards, so it kept its old
+            // was skipped, and nothing re-flagged the scan afterwards, so it kept its old
             // LOD forever and a coarse chunk never regenerated detailed. busy() reported
             // settled the whole time, which is what made it look like a test fixture bug
             // rather than a lost re-LOD.
@@ -1042,7 +1053,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         } else {
             // Rejected: a stale re-LOD result (dropped so the scan can re-submit at the
             // current LOD), or the chunk was evicted entirely while the job was in flight.
-            // Either way nothing will ever read these buffers again — hand them back now,
+            // Either way nothing will ever read these buffers again, hand them back now,
             // or the pool leaks a slot every time this happens.
             m_quadPool.checkin(r.quadBuf);
             m_waterPool.checkin(r.waterBuf);
@@ -1066,7 +1077,8 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
     m_phaseSum.uploadMs += m_uploadMsLast;
 }
 
-void ChunkManager::loadWorld(Renderer& renderer, int seed, std::filesystem::path saveDir) {
+void ChunkManager::loadWorld(Renderer& renderer, int seed, std::filesystem::path saveDir,
+                             int genVersion) {
     // A light slice still running reads the chunks about to go back to the pool. Its results are
     // for the old world and go with it.
     if (m_sliceRunning) {
@@ -1083,7 +1095,7 @@ void ChunkManager::loadWorld(Renderer& renderer, int seed, std::filesystem::path
     m_regions.flush();
     m_regions.setDir(std::move(saveDir));
     m_seed = seed;
-    m_gen = TerrainGenerator(seed);
+    m_gen = TerrainGenerator(seed, genVersion);
     // Teardown, minus any discard: switching worlds must never delete the one being left,
     // and the directory we were just pointed at is the one we are about to fill.
     for (auto& item : m_chunks) {
@@ -1129,7 +1141,7 @@ void ChunkManager::loadWorld(Renderer& renderer, int seed, std::filesystem::path
 
 int ChunkManager::expectedMeshedChunks() const {
     // Meshing covers |dx|,|dz| <= radius (the +1 data ring is loaded but never meshed), and
-    // each column's height is whatever columnRange says — which varies with the terrain, so
+    // each column's height is whatever columnRange says, which varies with the terrain, so
     // this is summed rather than assumed. m_center is the streaming centre the caller has
     // already settled around.
     int total = 0;
@@ -1189,7 +1201,7 @@ void ChunkManager::rebuildVisibility(ChunkPos cameraChunk) {
     };
     const auto camIt = m_chunks.find(cameraChunk);
     if (camIt == m_chunks.end()) {
-        // camera outside the loaded world — draw everything rather than nothing
+        // camera outside the loaded world, draw everything rather than nothing
         std::fill(m_visBits.begin(), m_visBits.end(), 0xFFFFFFFFu);
         return;
     }
@@ -1268,7 +1280,7 @@ void ChunkManager::floodByHash(ChunkPos cameraChunk, std::vector<std::uint32_t>&
 
     const auto camIt = m_chunks.find(cameraChunk);
     if (camIt == m_chunks.end()) {
-        // camera outside the loaded world — draw everything rather than nothing
+        // camera outside the loaded world, draw everything rather than nothing
         std::fill(out.begin(), out.end(), 0xFFFFFFFFu);
         return;
     }
@@ -1330,11 +1342,11 @@ void ChunkManager::updateVisibilityIfNeeded(Renderer& renderer, const glm::dvec3
 }
 
 // seedColumn reads the column's 4 horizontal neighbors too (cave-mouth spread), so none of
-// them may be mid-generation on a worker — a Generating chunk has a live writer racing
+// them may be mid-generation on a worker, a Generating chunk has a live writer racing
 // makeUniform's clear()/push_back() and would read a torn palette. Absent neighbors are fine
 // (blockAt treats them as stone); only Generating blocks.
 //
-// The whole resident band, with room for chunks still waiting to be evicted after a move - not
+// The whole resident band, with room for chunks still waiting to be evicted after a move, not
 // 0..kWorldChunksY, a #27 leftover that never looked below y=0 or above the old world top. The
 // band reaches seven chunks under the camera, so standing anywhere below y=224 made deep-stone
 // chunks resident at negative y, and a seed could read one while a worker was clearing its
@@ -1350,7 +1362,7 @@ bool ChunkManager::neighborhoodSettled(ChunkPos col) const {
     return true;
 }
 
-// A column only counts as lit once it is FULLY seeded — a half-seeded one would otherwise get
+// A column only counts as lit once it is FULLY seeded, a half-seeded one would otherwise get
 // meshed dark.
 void ChunkManager::markColumnLit(ChunkPos col, LightEngine& light) {
     int my0 = 0, my1 = 0;
@@ -1364,7 +1376,7 @@ void ChunkManager::markColumnLit(ChunkPos col, LightEngine& light) {
             // through Chunk::setLight directly (the sky descent and fillLight) rather than
             // LightEngine::setLevel, which is the only thing that marks a chunk touched. So
             // nothing asked for a remesh and the chunk kept its stale baked light until some
-            // unrelated edit forced one - that is the lighting that looks frozen until you break
+            // unrelated edit forced one, that is the lighting that looks frozen until you break
             // a block next to it. Meshes bake light, so a re-seed has to invalidate them.
             // ...and a mesh job already in flight can't be invalidated by a state flip, because
             // its result lands afterwards and puts it straight back.
@@ -1375,7 +1387,7 @@ void ChunkManager::markColumnLit(ChunkPos col, LightEngine& light) {
         }
     m_meshScanDirty = true; // newly lit -> meshable
     light.checkColumnEdges(col.x, col.z, my0, my1);
-    // Sky light spreads sideways out of this column, and an absent neighbour reads as stone — so
+    // Sky light spreads sideways out of this column, and an absent neighbour reads as stone, so
     // a column lit before its neighbours exist gets a dark edge that nothing would ever correct.
     // Remember it and redo it when they turn up.
     static constexpr int kSide[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
@@ -1390,7 +1402,7 @@ void ChunkManager::markColumnLit(ChunkPos col, LightEngine& light) {
 
 // A column whose chunks were not all resident when its turn came was never lit. It must go back
 // on the queue AND out of m_seededColumns, or it stays marked seeded forever holding sky light
-// 0 - open sky reading as pitch black, at any time of day, which is exactly what it looked like.
+// 0, open sky reading as pitch black, at any time of day, which is exactly what it looked like.
 //
 // Unless it is past the ring rescan() generates (radius + 2): nothing will ever fill its missing
 // chunks there, so it failed again every frame, forever, and busy() never cleared (a --tour stop
@@ -1428,7 +1440,7 @@ void ChunkManager::prepareLightSlice(LightEngine& light) {
 
     // Nearest column first, same reason m_genQueue is sorted the same way: columns finish
     // generating in WORKER COMPLETION order, not distance order, and a coarse (no-cave) far
-    // column generates roughly 4x faster than a detailed near one — so under real load, far
+    // column generates roughly 4x faster than a detailed near one, so under real load, far
     // columns push_back continuously while a near column (quite possibly the one the camera is
     // standing in) is still generating. The queue used to be consumed pure LIFO, which meant
     // every fresh far-column completion cut in line ahead of anything already waiting, and the
@@ -1439,7 +1451,7 @@ void ChunkManager::prepareLightSlice(LightEngine& light) {
     std::sort(m_seedQueue.begin(), m_seedQueue.end(), [center](ChunkPos a, ChunkPos b) {
         return horizontalDist2(a, center) > horizontalDist2(b, center);
     });
-    // Bounded by count and by time even when nothing is ready - right after a teleport every
+    // Bounded by count and by time even when nothing is ready, right after a teleport every
     // column's neighbourhood is still mid-generation, and checking them all is real work.
     const auto t0 = Clock::now();
     const std::size_t queued = m_seedQueue.size();
@@ -1521,7 +1533,7 @@ void ChunkManager::applyLightSlice(LightEngine& light) {
         touchScan(pos);
         Entry& e = it->second;
         // A mesh job reading this chunk right now sampled the light as it was when it started,
-        // and its result lands after this loop — so flipping the state here would just be
+        // and its result lands after this loop, so flipping the state here would just be
         // overwritten and the change lost until an unrelated edit forced a remesh. That race
         // is why the same seed settled to a different quad count run to run.
         if (e.meshingLod >= 0)
@@ -1643,12 +1655,10 @@ void ChunkManager::remeshNow(Renderer& renderer, ChunkPos pos) {
         return;
     Entry& e = it->second;
 
-    const Chunk* neighbors[6] = {
-        voxelsAt({pos.x + 1, pos.y, pos.z}), voxelsAt({pos.x - 1, pos.y, pos.z}),
-        voxelsAt({pos.x, pos.y + 1, pos.z}), voxelsAt({pos.x, pos.y - 1, pos.z}),
-        voxelsAt({pos.x, pos.y, pos.z + 1}), voxelsAt({pos.x, pos.y, pos.z - 1}),
-    };
-    // Synchronous (this runs on an edit, right on the main thread — no worker involved), but
+    const Chunk* neighbors[GreedyMesher::kMeshNeighbors];
+    for (int k = 0; k < GreedyMesher::kMeshNeighbors; ++k)
+        neighbors[k] = voxelsAt({pos.x + kMeshOffsets[k][0], pos.y + kMeshOffsets[k][1], pos.z + kMeshOffsets[k][2]});
+    // Synchronous (this runs on an edit, right on the main thread, no worker involved), but
     // still pool-backed rather than a thread_local scratch: this entry's OLD buffers need to
     // stay valid through a possible rebuildArena() retry below, same as the async path in
     // update(), so the same checkout-fresh/defer-checkin-old pattern applies even without a
@@ -1674,7 +1684,7 @@ void ChunkManager::remeshNow(Renderer& renderer, ChunkPos pos) {
     if (stats.quads > 0) {
         e.range = renderer.alloc(*quadBuf);
         if (e.range.count == 0) {
-            rebuildArena(renderer); // e.quadBuf is still the OLD buffer here — still valid
+            rebuildArena(renderer); // e.quadBuf is still the OLD buffer here, still valid
             e.range = renderer.alloc(*quadBuf);
         }
         if (e.quadBuf)
@@ -1683,7 +1693,7 @@ void ChunkManager::remeshNow(Renderer& renderer, ChunkPos pos) {
     } else {
         if (e.quadBuf)
             m_quadPool.checkin(e.quadBuf);
-        m_quadPool.checkin(quadBuf); // fresh but empty — nothing worth keeping
+        m_quadPool.checkin(quadBuf); // fresh but empty, nothing worth keeping
         e.quadBuf = nullptr;
     }
     if (stats.waterQuads > 0) {
@@ -1725,7 +1735,7 @@ int ChunkManager::setBlocks(Renderer& renderer, LightEngine& light,
     };
 
     // Pass 1: apply every voxel write and tell the light engine about each one. Nothing
-    // is meshed yet — a chunk hit by several edits in this batch must not be rebuilt once
+    // is meshed yet, a chunk hit by several edits in this batch must not be rebuilt once
     // per edit, and light must not settle against a half-applied batch. The streaming backlog
     // is parked meanwhile, so what Pass 2 settles is this batch's light and nothing else.
     light.beginEdit();
@@ -1750,16 +1760,16 @@ int ChunkManager::setBlocks(Renderer& renderer, LightEngine& light,
         // beats copy-on-write in the common case. Owner report, live, reproduced by
         // reasoning through this exact loop rather than by testing it: a hot spin with no
         // yield can starve the very worker thread it is waiting on once the job system is
-        // saturated - right after launch, while the initial world-settle backlog (still
+        // saturated, right after launch, while the initial world-settle backlog (still
         // draining for the ~30s the owner measured) keeps every worker busy, and
         // hasJobRefs() can be held not just by this chunk's own mesh job but by any
         // NEIGHBOUR's job still reading across a shared border (see the identical check at
         // processEvictions above). A spin that never yields does not just wait for that
-        // ref to clear - on an oversubscribed machine it can actively delay the worker
+        // ref to clear, on an oversubscribed machine it can actively delay the worker
         // that would clear it, turning an assumed sub-millisecond wait into the owner's
         // reported multi-second freeze. It also explains the OTHER half of the report
         // ("random chunks disappear until updated"): nothing else runs on the main thread
-        // while this spins - no upload drain, no eviction, no visibility update - so
+        // while this spins, no upload drain, no eviction, no visibility update, so
         // whatever the world was mid-transition on when the freeze started stays visibly
         // wrong until the spin finally releases it. Yielding fixes the CPU-starvation half
         // directly; the elapsed-time log below is new visibility into the other half (how
@@ -1772,7 +1782,7 @@ int ChunkManager::setBlocks(Renderer& renderer, LightEngine& light,
                 std::chrono::duration<double, std::milli>(Clock::now() - waitStart).count();
             waitMs > 5.0)
             VX_ERROR("setBlocks: waited %.1f ms for an in-flight job on an edited chunk "
-                     "(want <1 ms) - the job system was saturated",
+                     "(want <1 ms), the job system was saturated",
                      waitMs);
         c->set(lx, ly, lz, e.id);
         it->second.dirty = true; // content changed: this chunk now needs persisting
@@ -1798,6 +1808,9 @@ int ChunkManager::setBlocks(Renderer& renderer, LightEngine& light,
         if (ly == 31) want({pos.x, pos.y + 1, pos.z});
         if (lz == 0) want({pos.x, pos.y, pos.z - 1});
         if (lz == 31) want({pos.x, pos.y, pos.z + 1});
+        // a corner column is also read by the diagonal neighbour's wave corners
+        if ((lx == 0 || lx == 31) && (lz == 0 || lz == 31))
+            want({pos.x + (lx == 0 ? -1 : 1), pos.y, pos.z + (lz == 0 ? -1 : 1)});
     }
     if (applied == 0) {
         light.endEdit();
@@ -1807,7 +1820,7 @@ int ChunkManager::setBlocks(Renderer& renderer, LightEngine& light,
 
     // Pass 2: settle the whole batch's light in one BFS. Removals and re-propagation from
     // different edits overlap heavily, so settling once is strictly less work than
-    // settling per edit — and it means no chunk is ever meshed against half-updated light.
+    // settling per edit, and it means no chunk is ever meshed against half-updated light.
     while (!light.idle())
         light.process(4.0);
     light.endEdit();
@@ -1846,7 +1859,7 @@ int ChunkManager::stepFalling(Renderer& renderer, LightEngine& light, int* lande
     for (const glm::ivec3& p : m_fallScratch) {
         const BlockId here = blockAtWorld(p);
         // Cross-plane foliage cannot stand on nothing. Break the dirt under a flower and the
-        // flower has to go with it, or it is left hovering — which is the one thing that
+        // flower has to go with it, or it is left hovering, which is the one thing that
         // makes decoration read as pasted on rather than grown.
         //
         // This rides the falling queue rather than adding a scan of its own because
@@ -1866,7 +1879,7 @@ int ChunkManager::stepFalling(Renderer& renderer, LightEngine& light, int* lande
         if (!blocks::falls(here))
             continue;
         const BlockId below = blockAtWorld({p.x, p.y - 1, p.z});
-        // falls through air and through water — sinking is what you want when you drop
+        // falls through air and through water, sinking is what you want when you drop
         // gravel into a lake, and water is not a support
         if (below != blocks::Air && !blocks::isWater(below)) {
             // Come to rest. Only counts if it actually moved last tick; a block placed onto
@@ -1891,7 +1904,7 @@ int ChunkManager::stepFalling(Renderer& renderer, LightEngine& light, int* lande
 }
 
 // Depth lost per cell of horizontal travel. At 1 a source reached seven cells in every
-// direction — a puddle the size of a small room from a single block, which is what made
+// direction, a puddle the size of a small room from a single block, which is what made
 // placed water sprawl across the landscape. At 2 it thins out in four, which reads as a
 // spill rather than a flood, and it halves the cells a tick has to touch.
 static constexpr int kFluidDecay = 2;
@@ -1911,7 +1924,7 @@ int ChunkManager::stepFluid(Renderer& renderer, LightEngine& light,
         return 0;
     // Only cells next to an edit can change, so only those are looked at. This used to scan
     // an 81x81x41 box around the camera every tick (~270k cells, several hash lookups each)
-    // to find the nothing that had happened - a hitch six times a second, forever.
+    // to find the nothing that had happened, a hitch six times a second, forever.
     constexpr int kFarBlocks = 128;
     constexpr std::size_t kPerTick = 60000;
     const glm::ivec3 c{int(std::floor(around.x)), int(std::floor(around.y)),
@@ -1984,7 +1997,7 @@ ChunkManager::Stats ChunkManager::stats() const {
     s.genMsAvg = gc > 0 ? double(m_genNanos.load(std::memory_order_relaxed)) * 1e-6 / gc : 0.0;
     s.meshMsAvg = mc > 0 ? double(m_meshNanos.load(std::memory_order_relaxed)) * 1e-6 / mc : 0.0;
 
-    // The full-chunk scan (meshed/uniform/byte counts) is O(loaded) — at radius 16 that
+    // The full-chunk scan (meshed/uniform/byte counts) is O(loaded), at radius 16 that
     // is ~5000 chunks. It only feeds HUD numbers that don't need per-frame precision, so
     // recompute it a few times a second and cache the rest.
     if (m_scanAge++ >= 20) {

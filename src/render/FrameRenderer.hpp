@@ -20,7 +20,7 @@ class LightVolume;
 
 // Everything needed to draw one frame of the world, shared by the live game loop and by all
 // three offscreen harnesses (--smoke, --bench, --tour). It lives here rather than in main so
-// the harnesses render through EXACTLY the same path the game does — a harness with its own
+// the harnesses render through EXACTLY the same path the game does, a harness with its own
 // copy of the frame would eventually measure a frame nobody plays.
 
 struct CameraFrame {
@@ -37,11 +37,11 @@ CameraFrame buildCameraFrame(const FlyCamera& camera, int fbWidth, int fbHeight,
 // agreeing after dusk.
 //
 // `sunDir` is where the sun actually is. The sky pass needs it to place the disc, aim the
-// warm horizon bands, and derive whether it is day at all — flipping it would render
+// warm horizon bands, and derive whether it is day at all, flipping it would render
 // midnight as noon.
 //
 // `lightDir` is where light arrives FROM: the sun by day, the moon by night. Everything that
-// shades a surface takes this one — shadow cascades, NdotL, specular, volumetrics, contact
+// shades a surface takes this one, shadow cascades, NdotL, specular, volumetrics, contact
 // shadows. Because the moon is drawn at exactly -sunDir, the two are the same vector flipped,
 // so the whole night lighting path costs one negation and no new shadow pass.
 //
@@ -82,7 +82,7 @@ struct RenderContext {
     unsigned int drawProgram;
     unsigned int waterProgram;
     unsigned int blockTex;
-    // Null where lamp light in the air is not wanted. The caller keeps it filled (update) - the
+    // Null where lamp light in the air is not wanted. The caller keeps it filled (update), the
     // frame only reads it.
     LightVolume* lightVolume = nullptr;
 };

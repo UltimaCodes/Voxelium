@@ -22,7 +22,7 @@ namespace vx {
 
 namespace {
 
-// Decoding to the engine's format up front means a voice never converts at play time —
+// Decoding to the engine's format up front means a voice never converts at play time,
 // the whole point of the bank. Both constants live in the header so the engine cannot
 // disagree with them.
 constexpr ma_uint32 kSampleRate = SoundBank::kSampleRate;
@@ -42,7 +42,7 @@ bool decodable(const std::filesystem::path& ext) {
 
 // "step_grass3" -> "step_grass". Variants of one sound differ only by a trailing number.
 //
-// The catch is that block sounds are looked up by numeric id — "break_3" for grass — so
+// The catch is that block sounds are looked up by numeric id, "break_3" for grass, so
 // stripping every trailing digit turned that into "break_", which nothing ever asked for.
 // Per-block sounds therefore never resolved at all; only the generic fallback did. Three
 // cases, distinguished by what sits in front of the digits:
@@ -68,7 +68,7 @@ void SoundBank::load(const std::filesystem::path& dir, JobSystem* jobs) {
 
     std::error_code ec;
     if (!std::filesystem::is_directory(dir, ec)) {
-        VX_INFO("audio: no %s directory — drop your own clips there to hear anything",
+        VX_INFO("audio: no %s directory, drop your own clips there to hear anything",
                 dir.string().c_str());
         return;
     }
@@ -88,7 +88,7 @@ void SoundBank::load(const std::filesystem::path& dir, JobSystem* jobs) {
         if (!entry.is_regular_file(ec))
             continue;
         if (!decodable(entry.path().extension())) {
-            // don't count the README as a rejected clip — only things that look like audio
+            // don't count the README as a rejected clip, only things that look like audio
             const auto ext = entry.path().extension();
             if (ext != ".md" && ext != ".txt")
                 ++skipped;
@@ -109,7 +109,7 @@ void SoundBank::load(const std::filesystem::path& dir, JobSystem* jobs) {
     }
 
     // Decode. Each job owns one variant slot, so no two jobs touch the same memory and the
-    // vector is never resized under them — it was sized above.
+    // vector is never resized under them, it was sized above.
     const auto decodeOne = [this](const Pending& p) {
         ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, kChannels, kSampleRate);
         ma_uint64 frames = 0;
@@ -137,7 +137,7 @@ void SoundBank::load(const std::filesystem::path& dir, JobSystem* jobs) {
             // this function blocks below until every job has run, so every element outlives
             // its job. Capturing `p` by value used to copy a std::filesystem::path into the
             // closure, which JobSystem::Job's inline storage can't hold at all (it owns a
-            // string and needs a real destructor) — this is what let that requirement go
+            // string and needs a real destructor), this is what let that requirement go
             // unnoticed until Job's static_assert would have caught it here.
             jobs->submit([&, pp = &p] {
                 decodeOne(*pp);

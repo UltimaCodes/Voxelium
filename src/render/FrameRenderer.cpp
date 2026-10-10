@@ -8,6 +8,7 @@
 #include "render/LightVolume.hpp"
 #include "render/Wildlife.hpp"
 #include "render/ShadowMap.hpp"
+#include "render/WaterWaves.hpp"
 #include "world/Chunk.hpp"
 
 #include <glad/gl.h>
@@ -42,7 +43,7 @@ SkyLight computeSky(float timeOfDay) {
                                         high) *
                                day;
 
-    // Moonlight. Night used to have NO directional light at all — `day` is 0 below the
+    // Moonlight. Night used to have NO directional light at all, `day` is 0 below the
     // horizon, so the direct term was exactly zero and the sky's beautifully cratered moon
     // lit nothing. Ambient was therefore the entire night image, which is why it kept being
     // raised: with nothing casting, a hollow has no shape to lose and every fix had to come
@@ -53,7 +54,7 @@ SkyLight computeSky(float timeOfDay) {
     // direction flips from sun to moon BOTH terms are zero and the swap is invisible. That
     // is the whole reason for the offset; without it the handover is a visible step.
     const float moon = glm::clamp((-alt - 0.04f) * 3.0f, 0.0f, 1.0f);
-    // Dim and cool, and deliberately not physical — real moonlight is ~1/400000 of sunlight
+    // Dim and cool, and deliberately not physical, real moonlight is ~1/400000 of sunlight
     // and would be black here. It only has to be strong enough that a hill has a lit side.
     const glm::vec3 moonColor = glm::vec3(0.115f, 0.145f, 0.235f) * moon;
 
@@ -115,7 +116,7 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     sky.sunColor *= glm::mix(glm::vec3(1.0f), biome, 0.7f);
     // Everything that SHADES takes the celestial direction, so the cascades, NdotL and every
     // specular lobe follow the moon after dusk. The sky pass is handed the true sun
-    // separately — see SkyLight.
+    // separately, see SkyLight.
     const glm::vec3 sunL = sky.lightDir;
 
     rc.postfx.resize(rw, rh);
@@ -126,7 +127,7 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     rc.shadows.setLeafGap(fx.canopyLight);
     if (fx.shadows) {
         // The shadow pass alpha-tests cutout blocks now, so it needs the block texture bound
-        // BEFORE it runs — it used to be bound further down for the scene pass only, and a
+        // BEFORE it runs, it used to be bound further down for the scene pass only, and a
         // depth-only pass had no use for it. Without this the leaf test samples whatever
         // happened to be on unit 0.
         glBindTextureUnit(0, rc.blockTex);
@@ -162,7 +163,7 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     // Was derived in-shader from uSunL.y, which stops meaning "how light is it" the moment
     // uSunL can point at the moon.
     glProgramUniform1f(rc.drawProgram, 29, sky.daylight);
-    // Wetness follows the rain, and snow does not wet anything — it settles.
+    // Wetness follows the rain, and snow does not wet anything, it settles.
     glProgramUniform1f(rc.drawProgram, 30, fx.precip * (1.0f - fx.snow));
     glProgramUniform1f(rc.drawProgram, 34, fx.snowCover);
     glProgramUniform1f(rc.drawProgram, 5, fx.shadows ? 1.0f : 0.0f);
@@ -190,7 +191,9 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
 
     // Creatures go in with the opaque scene, not after the water: a fish under a lake has to be
     // seen THROUGH it, refracted and absorbed like the seabed, and the snapshot the water pass
-    // takes next is what makes that happen.
+    // takes next is what makes that happen. The depth of the world without them is kept first,
+    // for the water's foam (see PostFx::captureTerrainDepth).
+    rc.postfx.captureTerrainDepth();
     if (rc.wildlife && rc.wildlife->liveCount() > 0) {
         const glm::vec3 fwd = camera.forward();
         const glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0.0f, 1.0f, 0.0f)));
@@ -203,11 +206,11 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     rc.postfx.captureOpaqueForWater();
     const float wf = 1.0f / std::tan(glm::radians(camera.fovYDeg) * 0.5f);
     const glm::vec2 projScale{aspect / wf, 1.0f / wf};
-    // AO applied HERE, to the opaque scene only, before water exists in the colour buffer -
+    // AO applied HERE, to the opaque scene only, before water exists in the colour buffer,
     // see PostFx::applyOpaqueSsao and apply_ao.frag. Water never writes depth (see the
     // drawWater call below), so computing/applying AO any later would read the LAKE BED's
     // geometry under any water on screen and darken the water surface by however occluded
-    // the bed is - the owner-reported dark contour tracery on wide lake views.
+    // the bed is, the owner-reported dark contour tracery on wide lake views.
     rc.postfx.applyOpaqueSsao(fx.ssao, projScale, camera.nearPlane);
     glProgramUniform1f(rc.waterProgram, 4, time);
     glProgramUniform3fv(rc.waterProgram, 5, 1, &sunL.x);
@@ -223,8 +226,14 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     glProgramUniform3fv(rc.waterProgram, 23, 1, &splits.x);
     glProgramUniform3fv(rc.waterProgram, 24, 1, &texel.x);
     glProgramUniform1f(rc.waterProgram, 25, sky.daylight);
+    // The swell: its phase is worked out at the camera in double so it stays fixed to the world.
+    // Half-block tessellation on High and Ultra, a block on Low and Medium.
+    WaterWaves::apply(rc.waterProgram,
+                      WaterWaves::frame(double(time), camera.position, fx.waveStorm, fx.waves),
+                      fx.quality >= 2 ? 2.0f : 1.0f);
     glBindTextureUnit(2, rc.postfx.sceneCopyTex());
     glBindTextureUnit(3, rc.postfx.depthTex());
+    glBindTextureUnit(4, rc.postfx.terrainDepthTex());
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
@@ -258,7 +267,7 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
         wp.strength = fx.precip;
         wp.snow = fx.snow;
         // Lit by the sky rather than a constant, so precipitation goes dark after dusk
-        // instead of glowing — the same mistake the water body tint used to make.
+        // instead of glowing, the same mistake the water body tint used to make.
         wp.tint = sky.ambient * 2.2f + sky.color * 0.10f;
         rc.weather->draw(wp);
     }
@@ -287,7 +296,7 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     // mist pulls the fog in; the shadow reach above uses fogEnd untouched so the cascades do
     // not redraw every time the mist moves
     const float mistScale = 1.0f - 0.5f * fx.mist;
-    // With the far horizon on, the haze no longer hides the edge of the world - it reaches out
+    // With the far horizon on, the haze no longer hides the edge of the world, it reaches out
     // across the heightfield instead, closing in where that ends. It still starts where it
     // always did, so the near view looks the same.
     const float hazeEnd = (farEnd > fogEnd && fogEnd < 1e8f) ? farEnd : fogEnd;

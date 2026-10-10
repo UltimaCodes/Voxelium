@@ -2,7 +2,7 @@
 
 // 13-tap downsample (Jimenez, "Next Generation Post Processing in Call of Duty").
 // center 2x2 block gets half the weight, the four overlapping corner blocks share the
-// rest — kills the fireflies a naive box chain produces.
+// rest, kills the fireflies a naive box chain produces.
 
 in vec2 vUv;
 layout(location = 0) out vec3 outColor;
@@ -39,9 +39,15 @@ void main() {
     vec3 l = texture(uSrc, vUv + ts * vec2(-1, -1)).rgb;
     vec3 m = texture(uSrc, vUv + ts * vec2(1, -1)).rgb;
 
-    outColor = prefilter((j + k + l + m) * 0.125 +
-                         (a + b + d + e) * 0.03125 +
-                         (b + c + e + f) * 0.03125 +
-                         (d + e + g + h) * 0.03125 +
-                         (e + f + h + i) * 0.03125);
+    vec3 o = prefilter((j + k + l + m) * 0.125 +
+                       (a + b + d + e) * 0.03125 +
+                       (b + c + e + f) * 0.03125 +
+                       (d + e + g + h) * 0.03125 +
+                       (e + f + h + i) * 0.03125);
+    // One NaN or Inf pixel in the scene would otherwise ride every level of the chain and come
+    // back as a solid square hundreds of pixels wide (the rain streak NaN did exactly that). A
+    // bad pixel stays one bad pixel; it just does not get a bloom.
+    if (any(isnan(o)) || any(isinf(o)))
+        o = vec3(0.0);
+    outColor = o;
 }

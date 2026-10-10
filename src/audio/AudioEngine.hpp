@@ -16,7 +16,7 @@ class JobSystem;
 // Sound playback over miniaudio.
 //
 // NOTHING ships with the engine and nothing is downloaded at build time. Clips are whatever
-// the user drops into sounds/ — the same rule the block textures follow, and the reason no
+// the user drops into sounds/, the same rule the block textures follow, and the reason no
 // Minecraft audio is bundled here. A missing clip is not an error: it simply doesn't play,
 // so a fresh clone runs silently and correctly.
 //
@@ -25,7 +25,7 @@ class JobSystem;
 // the same clip can run on several voices at once without copying a frame.
 //
 // Positions are world-space. The listener is kept at the origin internally and sounds are
-// placed relative to it, so the world's large doubles never reach miniaudio's floats — and
+// placed relative to it, so the world's large doubles never reach miniaudio's floats, and
 // because that offset changes as you walk, live voices are re-placed every update(), which
 // is what stops a sound following the player around.
 class AudioEngine {
@@ -36,7 +36,7 @@ public:
     // `offline` builds the engine with no device and hands the mixing to readFrames(). That
     // exists because the smoke group written alongside the sound bank asserted that clips
     // were cached and that voices were acquired, and NEITHER of those can tell whether a
-    // single sample ever reaches an output — which is how the engine shipped completely
+    // single sample ever reaches an output, which is how the engine shipped completely
     // silent with a green test. A test that cannot hear is not a test of audio.
     bool init(const std::filesystem::path& soundsDir, JobSystem* jobs, bool offline = false);
 
@@ -64,7 +64,7 @@ public:
     // One-shot at a world position, attenuated and panned relative to the listener.
     void playAt(const std::string& name, const glm::dvec3& worldPos, float volume = 1.0f,
                 float pitch = 1.0f);
-    // One-shot with no position — UI clicks, and weather that has no position because it is
+    // One-shot with no position, UI clicks, and weather that has no position because it is
     // the whole sky. The bus is explicit because those two must not share a slider: thunder
     // belongs to the world's atmosphere and should duck underwater, a menu click does not.
     void play(const std::string& name, float volume = 1.0f, float pitch = 1.0f,
@@ -83,7 +83,7 @@ public:
 
     // Ambience beds: looping clips on the Ambient bus, each driven by a target gain that the
     // caller re-states every frame. The engine owns starting, crossfading and stopping, so a
-    // caller only ever describes where the player IS — never which sound to begin or end.
+    // caller only ever describes where the player IS, never which sound to begin or end.
     // That is the whole reason beds are not one-shots: an "enter the cave" event has to be
     // detected, and a cave gain does not.
     //

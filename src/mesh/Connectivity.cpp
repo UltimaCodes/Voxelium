@@ -23,7 +23,7 @@ std::uint16_t computeConnectivity(const Chunk& chunk) {
     if (chunk.uniform())
         return blocks::occludes(chunk.uniformId()) ? 0 : kAllFacesConnected;
 
-    // explicit-queue BFS, seeded only from border air voxels — interior air bubbles
+    // explicit-queue BFS, seeded only from border air voxels, interior air bubbles
     // can't connect faces, so they are never visited at all
     //
     // Per-thread scratch that is never destroyed, on purpose. With this toolchain (MinGW-w64

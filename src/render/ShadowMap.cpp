@@ -72,7 +72,7 @@ void ShadowMap::invalidate() {
     //
     // What was wrong is firing it unconditionally on every call. Streaming submits a mesh
     // upload most frames it's active, so a heavy burst called this every single frame for as
-    // long as it lasted — and cascade caching exists specifically to avoid redrawing
+    // long as it lasted, and cascade caching exists specifically to avoid redrawing
     // cascades 1 and 2 every frame, which is 96% of all shadow draws (see the cache comment
     // above). During exactly the frames where the main thread is already paying the
     // heaviest cost this engine has (light seeding, see INFO.md #63), the GPU was ALSO
@@ -80,8 +80,8 @@ void ShadowMap::invalidate() {
     // stayed cheap kept invalidating itself.
     //
     // A shadow that lags the geometry it lights by up to one interval during active
-    // streaming is not something a player can see — the mesh itself is still arriving
-    // across those same frames — and the drift-slack mechanism above already spends exactly
+    // streaming is not something a player can see, the mesh itself is still arriving
+    // across those same frames, and the drift-slack mechanism above already spends exactly
     // this trade (staleness for redraw count) for camera movement. This is the same trade,
     // triggered by new geometry instead. Applies to edits too, not just streaming: a placed
     // block's own colour and shape still update same-frame (that path does not go through
@@ -146,8 +146,8 @@ void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& sunL) {
         // and at any field of view the settings allow (50..110) that sphere is the bigger of
         // the two: at 85 degrees and 16:9 the far one had a radius of 1719 to shade points no
         // more than 760 away, so every texel was about twice the size it needed to be. Being
-        // pushed out ahead of the camera, it also had to move - and the far one redrew the
-        // whole visible world - every time the camera turned. A ball about the camera only
+        // pushed out ahead of the camera, it also had to move, and the far one redrew the
+        // whole visible world, every time the camera turned. A ball about the camera only
         // moves when the camera does. Inflated by the drift allowed before re-anchoring, so a
         // cached cascade still covers what it needs to.
         const float radius = m_splits[c] * (1.0f + kSlack);
@@ -164,7 +164,7 @@ void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& sunL) {
         const bool reanchor = m_forceAll || c == 0 || m_radius[c] == 0.0f ||
                               drift > double(radius * kSlack) || sunMoved;
 
-        // snap the centre to the texel grid in light space — double precision so the snap is
+        // snap the centre to the texel grid in light space, double precision so the snap is
         // exact anywhere in the world and shadows never swim
         const auto snapped = [&] {
             const double cx = std::floor(glm::dot(lx, idealWorld) / texel) * texel;
@@ -244,7 +244,7 @@ void ShadowMap::render(Renderer& renderer, const glm::ivec3& cameraChunk,
         m_dirty[c] = false;
         ++m_redraws;
         // cull to this cascade's ortho box: the near cascade draws a handful of chunks
-        // instead of the whole world. cave culling stays off here — a chunk hidden from
+        // instead of the whole world. cave culling stays off here, a chunk hidden from
         // the camera can still cast a shadow the camera sees
         renderer.cullFrustum(Frustum::fromOrtho(m_vp[c]), cameraChunk, cameraFrac, false, true);
         glNamedFramebufferTextureLayer(m_fbo, GL_DEPTH_ATTACHMENT, m_depthArray, 0, c);

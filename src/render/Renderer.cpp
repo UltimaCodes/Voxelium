@@ -97,12 +97,12 @@ Renderer::Range Renderer::alloc(std::span<const PackedQuad> quads) {
     if (const Range r = tryAlloc(quads, need); r.count != 0)
         return r;
     // Nothing fit. Before making the caller rebuild the whole arena, take back the frees
-    // that are only waiting on the fence ring — during a teleport the world re-meshes far
+    // that are only waiting on the fence ring, during a teleport the world re-meshes far
     // faster than 3 frames, so the space is almost always already free in practice, just
     // not recyclable yet. This stalls on the GPU, but a hard reset does that AND
     // re-uploads every chunk, which measured as a ~1 second freeze.
     // At most one reclaim a frame. It blocks on the GPU, and once the arena is genuinely
-    // full (not merely fence-delayed) every subsequent alloc would pay that wait again —
+    // full (not merely fence-delayed) every subsequent alloc would pay that wait again,
     // hundreds of allocs in a streaming frame turned into seconds of stall, which is
     // exactly the freeze this was meant to remove.
     if (m_reclaimedThisFrame)
@@ -119,7 +119,7 @@ bool Renderer::reclaimPendingFrees() {
         if (m_pendingFree[i].empty())
             continue;
         // NO fence means we cannot prove the GPU is done with these ranges, so they are
-        // untouchable — never "no fence, therefore free". Two slots look like that: the
+        // untouchable, never "no fence, therefore free". Two slots look like that: the
         // current one (beginFrame dropped its fence and this frame's frees are still
         // piling into it while the GPU renders off them) and any slot whose fence came
         // back unsignaled (beginFrame drops the fence but deliberately keeps the frees).
@@ -128,7 +128,7 @@ bool Renderer::reclaimPendingFrees() {
         if (!m_fence[i])
             continue;
         // Short cap per slot. Waiting is only worth it while it stays cheaper than the
-        // hard reset it's avoiding — an unbounded wait just trades one freeze for another
+        // hard reset it's avoiding, an unbounded wait just trades one freeze for another
         // (a 1s cap measured as a 170 ms stall in a bad frame).
         const GLenum state =
             glClientWaitSync(static_cast<GLsync>(m_fence[i]), GL_SYNC_FLUSH_COMMANDS_BIT,
@@ -160,7 +160,7 @@ Renderer::Range Renderer::tryAlloc(std::span<const PackedQuad> quads, std::uint3
         m_usedQuads += need;
         return r;
     }
-    return {}; // no block fits — caller rebuilds
+    return {}; // no block fits, caller rebuilds
 }
 
 void Renderer::free(Range range) {
@@ -189,7 +189,7 @@ void Renderer::recycle(Range range) {
 }
 
 void Renderer::hardReset() {
-    VX_ERROR("renderer: arena alloc failed — hard reset (glFinish + full rebuild)");
+    VX_ERROR("renderer: arena alloc failed, hard reset (glFinish + full rebuild)");
     resetArena();
 }
 
@@ -223,7 +223,7 @@ void Renderer::beginFrame() {
             m_pendingFree[m_slot].clear();
             m_visibleChunks = int(m_readbackMap[m_slot]);
         }
-        // unsignaled: leave the frees in this slot — the fence created at the end of
+        // unsignaled: leave the frees in this slot, the fence created at the end of
         // this frame signals after the old work anyway (GL commands are ordered)
     }
 }
@@ -232,7 +232,7 @@ void Renderer::updateChunkMeta(std::span<const ChunkDrawInfo> chunks) {
     // never silently again: dropping chunks here makes them invisible AND shadowless
     if (chunks.size() > kMaxChunks && !m_loggedChunkCap) {
         m_loggedChunkCap = true;
-        VX_ERROR("renderer: %llu drawable chunks exceeds kMaxChunks %u — the excess is not "
+        VX_ERROR("renderer: %llu drawable chunks exceeds kMaxChunks %u, the excess is not "
                  "drawn and casts no shadow; raise kMaxChunks",
                  static_cast<unsigned long long>(chunks.size()), kMaxChunks);
     }
@@ -304,6 +304,7 @@ void Renderer::cullInto(bool water, const Frustum& frustum, const glm::ivec3& ca
     glProgramUniform1ui(m_cullProgram, 10, GLuint(frustum.count));
     glProgramUniform1ui(m_cullProgram, 11, sunlitOnly ? 1u : 0u);
     glProgramUniform1ui(m_cullProgram, 12, slice);
+    glProgramUniform1ui(m_cullProgram, 13, water ? 4u : 6u); // water draws one patch a quad
     glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, water ? m_waterMetaBuf : m_metaBuf,
                       kMetaBytes * m_slot, kMetaBytes);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_cmdBuf);
@@ -359,7 +360,9 @@ void Renderer::drawWater(unsigned int program, const glm::mat4& viewProj,
     glBindVertexArray(m_vao);
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, m_cmdBuf);
     glBindBuffer(GL_PARAMETER_BUFFER, m_countBuf);
-    glMultiDrawArraysIndirectCount(GL_TRIANGLES, nullptr, 0, GLsizei(kMaxChunks), 0);
+    // each water quad is one patch: water.tesc decides how finely the waves subdivide it
+    glPatchParameteri(GL_PATCH_VERTICES, 4);
+    glMultiDrawArraysIndirectCount(GL_PATCHES, nullptr, 0, GLsizei(kMaxChunks), 0);
 }
 
 void Renderer::endFrame() {

@@ -1,5 +1,7 @@
 #include "mesh/GreedyMesher.hpp"
 
+#include "mesh/WaveRule.hpp"
+
 #include "mesh/QuadFormat.hpp"
 
 #include <algorithm>
@@ -12,7 +14,7 @@ namespace {
 constexpr int kStep[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
                              {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
 
-// in-plane U/V world axes per face dir, and the 4 corners' (cx,cy) in kCorner order — must
+// in-plane U/V world axes per face dir, and the 4 corners' (cx,cy) in kCorner order, must
 // match chunk.vert so the packed shade lines up with the emitted vertices.
 constexpr int kUAxis[6][3] = {{0, 0, 1}, {0, 0, 1}, {1, 0, 0},
                               {1, 0, 0}, {1, 0, 0}, {1, 0, 0}};
@@ -27,7 +29,7 @@ constexpr int kCornerCY[6][4] = {{0, 1, 1, 0}, {0, 1, 1, 0}, {0, 1, 1, 0},
 std::uint32_t GreedyMesher::cornerShade(int ax, int ay, int az, int dir,
                                         std::uint32_t& outLight) const {
     outLight = m_gridLight[gi(ax, ay, az)];
-    // skirt faces sit against a coarser neighbour — mostly buried in it, and where they
+    // skirt faces sit against a coarser neighbour, mostly buried in it, and where they
     // do show they're plugging a hole. shading them per-corner would only cost quads
     // (a varying corner blocks merging), so report them fully lit and let them merge.
     // The pad behind them is left air with no light, so a real average would read them
@@ -60,7 +62,7 @@ std::uint32_t GreedyMesher::cornerShade(int ax, int ay, int az, int dir,
         ao[i] = (s1 && s2) ? 0 : (3 - s1 - s2 - cn);
 
         // average the light of the four voxels touching this corner, skipping the opaque
-        // ones — they carry no light of their own and would drag every lit corner toward
+        // ones, they carry no light of their own and would drag every lit corner toward
         // black. The face's own outer voxel is transparent by construction, so the count
         // is never zero. A corner boxed in by two solids can't see the diagonal at all.
         int n = 1, r = light::red(outLight), g = light::green(outLight),
@@ -108,7 +110,7 @@ std::uint32_t GreedyMesher::cornerShade(int ax, int ay, int az, int dir,
 }
 
 // Average water level of the four columns meeting at grid lattice point (lx, lz) at
-// height y. Only cells that actually hold water count — averaging in the dry land at a
+// height y. Only cells that actually hold water count, averaging in the dry land at a
 // shoreline would drag the edge of the water down into the beach.
 static int levelAtLattice(const BlockId* grid, int lx, int y, int lz,
                           int (*gidx)(int, int, int), int fallback) {
@@ -150,6 +152,25 @@ std::uint32_t GreedyMesher::waterCorners(int x, int y, int z, int dir) const {
     return packed;
 }
 
+BlockId GreedyMesher::cellAt(int x, int y, int z) const {
+    if ((x < 0 || x >= kChunkSize) && (z < 0 || z >= kChunkSize)) {
+        const int d = (x < 0 ? 2 : 0) + (z < 0 ? 1 : 0);
+        return (y >= 0 && y < kChunkSize) ? m_diag[d][y] : blocks::Air;
+    }
+    return m_grid[gi(x, y, z)];
+}
+
+std::uint32_t GreedyMesher::waveCorners(int x, int y, int z) const {
+    const auto at = [this](int cx, int cy, int cz) { return cellAt(cx, cy, cz); };
+    std::uint32_t packed = 0;
+    for (int i = 0; i < 4; ++i) {
+        const int lx = x + kCornerCX[2][i];
+        const int lz = z + kCornerCY[2][i];
+        packed |= std::uint32_t(waveAtLattice(at, lx, y, lz, 0, kChunkSize - 1)) << (i * 3);
+    }
+    return packed;
+}
+
 void GreedyMesher::addFace(int dir, int slice, int u, int v, BlockId block,
                            std::uint32_t light) {
     std::int16_t idx = m_heads[dir][slice];
@@ -176,6 +197,7 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
     // default: air voxels lit as open sky (border faces at the world edge look right)
     std::fill(std::begin(m_grid), std::end(m_grid), blocks::Air);
     std::fill(std::begin(m_gridLight), std::end(m_gridLight), light::kFullSky);
+    std::fill(&m_diag[0][0], &m_diag[0][0] + 4 * kChunkSize, blocks::Air);
     m_hasWater = false;
     m_hasCross = false;
 
@@ -200,7 +222,7 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
             // the cross-LOD cracks the skirt exists to plug.
             //
             // Water is different. It is not opaque, so letting it through the pad does not
-            // suppress a single skirt face — but it does let the water layer cull against
+            // suppress a single skirt face, but it does let the water layer cull against
             // the neighbour's real surface. Without it, water at a cross-LOD border sees
             // air and either walls up or (with the old blanket skip) loses its border
             // faces entirely, which is the seam that opens along every lake once LOD
@@ -223,6 +245,15 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
                 pad(4, a, b, kChunkSize, a, b, 0);               // +Z
                 pad(5, a, b, -1, a, b, kChunkSize - 1);          // -Z
             }
+        // the four edge columns, from the diagonal neighbours: only the wave corners read them
+        if (neighbors)
+            for (int d = 0; d < 4; ++d)
+                if (const Chunk* n = neighbors[6 + d]) {
+                    const int nx = kDiagonalOffsets[d][0] > 0 ? 0 : kChunkSize - 1;
+                    const int nz = kDiagonalOffsets[d][1] > 0 ? 0 : kChunkSize - 1;
+                    for (int y = 0; y < kChunkSize; ++y)
+                        m_diag[d][y] = n->get(nx, y, nz);
+                }
         // no -Y neighbour = the void below the world: unlit, so the bottom face darkens
         if (!(neighbors && neighbors[3]))
             for (int z = 0; z < kChunkSize; ++z)
@@ -245,7 +276,7 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
     //
     // Which solid a cube becomes is a vote too, and a plain count elected what fills it rather
     // than what shows: grass is one layer on three of dirt and snow a two-block cap on dirt
-    // (TerrainGenerator), so at 4x hills went brown and peaks patchy - the owner's "ugly from
+    // (TerrainGenerator), so at 4x hills went brown and peaks patchy, the owner's "ugly from
     // across a lake". A block with open air above it (air or foliage that light reaches, so not
     // a cave floor) is the surface, and it votes 1 + f times: a full layer of it outweighs the
     // whole rest of the cube, while a leaf or two on a mass of rock still loses.
@@ -255,7 +286,7 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
     const auto downsampled = [](BlockId raw) {
         // Cross-plane foliage counts as AIR. It is sub-block decoration that cannot survive a
         // downsample, and this path never emits cross quads (m_hasCross is only set at LOD 0)
-        // — so a cube it won became solid-but-invisible: non-opaque, in no solidity mask, no
+        // - so a cube it won became solid-but-invisible: non-opaque, in no solidity mask, no
         // quads. That is a hole, and on a tufted grass surface enough cubes win to shred a
         // hillside into floating shelves and dot a shoreline with a checkerboard of gaps. A
         // waterlogged plant is water at this scale, not a hole in the sea.
@@ -393,8 +424,8 @@ void GreedyMesher::buildColumns() {
         }
 }
 
-// Cross-plane foliage. These never appear in the solidity masks — they are non-opaque, so
-// the face passes treat them as air — which is exactly what we want: they cost the world
+// Cross-plane foliage. These never appear in the solidity masks, they are non-opaque, so
+// the face passes treat them as air, which is exactly what we want: they cost the world
 // nothing except their own two quads and hide none of the geometry behind them.
 //
 // dir 6 and 7 are the two diagonal planes. They carry no merged area, so they are counted
@@ -458,16 +489,22 @@ void GreedyMesher::meshLayer(bool water, std::vector<PackedQuad>& out, GreedySta
                     std::uint32_t lv = m_gridLight[gi(ax, ay, az)];
                     if (!water && light::sky(lv) != 0)
                         stats.sunlit = true; // some sky reaches this face
-                    // A face whose corners differ — in occlusion or in light — carries
+                    // A face whose corners differ, in occlusion or in light, carries
                     // per-corner shade and can't be merged (interpolating across a merged
                     // span would smear it), so emit it 1x1. Uniform faces stay mergeable,
                     // which is why open terrain and solid rock cost the same as before.
                     // Water carries its per-corner SURFACE LEVEL in the r/g/b bytes it
                     // never reads, leaving sky in the top byte. Two cells only merge when
                     // their corners agree, which is precisely when the surface between them
-                    // is flat — so a merged quad is safe to draw with one height and a
+                    // is flat, so a merged quad is safe to draw with one height and a
                     // sloping sheet drops to 1x1 and ramps.
-                    const std::uint32_t wc = water ? waterCorners(x, y, z, dir) : 0u;
+                    // Wave corners on top faces. A coarse chunk (LOD > 0, m_smoothAO off) is far
+                    // past where the swell moves anything, so it only feeds the shading, and
+                    // gets full strength everywhere: its pads are bare, and far water should
+                    // keep the swell in its normal the way it always had.
+                    const std::uint32_t wv =
+                        dir != 2 ? 0u : (m_smoothAO ? waveCorners(x, y, z) : 0xFFFu);
+                    const std::uint32_t wc = water ? (waterCorners(x, y, z, dir) | (wv << 12)) : 0u;
                     if (m_smoothAO) {
                         const std::uint32_t shade = cornerShade(ax, ay, az, dir, lv);
                         if (water)

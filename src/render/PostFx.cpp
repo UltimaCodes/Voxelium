@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 
 namespace vx {
 
@@ -147,9 +148,9 @@ void PostFx::destroyTargets() {
                            m_taaFbo[1]};
     glDeleteFramebuffers(6, fbos);
     glDeleteFramebuffers(kBloomMips, m_bloomFbo);
-    const GLuint texes[] = {m_hdrColor,  m_depth,  m_hdr2,   m_ssaoTex,  m_ssaoBlurTex,
-                            m_sceneCopy, m_taa[0], m_taa[1], m_ssgiTex, m_motionTex};
-    glDeleteTextures(10, texes);
+    const GLuint texes[] = {m_hdrColor, m_depth,  m_hdr2,    m_ssaoTex,   m_ssaoBlurTex, m_sceneCopy,
+                            m_taa[0],   m_taa[1], m_ssgiTex, m_motionTex, m_terrainDepth};
+    glDeleteTextures(GLsizei(std::size(texes)), texes);
     glDeleteFramebuffers(1, &m_ssgiFbo);
     glDeleteFramebuffers(1, &m_scatterFbo);
     glDeleteTextures(1, &m_scatterTex);
@@ -170,8 +171,9 @@ void PostFx::createTargets(int width, int height) {
     m_depth = makeTex2D(GL_DEPTH_COMPONENT32F, width, height, GL_NEAREST);
     m_hdrFbo = makeFbo(m_hdrColor, m_depth);
     m_sceneCopy = makeTex2D(GL_RGBA16F, width, height);
+    m_terrainDepth = makeTex2D(GL_DEPTH_COMPONENT32F, width, height, GL_NEAREST);
 
-    m_hdr2 = makeTex2D(GL_RGBA16F, width, height);
+    m_hdr2 =makeTex2D(GL_RGBA16F, width, height);
     m_hdr2Fbo = makeFbo(m_hdr2);
 
     for (int i = 0; i < 2; ++i) {
@@ -202,7 +204,8 @@ void PostFx::createTargets(int width, int height) {
     // two 1x1 textures the adaptation ping-pongs between. Fixed size, so this costs the
     // same at any resolution and does not need rebuilding on resize (it is here only
     // because everything else target-shaped is).
-    m_lumTex = makeTex2D(GL_R16F, kLumSize, kLumSize, GL_LINEAR, kLumMips);
+    // r/g/b: the world's log luminance, the share of it that is world, the whole frame's
+    m_lumTex = makeTex2D(GL_RGBA16F, kLumSize, kLumSize, GL_LINEAR, kLumMips);
     m_lumFbo = makeFbo(m_lumTex);
     for (int i = 0; i < 2; ++i) {
         m_adapt[i] = makeTex2D(GL_R16F, 1, 1);
@@ -242,11 +245,16 @@ void PostFx::captureOpaqueForWater() {
     glViewport(0, 0, m_width, m_height);
 }
 
+void PostFx::captureTerrainDepth() {
+    glCopyImageSubData(m_depth, GL_TEXTURE_2D, 0, 0, 0, 0, m_terrainDepth, GL_TEXTURE_2D, 0, 0, 0, 0,
+                       m_width, m_height, 1);
+}
+
 void PostFx::applyOpaqueSsao(bool enabled, const glm::vec2& projScale, float nearPlane) {
     if (!enabled)
         return;
     // Unlike run() (called at the very end of the frame, nothing after it needs depth
-    // test/culling), this runs BETWEEN the opaque pass and drawWater() - water's own draw
+    // test/culling), this runs BETWEEN the opaque pass and drawWater(), water's own draw
     // never re-enables depth test itself (it only toggles the depth MASK, expecting the test
     // to already be on from the opaque pass), so it must be restored before returning here.
     glDisable(GL_DEPTH_TEST);
@@ -271,7 +279,7 @@ void PostFx::applyOpaqueSsao(bool enabled, const glm::vec2& projScale, float nea
 
     // Multiply the blurred AO onto the opaque scene now, before water gets drawn on top of
     // it. Blended (GL_DST_COLOR, GL_ZERO) rather than sampled-and-multiplied in the shader,
-    // so apply_ao.frag never has to read m_hdrColor while it is also this draw's target -
+    // so apply_ao.frag never has to read m_hdrColor while it is also this draw's target,
     // it only needs m_sceneCopy (just captured above, by the caller) for the emitter check.
     glBindFramebuffer(GL_FRAMEBUFFER, m_hdrFbo);
     glViewport(0, 0, m_width, m_height);
@@ -294,7 +302,7 @@ void PostFx::run(const RunParams& p) {
     glDisable(GL_CULL_FACE);
     glBindVertexArray(m_vao);
 
-    // SSAO itself now runs in applyOpaqueSsao(), BEFORE water is drawn - see that method and
+    // SSAO itself now runs in applyOpaqueSsao(), BEFORE water is drawn, see that method and
     // apply_ao.frag for why. By this point in the frame water is already in m_hdrColor.
 
     // screen-space GI: gather one bounce of coloured light at half res from the lit scene
@@ -310,7 +318,7 @@ void PostFx::run(const RunParams& p) {
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
 
-    // Light in the air - sun shafts and lamp glow - marched at half res; the composite reads it
+    // Light in the air, sun shafts and lamp glow, marched at half res; the composite reads it
     // back up depth-aware. It was marched per full-res pixel inside the composite.
     const bool sunShafts = p.toggles.volumetric && p.toggles.shadows;
     const bool scatter = sunShafts || p.lightVolume != 0;
@@ -336,21 +344,21 @@ void PostFx::run(const RunParams& p) {
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
 
-    // composite: sky, SSGI, the air light, fog - still HDR
+    // composite: sky, SSGI, the air light, fog, still HDR
     glBindFramebuffer(GL_FRAMEBUFFER, m_hdr2Fbo);
     glViewport(0, 0, m_width, m_height);
     glUseProgram(m_progComposite);
     glProgramUniform2fv(m_progComposite, 0, 1, &p.projScale.x);
     glProgramUniform1f(m_progComposite, 1, p.nearPlane);
     glProgramUniformMatrix3fv(m_progComposite, 2, 1, GL_FALSE, &p.invViewRot[0][0]);
-    // location 23 (uAoOn) retired - AO now applied in applyOpaqueSsao(), before water draws
+    // location 23 (uAoOn) retired, AO now applied in applyOpaqueSsao(), before water draws
     glProgramUniform1f(m_progComposite, 24, sunShafts ? 1.0f : 0.0f);
     glProgramUniform3fv(m_progComposite, 5, 1, &p.sunL.x);
     glProgramUniform3fv(m_progComposite, 25, 1, &p.sunColor.x);
     glProgramUniform2fv(m_progComposite, 26, 1, &p.fog.x);
     glProgramUniform1f(m_progComposite, 27, p.toggles.lensFlare);
     glProgramUniform3fv(m_progComposite, 28, 1, &p.camPos.x);
-    // location 29 (uContact) retired - contact shadows removed, see composite.frag
+    // location 29 (uContact) retired, contact shadows removed, see composite.frag
     glProgramUniform3fv(m_progComposite, 30, 1, &p.lightL.x);
     glProgramUniform3fv(m_progComposite, 31, 1, &p.lightColor.x);
     glProgramUniform1f(m_progComposite, 32, p.daylight);
@@ -455,6 +463,7 @@ void PostFx::run(const RunParams& p) {
         const glm::vec2 srcTexel(1.0f / float(m_width), 1.0f / float(m_height));
         glProgramUniform2fv(m_progLumDown, 0, 1, &srcTexel.x);
         glBindTextureUnit(0, resolved);
+        glBindTextureUnit(1, m_depth); // the sky is not metered
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glGenerateTextureMipmap(m_lumTex); // last mip is the geometric mean of the frame
 
@@ -485,7 +494,7 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform1f(m_progFinal, 1, p.toggles.exposure);
     // Two things soften the image and both want the same pass. TAA's history blend is one.
     // The other is render scale: below 1.0 the whole HDR chain runs smaller and only this
-    // tonemap runs at native, so the upscale is a plain bilinear stretch — which is exactly
+    // tonemap runs at native, so the upscale is a plain bilinear stretch, which is exactly
     // why 0.70x was never a sensible default despite being ~21% cheaper (Tier 1 #7).
     // Scaling the sharpen with the amount of upscaling is what makes the lower render scales
     // usable, and the quality presets below High depend on that.

@@ -2,7 +2,7 @@
 
 // Vertex pulling: no vertex attributes at all. gl_VertexID / 6 picks the quad out of
 // the SSBO, gl_VertexID % 6 picks the corner. Bit layout must match
-// src/mesh/QuadFormat.hpp — that header is the source of truth.
+// src/mesh/QuadFormat.hpp, that header is the source of truth.
 layout(std430, binding = 0) readonly buffer Quads { uvec4 quads[]; };
 layout(std430, binding = 1) readonly buffer Offsets { vec4 uOffsets[]; };
 
@@ -54,7 +54,7 @@ void main() {
     uint dir = (q.x >> 25) & 7u;
     uint block = q.y & 255u;
 
-    // dir 6/7 are the two diagonal planes of a cross-plane foliage voxel — the values the
+    // dir 6/7 are the two diagonal planes of a cross-plane foliage voxel, the values the
     // 3-bit dir field never used. They are quads like any other, just not axis aligned.
     if (dir >= 6u) {
         vec2 cc = kQuadCorner[corner];
@@ -88,7 +88,7 @@ void main() {
         vWorldRel = wpos;
         // Flip V: cc.y is 0 at the BOTTOM of the voxel, but texture row 0 is the TOP of
         // the tile. Without this the blades render upside down, which also hangs them from
-        // the top of the block — the "floating grass".
+        // the top of the block, the "floating grass".
         vUv = vec2(cc.x, 1.0 - cc.y);
         vLayer = texLayer(block, dir);
         vDir = dir;
@@ -122,7 +122,7 @@ void main() {
     }
 
     // Per-corner vertex brightness: 4 corners x 3 bits, 7 = full. Lives entirely inside w1
-    // (bits 8..19) — mesh/QuadFormat.hpp asserts the exact shift.
+    // (bits 8..19), mesh/QuadFormat.hpp asserts the exact shift.
     uint shade12 = (q.y >> 8u) & 0xFFFu;
     vShade = float((shade12 >> (uint(corner) * 3u)) & 7u) / 7.0;
 

@@ -35,7 +35,7 @@ public:
     Event tick(AudioEngine& audio, const ChunkManager& world, const Player& player,
                const glm::dvec3& before);
 
-    // Call once a frame with the camera eye. Handles the submerged head — which is a camera
+    // Call once a frame with the camera eye. Handles the submerged head, which is a camera
     // fact, not a player fact, and so is true in fly mode too.
     void frame(AudioEngine& audio, const glm::dvec3& eye, bool eyeUnderwater, float dt);
 
@@ -47,7 +47,7 @@ public:
 
 private:
     // Below this a landing is just the next footstep. A block is 1.0, so stepping off one is
-    // deliberately under the bar — that is a stride, not a drop.
+    // deliberately under the bar, that is a stride, not a drop.
     static constexpr double kLandMin = 0.55;
     // Where a landing stops being a step and starts being an impact. Minecraft's fall damage
     // threshold, borrowed because it is well-tuned rather than because it means anything

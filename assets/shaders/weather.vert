@@ -3,13 +3,13 @@
 // Precipitation, generated entirely here: no CPU simulation, no buffer, no upload.
 //
 // The drops live in a fixed-size box that FOLLOWS the camera, and each one's position is a
-// pure function of its instance id and the clock. That is what makes it free — a particle
+// pure function of its instance id and the clock. That is what makes it free, a particle
 // system would have to simulate and re-upload tens of thousands of drops every frame, and
 // the existing pool is 4096 with real per-drop physics it does not need here.
 //
 // The box wraps: a drop falls, and its height is taken modulo the box height, so it
 // reappears at the top. Because the box is anchored to the camera's cell rather than to the
-// camera itself, the drops do not slide with the player — walking moves you THROUGH the
+// camera itself, the drops do not slide with the player, walking moves you THROUGH the
 // field instead of dragging it along, which is the difference between rain and a screensaver.
 
 layout(location = 0) uniform mat4 uViewProj;
@@ -41,7 +41,7 @@ void main() {
     vec3 h2 = hash31(float(drop) * 1.7 + 41.0); // independent of h: speed, length, brightness
 
     // Rain falls fast and straight; snow drifts and tumbles, which is most of what separates
-    // the two visually - the shapes matter far less than the motion.
+    // the two visually, the shapes matter far less than the motion.
     float speed = mix(26.0, 2.4, uSnow) * (0.75 + 0.5 * h2.x);
     float boxH = uExtent * 2.0;
     float y = uExtent - mod(h.y * boxH + uTime * speed, boxH);

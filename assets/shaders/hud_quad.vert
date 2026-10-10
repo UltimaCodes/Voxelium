@@ -1,7 +1,7 @@
 #version 460 core
 
 // one screen-space quad, positioned/sized in pixels (origin bottom-left). used for every
-// hotbar element — panel, selection frame, block icons.
+// hotbar element, panel, selection frame, block icons.
 layout(location = 0) uniform vec4 uRectPx; // (left, bottom, width, height) in pixels
 layout(location = 1) uniform vec2 uInvRes; // (1/width, 1/height)
 

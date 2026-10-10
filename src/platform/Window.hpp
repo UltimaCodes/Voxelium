@@ -38,7 +38,7 @@ public:
     void setTitle(const char* title);
     void setVsync(bool on);
     // Taskbar/title-bar/alt-tab icon. `assetsDir` should hold icon_16.png/32/48/256 (see
-    // assets/) — handing GLFW one image per real size it asks for looks sharp everywhere
+    // assets/), handing GLFW one image per real size it asks for looks sharp everywhere
     // instead of one image stretched to fit. Logs and no-ops on any missing/bad file: a
     // missing icon is cosmetic, never worth failing startup over.
     void setIcon(const std::filesystem::path& assetsDir);

@@ -73,7 +73,7 @@ void Overlay::drawBreak(const glm::mat4& viewProj, const glm::vec3& camRelMin,
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE); // sits on the block without perturbing the scene depth
     // The six faces are built from hand-written basis tables, and the scene pass culls
-    // backfaces — so any face I wound the wrong way silently drew nothing at all, which is
+    // backfaces, so any face I wound the wrong way silently drew nothing at all, which is
     // a crack overlay that never appears. Twelve triangles do not need culling; turning it
     // off makes the overlay correct regardless of which way each face happens to face.
     glDisable(GL_CULL_FACE);

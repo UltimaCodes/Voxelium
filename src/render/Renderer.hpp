@@ -22,7 +22,7 @@ struct ChunkDrawInfo {
 // The whole-world renderer: one persistent-mapped quad arena with a free-list
 // sub-allocator, per-chunk metadata for the cull compute shader, and a single
 // glMultiDrawArraysIndirectCount for all opaque geometry. CPU cost per frame is a
-// handful of uniforms and one dispatch — zero per-chunk work.
+// handful of uniforms and one dispatch, zero per-chunk work.
 //
 // Freed arena ranges are recycled through a 3-frame fence ring: a range becomes
 // reusable only after the GPU provably finished every frame that might read it.
@@ -41,7 +41,7 @@ public:
     };
 
     bool init(unsigned int drawProgram, unsigned int cullProgram);
-    // Swap in rebuilt programs after a quality change. Only the handles move — the arena,
+    // Swap in rebuilt programs after a quality change. Only the handles move, the arena,
     // the meta buffers and every uploaded chunk stay exactly where they are, which is the
     // whole reason a preset switch does not re-stream the world.
     void setPrograms(unsigned int drawProgram, unsigned int cullProgram) {
@@ -50,7 +50,7 @@ public:
     }
     void shutdown();
 
-    // Uploads into the arena (memcpy into the persistent map). count == 0 on failure —
+    // Uploads into the arena (memcpy into the persistent map). count == 0 on failure,
     // the caller rebuilds the arena from its CPU copies (hardReset + realloc all).
     // Before reporting failure it reclaims the deferred frees still sitting in the fence
     // ring, which is usually all it takes: a streaming burst frees plenty, it's just not
@@ -77,7 +77,7 @@ public:
                    const glm::ivec3& cameraChunk, const glm::vec3& cameraFrac,
                    bool caveCull);
     // Transparent pass: frustum-cull the water meta and draw with `program` (the caller
-    // sets blending + depth-write-off). No cave culling — water shares its chunk's
+    // sets blending + depth-write-off). No cave culling, water shares its chunk's
     // visibility but uses a separate meta list.
     void drawWater(unsigned int program, const glm::mat4& viewProj, const Frustum& frustum,
                    const glm::ivec3& cameraChunk, const glm::vec3& cameraFrac);
@@ -106,10 +106,10 @@ private:
     bool reclaimPendingFrees(); // wait out the fence ring, recycle everything in it
 
     // 48M quads = 768 MB now that a quad is 16 bytes (uvec4, doubled from uvec2 to fit the
-    // wider per-channel light field — see mesh/QuadFormat.hpp). Sized for radius 32, which
+    // wider per-channel light field, see mesh/QuadFormat.hpp). Sized for radius 32, which
     // the render-distance slider offers and the settings clamp allows, so it is a supported
     // setting and not an exotic one.
-    // Measured settled (2026-08-07): radius 16 holds 5.29M quads, radius 32 holds 21.31M —
+    // Measured settled (2026-08-07): radius 16 holds 5.29M quads, radius 32 holds 21.31M,
     // #27's vertical band roughly quadrupled the far case. At the old 24M that is 85% full
     // with the largest free block down to 1.38M, and a moving `--tour 32` failed to alloc
     // and hard-reset the arena at every one of its five stops. A hardReset is a glFinish
@@ -118,13 +118,13 @@ private:
     static constexpr std::uint32_t kArenaQuads = 48u << 20;
     // Drawable chunks the GPU meta/command/visibility buffers can hold. This is a HARD
     // cap: anything past it gets no meta entry, so it is not drawn and does not appear in
-    // the shadow cull either — invisible geometry that also casts no shadow. 8192 was
+    // the shadow cull either, invisible geometry that also casts no shadow. 8192 was
     // already under water at the DEFAULT radius 16 (~8700 meshed chunks), so several
     // hundred chunks were being dropped silently.
     //
     // 32768 "covered radius 32 with room to spare" only before #27. Measured 2026-08-07:
     // 7778 drawable at radius 16, 30861 settled at radius 32, and a moving `--tour 32`
-    // logged 36318 — over the cap, so it was silently dropping chunks again. At ~32 B per
+    // logged 36318, over the cap, so it was silently dropping chunks again. At ~32 B per
     // chunk across meta + water meta + commands + offsets, 65536 costs ~2 MB.
     static constexpr std::uint32_t kMaxChunks = 65536;
     static constexpr int kFrameRing = 3;
@@ -149,7 +149,7 @@ private:
 
     // The meta and visibility buffers hold one copy per slot of the fence ring. Updates land in
     // these CPU copies; the first cull of a frame copies whatever changed into that frame's slot.
-    // There used to be one mapped copy, written in place whenever the chunk set changed - and
+    // There used to be one mapped copy, written in place whenever the chunk set changed, and
     // under vsync the CPU runs ahead, so at radius 32 the frame before was still in flight for
     // half of those writes, its culls reading a list half rewritten under them.
     std::vector<unsigned char> m_metaCpu, m_waterMetaCpu;

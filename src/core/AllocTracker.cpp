@@ -23,7 +23,7 @@ std::uint64_t heapAllocBytes() { return g_bytes.load(std::memory_order_relaxed);
 } // namespace vx
 
 // Global replacements. Engine policy is no exceptions, so OOM aborts instead of throwing
-// bad_alloc. Aligned-new overloads are deliberately not replaced — they pair with the
+// bad_alloc. Aligned-new overloads are deliberately not replaced, they pair with the
 // library defaults and nothing engine-side is over-aligned; revisit if that changes.
 
 void* operator new(std::size_t size) {

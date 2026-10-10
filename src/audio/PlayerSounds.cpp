@@ -89,7 +89,7 @@ PlayerSounds::Event PlayerSounds::tick(AudioEngine& audio, const ChunkManager& w
     if (player.onGround) {
         if (!m_wasOnGround) {
             // Landed. The drop is measured from the highest point of the fall, not from
-            // where the jump started — otherwise walking off a cliff registers as nothing.
+            // where the jump started, otherwise walking off a cliff registers as nothing.
             const double drop = m_fallFrom - player.position.y;
             if (drop > kLandMin) {
                 const double t = std::clamp((drop - kLandMin) / 6.0, 0.0, 1.0);
@@ -97,7 +97,7 @@ PlayerSounds::Event PlayerSounds::tick(AudioEngine& audio, const ChunkManager& w
                              float(0.95 - 0.1 * t));
                 if (drop > kLandHard) {
                     // A second, heavier layer ON TOP of the material's own sound rather than
-                    // instead of it — landing hard on sand and on stone are still different.
+                    // instead of it, landing hard on sand and on stone are still different.
                     const float heavy = float(std::clamp((drop - kLandHard) / 12.0, 0.15, 1.0));
                     audio.playAt("land_hard", player.position, 0.35f + 0.5f * heavy,
                                  1.05f - 0.15f * heavy);

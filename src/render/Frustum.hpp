@@ -6,7 +6,7 @@ namespace vx {
 
 // Frustum planes pulled out of a view-projection matrix (Gribb/Hartmann). The main-view
 // perspective frustum uses 5 planes (the infinite reversed-Z projection has no far
-// plane — clip.z is a positive constant that always passes); shadow cascades are ortho
+// plane, clip.z is a positive constant that always passes); shadow cascades are ortho
 // boxes and use all 6. `count` tells the cull shader how many to test.
 struct Frustum {
     glm::vec4 planes[6];

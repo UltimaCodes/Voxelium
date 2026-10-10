@@ -32,7 +32,7 @@ std::unique_ptr<Window> Window::create(const WindowDesc& desc) {
 
     GLFWwindow* window = glfwCreateWindow(desc.width, desc.height, desc.title, nullptr, nullptr);
     if (!window) {
-        VX_ERROR("glfwCreateWindow failed — is the driver OpenGL 4.6 capable?");
+        VX_ERROR("glfwCreateWindow failed, is the driver OpenGL 4.6 capable?");
         glfwTerminate();
         return nullptr;
     }

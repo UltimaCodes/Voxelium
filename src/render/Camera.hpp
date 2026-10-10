@@ -7,7 +7,7 @@ namespace vx {
 class Window;
 
 // Free-fly debug camera. Hold RMB to fly: mouse look, WASD + Space/Ctrl, Shift = fast,
-// scroll = base speed. Public fields on purpose — this is a tool, not an API surface.
+// scroll = base speed. Public fields on purpose, this is a tool, not an API surface.
 class FlyCamera {
 public:
     // Double so world coordinates stay exact far from the origin; everything the GPU
@@ -26,7 +26,7 @@ public:
     void update(Window& window, float dt, bool uiWantsMouse, bool uiWantsKeyboard,
                 bool lookEnabled);
 
-    // Walk mode: cursor always captured, mouse look only — position comes from the
+    // Walk mode: cursor always captured, mouse look only, position comes from the
     // player. Reuses the capture state so mode switches hand off cleanly.
     void lookOnly(Window& window);
 
@@ -36,7 +36,7 @@ public:
 
     // Reversed-Z, infinite far plane, 0..1 clip depth (pairs with glClipControl +
     // GL_GREATER + clear depth 0). Float depth precision is concentrated near the eye
-    // with reversed-Z spreading it out — at 32 chunks of draw distance a classic 0..1
+    // with reversed-Z spreading it out, at 32 chunks of draw distance a classic 0..1
     // near/far depth buffer z-fights badly, this doesn't. No far plane to tune either.
     glm::mat4 projReversedZ(float aspect) const;
 

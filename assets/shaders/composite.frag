@@ -17,7 +17,7 @@
 #define VX_SHADOW_RES 1536.0
 #endif
 
-// paints a real sky for pixels with no geometry (gradient + sun disc + horizon glow — no extra
+// paints a real sky for pixels with no geometry (gradient + sun disc + horizon glow, no extra
 // pass), and adds SSGI, the light in the air (marched at half res by scatter.frag), underwater
 // and distance fog. output stays HDR; bloom and tonemapping come after.
 
@@ -35,7 +35,7 @@ layout(location = 1) uniform float uNear;
 layout(location = 2) uniform mat3 uInvViewRot; // view -> camera-relative world; eats 2,3,4
 // The TRUE sun, even at night when it is below the horizon. The sky pass needs it to place
 // the disc, aim the warm bands and put the moon opposite. For anything that SHADES, use
-// uLightL — after dusk that points at the moon and the cascades are rendered from it.
+// uLightL, after dusk that points at the moon and the cascades are rendered from it.
 layout(location = 5) uniform vec3 uSunL;
 layout(location = 6) uniform mat4 uCascadeVp[3];
 layout(location = 18) uniform vec3 uCascadeSplit;
@@ -44,7 +44,7 @@ layout(location = 20) uniform float uCloudsOn;
 layout(location = 21) uniform float uTime;
 layout(location = 22) uniform float uSsgiOn;
 layout(location = 24) uniform float uVolumetricOn; // sun shafts on (underwater ones here; the rest in scatter.frag)
-// location 23 (uAoOn) retired - AO moved to apply_ao.frag, run before water is drawn
+// location 23 (uAoOn) retired, AO moved to apply_ao.frag, run before water is drawn
 layout(location = 25) uniform vec3 uSunColor;      // day/night sun radiance
 layout(location = 26) uniform vec2 uFog;           // (start, end) distance; huge = off
 layout(location = 30) uniform vec3 uLightL;        // toward sun by day, moon by night
@@ -56,9 +56,9 @@ layout(location = 36) uniform float uBiomeHaze;    // and thickens it, 0..~0.2
 layout(location = 27) uniform float uFlare;        // lens flare strength, 0 = off
 layout(location = 28) uniform vec3 uCamPos;        // camera world position (clouds are world-anchored)
 layout(location = 40) uniform float uScatterOn;    // 1 when scatter.frag ran this frame
-// location 29 (uContact) retired - screen-space contact shadows removed entirely (owner
-// call: subtle at best, and every previous tuning pass on this effect - #58's darkening
-// stack, #84's "hard black" fix - was fighting it compounding with AO/cloud shadow/direct
+// location 29 (uContact) retired, screen-space contact shadows removed entirely (owner
+// call: subtle at best, and every previous tuning pass on this effect, #58's darkening
+// stack, #84's "hard black" fix, was fighting it compounding with AO/cloud shadow/direct
 // light on the same pixel rather than adding anything the cascades didn't already give)
 
 #include "clouds.glsl"
@@ -69,7 +69,7 @@ const float kSeaLevel = 62.0; // matches gen/TerrainGenerator kSeaLevel
 // Caustics. Voronoi-ish: two layers of cellular distance, scrolled against each other and
 // sharpened, which is the standard trick for the bright wandering web on a seabed. Two
 // layers at different scales and speeds because ONE layer reads as an obvious repeating
-// pattern the moment it covers any area — hiding the repeat is most of the work here.
+// pattern the moment it covers any area, hiding the repeat is most of the work here.
 float causticLayer(vec2 p, float t) {
     vec2 i = floor(p);
     vec2 f = p - i;
@@ -92,7 +92,7 @@ float caustics(vec2 worldXz, float depth, float t) {
     float b = causticLayer(p * 1.83 + 11.3, t * 1.17);
     // Sharpen: caustics are thin bright filaments between dark cells, not soft blobs.
     // CLAMP FIRST. causticLayer returns a cell distance, and a feature point in a diagonal
-    // neighbour can sit ~2.1 away, so 1 - min(a,b) goes negative — and pow() with a negative
+    // neighbour can sit ~2.1 away, so 1 - min(a,b) goes negative, and pow() with a negative
     // base is undefined in GLSL. This driver hands back NaN, which propagates through the
     // tonemap and comes out as solid black blocks across the seabed.
     float c = pow(clamp(1.0 - min(a, b), 0.0, 1.0), 6.0);
@@ -154,7 +154,7 @@ vec3 starField(vec3 dir, float night) {
     return tint * dot0 * tw * (0.55 + 1.35 * mag * mag) * night;
 }
 
-// smooth value noise — the blocky floor() cells of a raw hash were visible as squares
+// smooth value noise, the blocky floor() cells of a raw hash were visible as squares
 // across something as small on screen as the moon
 float vnoise2(vec2 p) {
     vec2 i = floor(p);
@@ -165,7 +165,7 @@ float vnoise2(vec2 p) {
 }
 
 // A moon that reads as a sphere, not a white disc: cratered surface, curvature shading
-// toward the limb, and a soft halo. Kept deliberately dim in HDR — pushed much above 1
+// toward the limb, and a soft halo. Kept deliberately dim in HDR, pushed much above 1
 // the tonemapper crushes the whole surface to flat white, which is what made it look
 // like a small sun.
 vec3 moonDisc(vec3 dir, vec3 moonDir, float night) {
@@ -202,7 +202,7 @@ vec3 skyColor(vec3 dir) {
     // measurement that forced this: at the --tour night stop the SKY is most of the frame's
     // brightness, and distance fog melts the far terrain into it too, so the sky gradient
     // was setting the exposure of the whole image. A horizon green of 0.06 lands at ~70/255
-    // after ACES and the gamma encode, which is dusk, not night — and no amount of retuning
+    // after ACES and the gamma encode, which is dusk, not night, and no amount of retuning
     // the surface shading can pull an image down past what its own sky is sitting at.
     // Stars and the moon are ADDED after this, so darkening here makes them read stronger.
     vec3 zenith = mix(vec3(0.004, 0.006, 0.020), vec3(0.14, 0.34, 0.80), day);
@@ -220,7 +220,7 @@ vec3 skyColor(vec3 dir) {
     col += vec3(1.0, 0.55, 0.28) * pow(sd, 8.0) * 0.6 * above;             // glow
     col += uSunColor * smoothstep(0.9986, 0.9995, sd) * 3.2 * above;       // sun disc
 
-    // Stars fade out well before the sky is properly light — a linear 1-day left them
+    // Stars fade out well before the sky is properly light, a linear 1-day left them
     // visible as bright specks through dawn and dusk.
     float night = pow(1.0 - day, 2.2);
     if (night > 0.004) {
@@ -378,7 +378,7 @@ vec3 lensFlare() {
     if (vis <= 0.0)
         return vec3(0.0);
 
-    // Fade out as the sun leaves the frame — a flare that pops the instant the sun crosses
+    // Fade out as the sun leaves the frame, a flare that pops the instant the sun crosses
     // the edge is worse than no flare.
     float edge = 1.0 - smoothstep(0.40, 0.85, length(sunUv - 0.5));
     if (edge <= 0.0)
@@ -396,7 +396,7 @@ vec3 lensFlare() {
     for (int i = 0; i < 6; ++i) {
         vec2 q = (vUv - (sunUv + axis * kPos[i])) * vec2(aspect, 1.0);
         // 1 - smoothstep, NOT smoothstep(size, 0, r): a descending smoothstep has
-        // edge0 > edge1, which is undefined in GLSL and returns 0 on this driver —
+        // edge0 > edge1, which is undefined in GLSL and returns 0 on this driver,
         // every ghost silently evaluated to nothing.
         sum += kTint[i] * (1.0 - smoothstep(0.0, kSize[i], length(q))) * 0.30;
     }
@@ -410,7 +410,7 @@ vec3 lensFlare() {
     return sum * uSunColor * vis * edge * uFlare;
 }
 
-// Screen-space contact shadows used to live here (removed — owner call: not worth what it
+// Screen-space contact shadows used to live here (removed, owner call: not worth what it
 // cost. It was one more darkening term multiplying onto the same pixel as AO, cloud shadow
 // and the direct term, and every tuning pass on it since #58 was chasing that same
 // compounding-darkness failure mode rather than adding anything the shadow cascades didn't
@@ -423,24 +423,24 @@ void main() {
     vec3 flare = uUnderwater > 0.5 ? vec3(0.0) : lensFlare();
 
     // sky pixel (reversed-z far = 0): paint the sky instead of the flat clear colour.
-    // underwater there is no sky — the far distance is just deep water.
+    // underwater there is no sky, the far distance is just deep water.
     if (rawD <= 0.0) {
         outColor = vec4((uUnderwater > 0.5 ? kWaterDeep : skyWithClouds(dir)) + flare, 1.0);
         return;
     }
 
     vec3 color = texture(uScene, vUv).rgb;
-    // AO used to be applied right here, to the whole finished frame including water - moved
+    // AO used to be applied right here, to the whole finished frame including water, moved
     // to apply_ao.frag, run on the opaque scene BEFORE water is drawn on top of it. See that
     // file for why: water never writes depth, so AO computed from the lake bed underneath it
     // was tracing the bed's own terrain contours onto the water surface above. The emitter
     // exception (a lamp's own light is not RECEIVED ambient light, so occluding it at its
     // base was a dark band under every lamp, #49) moved there too, using the same luminance
-    // window (an emitter totals ~3.2 pre-tonemap, the brightest sunlit terrain ~1.7 - a
+    // window (an emitter totals ~3.2 pre-tonemap, the brightest sunlit terrain ~1.7, a
     // threshold of 1.0 leaked onto 2.4% of a daylight frame, 2.0 leaves 0).
     if (uSsgiOn > 0.5)
         color += texture(uSsgi, vUv).rgb * 1.15; // one-bounce indirect fill (#75 raised to 1.6,
-        // walked back after "too bright, no contrast" - see ssgi.frag's kRadius comment)
+        // walked back after "too bright, no contrast", see ssgi.frag's kRadius comment)
 
     // reconstruct the camera-relative world position once, for the air light + fog
     float viewZ = -uNear / max(rawD, 1e-7);

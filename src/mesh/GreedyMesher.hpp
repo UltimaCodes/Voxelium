@@ -13,10 +13,10 @@ struct GreedyStats {
     int waterQuads = 0; // transparent
     int triangles = 0;
     // Any opaque face here reached by sky light. A chunk with none is sealed from the sky,
-    // which means it can never be the surface nearest the sun — whatever encloses it
-    // already is — so it contributes nothing to a shadow map and can be skipped entirely.
+    // which means it can never be the surface nearest the sun, whatever encloses it
+    // already is, so it contributes nothing to a shadow map and can be skipped entirely.
     bool sunlit = false;
-    // Summed w*h per direction for the OPAQUE layer at LOD 0 — must equal the naive
+    // Summed w*h per direction for the OPAQUE layer at LOD 0, must equal the naive
     // mesher's per-direction face counts (the correctness oracle).
     std::int64_t areaPerDir[6] = {};
 };
@@ -27,7 +27,7 @@ struct GreedyStats {
 //
 // LOD: for a level > 0 the grid is filled with the chunk DOWNSAMPLED 2^lod (dominant
 // block per cube, replicated back to full size). The greedy merge then collapses the
-// coarsened surface into far fewer, bigger quads — distant chunks cost a fraction of the
+// coarsened surface into far fewer, bigger quads, distant chunks cost a fraction of the
 // triangles for both the main pass and the shadow cascades, with no format/shader change.
 //
 // Two output layers: opaque and transparent water (see the .cpp for the culling rules).
@@ -35,8 +35,14 @@ class GreedyMesher {
 public:
     // coarseNeighbors: bit per face dir, set when that neighbour is meshed at a COARSER
     // LOD than this chunk. Those borders don't get culled against the neighbour's real
-    // voxels (it isn't drawing them — it's drawing a downsampled surface), so the border
+    // voxels (it isn't drawing them, it's drawing a downsampled surface), so the border
     // faces are emitted as a skirt that plugs the step between the two resolutions.
+    //
+    // neighbors holds kMeshNeighbors entries, any of them null: the six faces in the order
+    // +X -X +Y -Y +Z -Z, then the four horizontal diagonals (see kDiagonalOffsets). The
+    // diagonals are only read for the water's wave corners.
+    static constexpr int kMeshNeighbors = 10;
+    static constexpr int kDiagonalOffsets[4][2] = {{1, 1}, {1, -1}, {-1, 1}, {-1, -1}}; // x, z
     GreedyStats mesh(const Chunk& chunk, const Chunk* const* neighbors,
                      std::vector<PackedQuad>& outOpaque,
                      std::vector<PackedQuad>& outWater, int lod = 0,
@@ -68,18 +74,29 @@ private:
     // so a sheet that thins out ramps instead of stepping once per cell. Water quads never
     // read the r/g/b bytes of their light word, so this rides there for free.
     std::uint32_t waterCorners(int x, int y, int z, int dir) const;
+    // Per-corner wave strength (WaveRule.hpp) for the top face of water voxel (x,y,z), 4 x 3
+    // bits in the same corner order. Rides in bits 12..23 of the water's light word, the half
+    // of the r/g/b bytes waterCorners leaves free, so merging keys on it like everything else.
+    std::uint32_t waveCorners(int x, int y, int z) const;
+    // A block of the padded grid, including the four edge columns the six face pads miss
+    // (only waveCorners reaches those).
+    BlockId cellAt(int x, int y, int z) const;
     // Per-corner vertex brightness (4 corners x 3 bits, 7 = full) for a face whose outer
     // (air) voxel is (ax,ay,az): ambient occlusion times the corner's own light relative
     // to the brightest corner. Each corner averages the light of the four voxels touching
     // it, skipping opaque ones, which is what turns a hard quad-to-quad step into a ramp.
     //
-    // outLight receives the per-channel brightest corner light — the value the quad
+    // outLight receives the per-channel brightest corner light, the value the quad
     // stores, so every corner's 0..7 only ever scales it down. kQuadShadeFull means the
     // face has no corner variation to lose and can still greedy-merge.
     std::uint32_t cornerShade(int ax, int ay, int az, int dir, std::uint32_t& outLight) const;
 
     BlockId m_grid[kPad * kPad * kPad];
     std::uint32_t m_gridLight[kPad * kPad * kPad];
+    // The grid's four vertical edge columns, x and z both outside the chunk, in
+    // kDiagonalOffsets order. Kept apart from m_grid on purpose: nothing but the wave corners
+    // reads them, so AO and light at chunk corners stay exactly what they were.
+    BlockId m_diag[4][kChunkSize];
 
     // Two masks, because a voxel HAVING geometry and a voxel HIDING its neighbour stopped
     // being the same question once leaves became a cutout. m_solid* is presence (leaves

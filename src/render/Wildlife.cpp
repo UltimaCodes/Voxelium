@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <utility>
 
 namespace vx {
 
@@ -40,8 +41,11 @@ const glm::vec3 kButterflyColours[] = {{1.00f, 0.55f, 0.12f}, {1.00f, 0.85f, 0.2
 const glm::vec3 kReefFish[] = {{1.00f, 0.50f, 0.10f}, {1.00f, 0.85f, 0.15f},
                                {0.20f, 0.50f, 1.00f}, {0.90f, 0.25f, 0.60f},
                                {0.10f, 0.80f, 0.70f}};
-const glm::vec3 kOpenFish[] = {{0.62f, 0.72f, 0.82f}, {0.50f, 0.62f, 0.34f},
-                               {0.85f, 0.56f, 0.42f}, {0.45f, 0.55f, 0.75f}};
+// The back colour: the belly is worked out from it in wildlife3d.vert (countershading), so these
+// lean darker and more saturated than the fish reads overall. The old greys and pale blues were
+// the water's own colour and vanished in it.
+const glm::vec3 kOpenFish[] = {{0.26f, 0.44f, 0.66f}, {0.40f, 0.52f, 0.24f},
+                               {0.90f, 0.42f, 0.28f}, {0.52f, 0.56f, 0.64f}};
 const glm::vec3 kLeafColours[] = {{0.25f, 0.55f, 0.15f}, {0.42f, 0.60f, 0.14f},
                                   {0.55f, 0.58f, 0.12f}, {0.80f, 0.45f, 0.10f}};
 
@@ -450,13 +454,39 @@ void Wildlife::update(float dt, const ChunkManager& world, const glm::dvec3& cam
         const double dist2 = glm::dot(toCam, toCam);
         bool dead = c.life <= 0.0f;
 
+        // A shove or a punch rides on top of whatever the animal is doing and dies away. A crab
+        // is thrown into a hop and falls back under gravity; everything else is in water or air
+        // and just slows.
+        if (c.flee > 0.0f)
+            c.flee -= dt;
+        if (glm::dot(c.kick, c.kick) > 1e-4f) {
+            const bool hops = c.kind == Crab;
+            if (hops)
+                c.kick.y -= 16.0f * dt;
+            const glm::dvec3 next = c.pos + glm::dvec3(c.kick) * double(dt);
+            if (!isSolidAt(world, next))
+                c.pos = next;
+            else
+                c.kick = glm::vec3(0.0f, std::min(c.kick.y, 0.0f), 0.0f);
+            const float k = std::exp(-3.0f * dt);
+            c.kick.x *= k;
+            c.kick.z *= k;
+            if (!hops)
+                c.kick.y *= k;
+        }
+
         switch (c.kind) {
             case Butterfly:
             case Firefly: {
                 const bool bfly = c.kind == Butterfly;
                 c.phase += dt * (bfly ? 19.0f : c.aux3);
                 c.aux += (rnd() - 0.5f) * (bfly ? 9.0f : 3.0f) * dt;
-                const float spd = bfly ? 1.3f + 0.5f * std::sin(c.age * 1.7f) : 0.35f + 0.15f * std::sin(c.age);
+                // startled: off the way it was sent, faster, and climbing
+                const bool fleeing = bfly && c.flee > 0.0f;
+                if (fleeing)
+                    c.aux = std::atan2(c.fleeDir.z, c.fleeDir.x);
+                const float spd = fleeing ? 3.2f
+                                  : (bfly ? 1.3f + 0.5f * std::sin(c.age * 1.7f) : 0.35f + 0.15f * std::sin(c.age));
                 c.vel.x = std::cos(c.aux) * spd;
                 c.vel.z = std::sin(c.aux) * spd;
                 // re-read the ground now and then: creatures follow the terrain, not a height
@@ -465,8 +495,9 @@ void Wildlife::update(float dt, const ChunkManager& world, const glm::dvec3& cam
                                                  int(std::floor(c.pos.z)), int(c.pos.y) + 6, 14);
                         g != INT_MIN)
                         c.aux2 = float(g + 1);
-                const float alt = c.aux2 + (bfly ? 1.1f + 0.8f * std::sin(c.age * 2.3f + c.aux)
-                                                 : 1.2f + 1.0f * std::sin(c.age * 0.7f + c.aux));
+                const float alt = c.aux2 + (fleeing ? 3.5f : 0.0f) +
+                                  (bfly ? 1.1f + 0.8f * std::sin(c.age * 2.3f + c.aux)
+                                        : 1.2f + 1.0f * std::sin(c.age * 0.7f + c.aux));
                 c.vel.y = (alt - float(c.pos.y)) * 1.8f + std::sin(c.age * 7.0f) * (bfly ? 0.5f : 0.1f);
                 const glm::dvec3 next = c.pos + glm::dvec3(c.vel) * double(dt);
                 if (isSolidAt(world, next)) {
@@ -512,10 +543,15 @@ void Wildlife::update(float dt, const ChunkManager& world, const glm::dvec3& cam
                 glm::vec3 want = s.vel * 1.0f + pull * 0.55f * c.aux;
                 want += glm::vec3(std::sin(c.age * 1.9f + c.phase), std::sin(c.age * 1.3f) * 0.4f,
                                   std::cos(c.age * 1.7f + c.phase)) * 0.35f;
-                c.vel += (want - c.vel) * std::min(1.0f, 2.2f * dt);
+                // startled: a dart away, quicker than it ever swims otherwise, then back to the school
+                const bool fleeing = c.flee > 0.0f;
+                if (fleeing)
+                    want = c.fleeDir * 4.6f + glm::vec3(0.0f, std::sin(c.phase) * 0.6f, 0.0f);
+                c.vel += (want - c.vel) * std::min(1.0f, (fleeing ? 6.0f : 2.2f) * dt);
                 const float sp = glm::length(c.vel);
-                if (sp > 2.2f)
-                    c.vel *= 2.2f / sp;
+                const float top = fleeing ? 5.0f : 2.2f;
+                if (sp > top)
+                    c.vel *= top / sp;
                 const glm::dvec3 next = c.pos + glm::dvec3(c.vel) * double(dt);
                 if (isWetAt(world, next) && !isSolidAt(world, next))
                     c.pos = next;
@@ -525,6 +561,19 @@ void Wildlife::update(float dt, const ChunkManager& world, const glm::dvec3& cam
                 break;
             }
             case Crab: {
+                // startled: scuttling flat out, away, no pausing
+                const bool fleeing = c.flee > 0.0f;
+                if (fleeing) {
+                    c.aux = std::atan2(c.fleeDir.z, c.fleeDir.x);
+                    c.vel = glm::vec3(std::cos(c.aux), 0.0f, std::sin(c.aux)) * 3.0f;
+                    c.aux3 = std::max(c.aux3, 0.4f);
+                }
+                // thrown or shoved somewhere new: find the ground under it again
+                if (c.kick.x * c.kick.x + c.kick.z * c.kick.z > 0.01f)
+                    if (const int g = floorBelow(world, int(std::floor(c.pos.x)), int(std::floor(c.pos.z)),
+                                                 int(std::floor(c.pos.y)) + 1, 4);
+                        g != INT_MIN)
+                        c.aux2 = float(g + 1);
                 const bool moving = glm::length(c.vel) > 0.05f;
                 c.aux3 -= dt;
                 if (c.aux3 <= 0.0f) {
@@ -549,13 +598,24 @@ void Wildlife::update(float dt, const ChunkManager& world, const glm::dvec3& cam
                         c.pos.x = next.x;
                         c.pos.z = next.z;
                         c.aux2 = float(g + 1);
+                    } else if (fleeing) { // cornered at the edge of the sand: run along it instead
+                        const float side = rnd() < 0.5f ? 1.0f : -1.0f;
+                        c.fleeDir = glm::vec3(-c.fleeDir.z * side, 0.0f, c.fleeDir.x * side);
                     } else { // the edge of the sand: about face
                         c.aux += kPi + (rnd() - 0.5f) * 0.8f;
                         c.vel = glm::vec3(std::cos(c.aux), 0.0f, std::sin(c.aux)) * 1.3f;
                     }
                 }
-                c.pos.y += (double(c.aux2) + double(c.size) * 0.10 - c.pos.y) * double(std::min(1.0f, dt * 12.0f));
-                c.phase += dt * (moving ? 24.0f : 1.5f);
+                const double rest = double(c.aux2) + double(c.size) * 0.10;
+                if (c.kick.y != 0.0f) { // in the air off a punch: it lands under its own gravity
+                    if (c.pos.y <= rest) {
+                        c.pos.y = rest;
+                        c.kick.y = 0.0f;
+                    }
+                } else {
+                    c.pos.y += (rest - c.pos.y) * double(std::min(1.0f, dt * 12.0f));
+                }
+                c.phase += dt * (moving ? (fleeing ? 34.0f : 24.0f) : 1.5f);
                 if (dist2 > 46.0 * 46.0 || wantCrab == 0)
                     c.life = std::min(c.life, 0.6f);
                 break;
@@ -564,7 +624,12 @@ void Wildlife::update(float dt, const ChunkManager& world, const glm::dvec3& cam
             case Jelly: {
                 const bool turtle = c.kind == Turtle;
                 c.aux += (rnd() - 0.5f) * (turtle ? 0.9f : 1.6f) * dt;
-                const float spd = turtle ? 0.6f + 0.25f * std::sin(c.age * 0.5f) : 0.22f;
+                // startled: a turtle strokes away hard; a jellyfish can only drift off a little faster
+                const bool fleeing = c.flee > 0.0f;
+                if (fleeing)
+                    c.aux = std::atan2(c.fleeDir.z, c.fleeDir.x);
+                const float spd = turtle ? (fleeing ? 2.2f : 0.6f + 0.25f * std::sin(c.age * 0.5f))
+                                         : (fleeing ? 0.6f : 0.22f);
                 c.vel.x = std::cos(c.aux) * spd;
                 c.vel.z = std::sin(c.aux) * spd;
                 // turtles hold a depth and bob; jellyfish drift up and down through the water
@@ -668,46 +733,140 @@ void Wildlife::update(float dt, const ChunkManager& world, const glm::dvec3& cam
     m_light = 0.25f + 1.45f * env.daylight;
 }
 
-void Wildlife::placeDemo(const glm::dvec3& cam, const glm::vec3& forward, int set) {
-    const glm::vec3 fwd = glm::normalize(glm::vec3(forward.x, 0.0f, forward.z));
-    const glm::vec3 side(-fwd.z, 0.0f, fwd.x);
-    struct D { Kind k; float size; glm::vec3 col; float heading; };
-    const D demo[] = {{Butterfly, 0.6f, {0.95f, 0.55f, 0.15f}, 0.3f}, {Gull, 0.9f, {0.95f, 0.95f, 0.95f}, 1.2f},
-                      {Bird, 0.7f, {0.16f, 0.16f, 0.18f}, 2.0f},      {Fish, 0.8f, {1.0f, 0.5f, 0.1f}, 0.0f},
-                      {Leaf, 0.5f, {0.8f, 0.45f, 0.1f}, 0.0f},        {Crab, 0.9f, {0.85f, 0.3f, 0.16f}, 0.6f},
-                      {Turtle, 1.0f, {0.36f, 0.5f, 0.28f}, 0.3f},     {Jelly, 0.9f, {1.5f, 0.63f, 1.17f}, 0.0f}};
-    int i = 0;
-    for (const D& d : demo) {
-        if (set == 1 && d.k != Crab && d.k != Turtle && d.k != Jelly)
-            continue;
-        Critter* c = acquire();
-        if (!c)
-            return;
-        c->kind = d.k;
-        c->size = set == 1 ? d.size * 1.5f : d.size;
-        c->color = d.col;
-        c->pos = set == 1 ? cam + glm::dvec3(fwd * 4.0f + side * (float(i) - 1.0f) * 1.8f)
-                          : cam + glm::dvec3(fwd * (i < 4 ? 5.0f : 8.5f) + side * (float(i % 4) - 1.5f) * 2.2f);
-        c->vel = glm::vec3(std::cos(d.heading), 0.0f, std::sin(d.heading)) * 0.5f;
-        c->age = 5.0f;
-        c->life = 1e9f;
-        c->phase = 0.4f * float(i);
-        ++i;
+glm::vec2 Wildlife::bodyExtent(const Critter& c) {
+    float r = 0.0f, hh = 0.0f;
+    switch (c.kind) {
+        case Butterfly: r = 0.6f, hh = 0.4f; break;
+        case Gull:
+        case Bird: r = 1.0f, hh = 0.25f; break;
+        case Fish: r = 0.6f, hh = 0.3f; break;
+        case Crab: r = 0.6f, hh = 0.25f; break;
+        case Turtle: r = 0.7f, hh = 0.25f; break;
+        case Jelly: r = 0.45f, hh = 0.5f; break;
+        default: return glm::vec2(0.0f); // glows and leaves have nothing to bump into
     }
+    // never smaller than something a player can reasonably catch with the crosshair
+    return {std::max(r * c.size, 0.2f), std::max(hh * c.size, 0.15f)};
+}
+
+bool Wildlife::swimsAt(int index) const {
+    const Kind k = m_pool[index].kind;
+    return k == Fish || k == Turtle || k == Jelly;
+}
+
+void Wildlife::scare(Critter& c, const glm::vec3& away, float seconds) {
+    glm::vec3 flat(away.x, 0.0f, away.z);
+    const float len = glm::length(flat);
+    flat = len > 1e-4f ? flat / len : glm::vec3(1.0f, 0.0f, 0.0f);
+    c.flee = std::max(c.flee, seconds);
+    c.fleeDir = flat;
+    // a fish on its own would only swim back into the school it bolted from: move the school
+    if (c.kind == Fish && c.group >= 0 && m_schools[c.group].alive)
+        m_schools[c.group].vel = flat * 1.8f;
+}
+
+glm::dvec2 Wildlife::interact(const Body& p, const ChunkManager& world) {
+    glm::dvec2 give(0.0);
+    const glm::vec2 pv(p.vel.x, p.vel.z);
+    const double pr = double(p.halfWidth) * 1.15; // a little round the box's corners
+    for (int i = 0; i < m_live; ++i) {
+        Critter& c = m_pool[i];
+        const glm::vec2 ext = bodyExtent(c);
+        if (ext.x <= 0.0f)
+            continue;
+        const glm::dvec2 d(c.pos.x - p.feet.x, c.pos.z - p.feet.z);
+        const double dist = glm::length(d);
+        if (dist > 6.0)
+            continue;
+        const glm::vec3 away = dist > 1e-4 ? glm::vec3(float(d.x / dist), 0.0f, float(d.y / dist))
+                                           : glm::vec3(1.0f, 0.0f, 0.0f);
+        const bool level = c.pos.y + double(ext.y) > p.feet.y && c.pos.y - double(ext.y) < p.feet.y + double(p.height);
+        // Crowded: walked straight at, or swum in among. They go before they are touched.
+        const bool swimmer = c.kind == Fish || c.kind == Turtle || c.kind == Jelly;
+        const float closing = glm::dot(pv, glm::vec2(away.x, away.z));
+        if (level && ((dist < 3.5 && closing > 1.5f) || (swimmer && dist < 2.2)))
+            scare(c, away, 2.5f);
+        // Touching: pushed apart. The animal is the lighter one, so it takes most of it, and if
+        // there is a wall behind it the player takes all of it instead of shoving it into the wall.
+        const double rsum = pr + double(ext.x);
+        if (!level || dist >= rsum)
+            continue;
+        scare(c, away, 3.0f);
+        if (!p.solid)
+            continue;
+        const double pen = rsum - dist;
+        const double share = c.kind == Turtle ? 0.65 : 0.9;
+        const glm::dvec3 to = c.pos + glm::dvec3(away) * (pen * share);
+        if (!isSolidAt(world, to)) {
+            c.pos = to;
+            c.kick += away * 1.2f;
+            give -= glm::dvec2(away.x, away.z) * (pen * (1.0 - share));
+        } else {
+            give -= glm::dvec2(away.x, away.z) * pen;
+        }
+    }
+    return give;
+}
+
+int Wildlife::pick(const glm::dvec3& origin, const glm::vec3& dir, float maxDist, float& dist) const {
+    int best = -1;
+    float bestT = maxDist;
+    for (int i = 0; i < m_live; ++i) {
+        const Critter& c = m_pool[i];
+        const glm::vec2 ext = bodyExtent(c);
+        if (ext.x <= 0.0f)
+            continue;
+        const glm::vec3 rel(c.pos - origin);
+        const glm::vec3 lo = rel - glm::vec3(ext.x, ext.y, ext.x);
+        const glm::vec3 hi = rel + glm::vec3(ext.x, ext.y, ext.x);
+        float t0 = 0.0f, t1 = bestT;
+        bool hit = true;
+        for (int a = 0; a < 3 && hit; ++a) {
+            if (std::abs(dir[a]) < 1e-6f) {
+                hit = lo[a] <= 0.0f && hi[a] >= 0.0f;
+                continue;
+            }
+            float ta = lo[a] / dir[a], tb = hi[a] / dir[a];
+            if (ta > tb)
+                std::swap(ta, tb);
+            t0 = std::max(t0, ta);
+            t1 = std::min(t1, tb);
+            hit = t0 <= t1;
+        }
+        if (hit) {
+            bestT = t0;
+            best = i;
+        }
+    }
+    dist = bestT;
+    return best;
+}
+
+void Wildlife::punch(int index, const glm::vec3& dir) {
+    Critter& c = m_pool[index];
+    glm::vec3 flat(dir.x, 0.0f, dir.z);
+    const float len = glm::length(flat);
+    flat = len > 1e-4f ? flat / len : glm::vec3(1.0f, 0.0f, 0.0f);
+    if (c.kind == Crab)
+        c.kick = flat * 5.5f + glm::vec3(0.0f, 4.5f, 0.0f); // knocked off its feet
+    else if (swimsAt(index))
+        c.kick = glm::normalize(dir) * (c.kind == Turtle ? 3.2f : 5.0f);
+    else
+        c.kick = flat * 4.0f + glm::vec3(0.0f, 2.0f, 0.0f);
+    scare(c, flat, 4.0f);
 }
 
 void Wildlife::draw(const glm::mat4& viewProj, const glm::dvec3& cam, const glm::vec3& right,
                     const glm::vec3& up, bool underwater) {
     if (m_live == 0 || m_prog == 0 || m_prog3d == 0)
         return;
-    // Three batches packed into one buffer, in draw order: the glows (sprites, blended, no depth
-    // write), then the fish (solid, no depth write), then the airborne animals (solid, depth
-    // write).
-    const auto batchOf = [](Kind k) { return !isSolid(k) ? 0 : (writesDepth(k) ? 2 : 1); };
+    // Two batches packed into one buffer, in draw order: the glows (sprites, blended, no depth
+    // write), then the animals (solid boxes, depth write).
+    const auto batchOf = [](Kind k) { return isSolid(k) ? 1 : 0; };
     auto* map = static_cast<GpuSprite*>(m_ring.begin());
     int out = 0;
-    int batchEnd[3] = {0, 0, 0};
-    for (int batch = 0; batch < 3; ++batch) {
+    int batchEnd[2] = {0, 0};
+    for (int batch = 0; batch < 2; ++batch) {
         for (int i = 0; i < m_live; ++i) {
             const Critter& c = m_pool[i];
             if (batchOf(c.kind) != batch)
@@ -767,13 +926,8 @@ void Wildlife::draw(const glm::mat4& viewProj, const glm::dvec3& cam, const glm:
         glProgramUniformMatrix4fv(m_prog3d, 0, 1, GL_FALSE, glm::value_ptr(viewProj));
         glEnable(GL_CULL_FACE);
         glCullFace(GL_BACK);
-        if (batchEnd[1] > batchEnd[0])
-            glDrawArrays(GL_TRIANGLES, batchEnd[0] * kVertsPerBody,
-                         (batchEnd[1] - batchEnd[0]) * kVertsPerBody);
         glDepthMask(GL_TRUE);
-        if (batchEnd[2] > batchEnd[1])
-            glDrawArrays(GL_TRIANGLES, batchEnd[1] * kVertsPerBody,
-                         (batchEnd[2] - batchEnd[1]) * kVertsPerBody);
+        glDrawArrays(GL_TRIANGLES, batchEnd[0] * kVertsPerBody, (out - batchEnd[0]) * kVertsPerBody);
     }
     glDepthMask(GL_TRUE);
     m_ring.fence();

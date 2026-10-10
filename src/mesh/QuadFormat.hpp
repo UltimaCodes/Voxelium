@@ -8,17 +8,17 @@
 namespace vx {
 
 // One quad = one uvec4 (128 bits, 4 uint32 words) in the chunk quad SSBO. chunk.vert /
-// water.vert unpack this exact layout — keep the three in sync or enjoy the glitch art.
+// water.vert unpack this exact layout, keep the three in sync or enjoy the glitch art.
 //
 //   w0: x:5 | y:5 | z:5 | (w-1):5 | (h-1):5 | dir:3 | 4 spare bits
 //   w1: block:8 | shade:12 | 12 spare bits
-//   w2: light — the raw uint32 from namespace light in Chunk.hpp (r:8, g:8, b:8, sky:8),
+//   w2: light, the raw uint32 from namespace light in Chunk.hpp (r:8, g:8, b:8, sky:8),
 //       stored verbatim, no repacking
 //   w3: spare, reserved, always 0 for now
 //
-// This used to be a single uint64 with both words "exactly full" — no bit anywhere to
+// This used to be a single uint64 with both words "exactly full", no bit anywhere to
 // grow into. Chunk's light word widening from 4 to 8 bits/channel (16 -> 256 levels, the
-// real fix for visible light-falloff banding — see Chunk.hpp's light namespace) needed the
+// real fix for visible light-falloff banding, see Chunk.hpp's light namespace) needed the
 // light field to grow from 16 to 32 bits, which nothing here had room for, so the quad
 // doubled from 64 to 128 bits instead of stealing bits from something else. Roughly
 // doubles per-quad GPU memory (the arena is now ~768 MB fully packed with the default
@@ -29,7 +29,7 @@ namespace vx {
 // The extra room also means SHADE no longer spans a word boundary the way it used to (the
 // old layout's 4 spare bits weren't enough for 12, so it split 8/4 across the two 32-bit
 // halves and every shader had a two-instruction stitch to reassemble it). It fits whole in
-// w1 now — one clean unpack, no stitch, and the "no field crosses a word line" rule this
+// w1 now, one clean unpack, no stitch, and the "no field crosses a word line" rule this
 // header always wanted holds again without an exception.
 //
 // x/y/z is the quad's origin voxel; dir is +X,-X,+Y,-Y,+Z,-Z (0..5); 6 and 7 are the two
@@ -42,7 +42,7 @@ namespace vx {
 // merged quad stops being one flat shade with a hard step to its neighbour.
 //
 // Water quads repurpose the light word's r/g/b bytes (24 bits) to carry per-corner surface
-// depth instead of colour — water only ever reads sky back out of it (see
+// depth instead of colour, water only ever reads sky back out of it (see
 // GreedyMesher::waterCorners and water.vert), so those bytes are free for it. That
 // repurposing lives in GreedyMesher, not here; this header just carries whatever 32-bit
 // value it's given.
@@ -58,7 +58,7 @@ inline constexpr int kQuadMaxBlockId = 256;
 
 inline constexpr int kQuadShadeBits = 3;              // per corner
 inline constexpr std::uint32_t kQuadShadeMax = 7;     // fully lit, unoccluded corner
-// every corner at full brightness — the value a greedy-merged quad always carries, since
+// every corner at full brightness, the value a greedy-merged quad always carries, since
 // a face only merges when it has no corner variation to lose
 inline constexpr std::uint32_t kQuadShadeFull = 0xFFFu;
 
@@ -106,7 +106,7 @@ inline PackedQuad packQuad(int x, int y, int z, int w, int h, int dir, std::uint
 // sky) and nowhere else. Pin every boundary here so a shift that drifts breaks the build
 // instead of silently corrupting a neighbouring field.
 namespace detail {
-// corners 7, 2, 5, 1 — deliberately all different, so a mistake in the per-corner unpack
+// corners 7, 2, 5, 1, deliberately all different, so a mistake in the per-corner unpack
 // cannot pass by accident
 inline constexpr std::uint32_t kProbeShade = 7u | (2u << 3) | (5u << 6) | (1u << 9);
 static_assert(kProbeShade == 0x357u, "probe shade word");

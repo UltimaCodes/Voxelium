@@ -12,7 +12,7 @@
 // Light in the air, at half resolution: the sun's shafts marched through the shadow cascades
 // and lamp light marched through the light volume, summed into one texture the composite reads
 // back up (depth-aware, see upsampleScatter there). The two marches were most of what the
-// composite cost - on Ultra 24 steps of four shadow taps a pixel - and the light they make is
+// composite cost, on Ultra 24 steps of four shadow taps a pixel, and the light they make is
 // soft enough that a quarter of the pixels carries it.
 
 in vec2 vUv;

@@ -4,7 +4,7 @@
 // not match the clouds casting them.
 //
 // The field is WORLD anchored, not view anchored. The old dome was dir.xz / dir.y, which
-// paints clouds onto the sky as a function of where you look — they never move as you walk
+// paints clouds onto the sky as a function of where you look, they never move as you walk
 // and have no position to cast a shadow from. Anchoring costs a camera-position uniform and
 // buys parallax, flying through them, and #32 for nearly free.
 
@@ -38,7 +38,7 @@ float cl_fbm_n(vec2 p, int octaves) {
         a *= 0.5;
     }
     // Rescaled to the FIVE-octave range, not to 1.0. Every threshold in this file was tuned
-    // against five octaves, and a three-octave sum only reaches 0.875 of the same total — so
+    // against five octaves, and a three-octave sum only reaches 0.875 of the same total, so
     // an unscaled cheap field is a thinner one, and the clouds and their shadows would stop
     // agreeing about where they are. Anchoring to five rather than normalising to one is
     // what keeps the five-octave path returning exactly what it always did.
@@ -61,7 +61,7 @@ float cloudCoverage(vec2 worldXz, float time) {
 // The same field at three octaves, for the terrain's shadow lookup only.
 //
 // The two finest octaves land at roughly 78 and 39 blocks. A cloud shadow is averaged across
-// the thickness of the layer, which smears it by tens to hundreds of blocks — so that detail
+// the thickness of the layer, which smears it by tens to hundreds of blocks, so that detail
 // cannot survive the averaging and is being computed only to be blurred away. Dropping it
 // pays for the extra taps, and the taps are what actually fix the banding.
 float cloudCoverageShadow(vec2 worldXz, float time) {
@@ -76,7 +76,7 @@ float cloudDensity(vec3 worldPos, float time) {
         return 0.0;
     float cov = cloudCoverage(worldPos.xz, time);
     // Lower threshold nudged from 0.46 (#79): reference "hazy mountain" shots read as more
-    // cloud-present overall, not clear sky with occasional puffs - widening the low end
+    // cloud-present overall, not clear sky with occasional puffs, widening the low end
     // means more of the coverage field's own range counts as cloud, without touching the
     // 0.70 upper end that already governs how solid a fully-covered patch reads.
     float d = smoothstep(0.40 - uCloudBias, 0.70 - uCloudBias * 0.5, cov);

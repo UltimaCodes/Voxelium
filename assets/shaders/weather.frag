@@ -15,8 +15,14 @@ void main() {
     // Rain is a thin ribbon: bright at the head, thinning to nothing up the tail, with a soft
     // lateral falloff. Snow is a round flake. The per-drop tone is what stops a whole sheet of
     // rain reading as one streak stamped over and over.
+    //
+    // Both bases are clamped. Interpolation leaves the edge pixels of a streak a hair past 0 or
+    // 1, pow() of a negative base is NaN on this driver, NaN passes the discard below, and bloom
+    // spreads that one pixel into a black square a third of the screen wide for a frame, the
+    // owner's black squares in the rain, about one every two seconds in a downpour.
     float lateral = abs(vUv.x * 2.0 - 1.0);
-    float streak = pow(1.0 - lateral, 1.6) * pow(1.0 - vUv.y, 0.8) * smoothstep(0.0, 0.06, vUv.y + 0.02);
+    float streak = pow(clamp(1.0 - lateral, 0.0, 1.0), 1.6) * pow(clamp(1.0 - vUv.y, 0.0, 1.0), 0.8) *
+                   smoothstep(0.0, 0.06, vUv.y + 0.02);
     float flake = 1.0 - smoothstep(0.25, 0.5, length(vUv - 0.5));
     float shape = mix(streak, flake, uSnow);
 

@@ -11,27 +11,27 @@ class Renderer;
 
 // 3 stabilized shadow cascades in a depth array. Each cascade covers a ball about the camera
 // out to its split (fixed radius per cascade) and snaps its center to shadow texels in light
-// space using double-precision world coordinates — rotating or moving the camera never makes
+// space using double-precision world coordinates, rotating or moving the camera never makes
 // shadows swim, and rotating never moves a cascade at all.
 class ShadowMap {
 public:
     static constexpr int kCascades = 3;
     // Default only. The live size is whatever init() was given, because the quality presets
-    // own it — and the same number is injected into the shaders as VX_SHADOW_RES so their
+    // own it, and the same number is injected into the shaders as VX_SHADOW_RES so their
     // tap offsets cannot disagree with the texture that was actually allocated.
     static constexpr int kDefaultResolution = 1536;
     // splits reach ~9-10 chunks so shadows cover the whole radius-10 view instead of
     // vanishing a few chunks out (that was the "shadows disappear when I look far / fly
-    // up"). the far cascade is the cost (vertex-bound — every quad drawn per cascade),
+    // up"). the far cascade is the cost (vertex-bound, every quad drawn per cascade),
     // which is the price of consistent shadows without terrain LOD; per-cascade culling
     // keeps it bounded and each cascade is texel-snapped so nothing swims.
     // Cascade far distances. The last one is where shadows stop entirely. It sat at a fixed
     // 420 (past the 384-block detailed band), which left everything beyond it flat-lit no
-    // matter how far you could see - a visible ring of shadowed ground around the player.
+    // matter how far you could see, a visible ring of shadowed ground around the player.
     // It now follows the render distance (the fog end) up to kFarMax. That was 760, short of
     // the fog end at radius 32 (942), so the last stretch before the haze never had a shadow.
     // The cascades cover a ball about the camera now (see update()), so reaching the fog still
-    // leaves finer texels than 760 did before - 0.87 blocks against 1.34 at a 2560 map - and
+    // leaves finer texels than 760 did before, 0.87 blocks against 1.34 at a 2560 map, and
     // the shadow pass measured cheaper, not dearer, since the old, larger box already took in
     // everything loaded. The last 10% fades out rather than cutting.
     static constexpr float kFarMin = 420.0f;
@@ -60,7 +60,7 @@ public:
 
     // The world changed (block edit, chunks meshed/unloaded): cached cascades may hold stale
     // geometry. Rate-limited internally to a floor of kMinForceInterval between forced
-    // redraws — see the .cpp for why a blanket "redraw everything, right now" here is exactly
+    // redraws, see the .cpp for why a blanket "redraw everything, right now" here is exactly
     // the wrong default while the world is streaming hard.
     void invalidate();
 
@@ -71,13 +71,13 @@ public:
     // whole visible world: ~20 ms of GPU per block you broke.
     void invalidateNear(float nearestBlocks);
 
-    // How many cascade redraws render() has actually issued, ever. Not per-frame — callers
+    // How many cascade redraws render() has actually issued, ever. Not per-frame, callers
     // that want a rate sample it at two points and diff, the same pattern SoundBank's
     // decodeCount() uses and for the same reason: a counter that resets itself is much
     // easier to accidentally make unfalsifiable than one that only ever climbs.
     std::uint64_t redrawCount() const { return m_redraws; }
     // How many invalidate() calls actually set m_forceAll, as opposed to being throttled
-    // away. Exists so the throttle itself is directly testable without a GL context —
+    // away. Exists so the throttle itself is directly testable without a GL context,
     // invalidate() touches no GL state, only this and a clock.
     std::uint64_t forcedCount() const { return m_forcedCount; }
 
@@ -104,14 +104,14 @@ private:
     // --- cascade caching -------------------------------------------------------------
     // A cascade's depth map only depends on its WORLD-space light frustum. Anchoring that
     // frustum to a fixed world point means it stays valid while the camera moves, so the
-    // cascade doesn't have to be redrawn every frame — and cascades 1+2 are 96% of all
+    // cascade doesn't have to be redrawn every frame, and cascades 1+2 are 96% of all
     // shadow draws. m_vp is still rebuilt every frame from (anchor - cameraPos) so the
     // matrix handed to the lighting shader is always correct camera-relative space; only
     // the *redraw* is skipped. The anchor is kept in doubles so precision doesn't degrade
     // far from the origin, same reason the rest of the renderer is camera-relative.
     //
     // Cascades are inflated by kSlack so the sphere they must cover is still inside the
-    // frustum after the camera has drifted by that much — the cost is slightly coarser
+    // frustum after the camera has drifted by that much, the cost is slightly coarser
     // texels, the payoff is redrawing a few times a second instead of 60.
     static constexpr float kSlack = 0.18f;
     glm::dvec3 m_anchorWorld[kCascades] = {};
@@ -128,7 +128,7 @@ private:
     // --- the far cascade, drawn in slices ----------------------------------------------
     // Redrawing the far cascade draws every sunlit chunk within ~1100 blocks: at Ultra's
     // detail reach that is ~22M quads and ~30 ms of GPU in one frame, which happened every
-    // time streaming or drift asked for it - a hitch every 0.7 s while flying (SPEC #141). So a
+    // time streaming or drift asked for it, a hitch every 0.7 s while flying (SPEC #141). So a
     // routine redraw goes to a spare layer (index kCascades) an eighth of the chunks a frame,
     // and only when the last eighth lands is it copied over the far cascade's own layer and its
     // anchor swapped in; until then the old one keeps shading, still inside its slack.

@@ -1,7 +1,7 @@
 // Shared by composite.frag and scatter.frag. The includer declares uShadowMap, uCascadeVp,
 // uCascadeSplit and VX_SHADOW_RES before including this.
 
-// 4-tap softened shadow lookup for the raymarch — a single tap makes the light shafts
+// 4-tap softened shadow lookup for the raymarch, a single tap makes the light shafts
 // alias into a grid against the shadow texels; averaging a few taps smooths them out.
 float shadowSingle(vec3 pos) {
     float d = length(pos);
@@ -18,6 +18,6 @@ float shadowSingle(vec3 pos) {
                    texture(uShadowMap, vec4(uv + vec2(-t, -t), float(c), z)));
 }
 
-// interleaved gradient noise — a much better dither than a plain hash, so the raymarch
+// interleaved gradient noise, a much better dither than a plain hash, so the raymarch
 // start offset breaks up banding evenly instead of in blotches
 float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }

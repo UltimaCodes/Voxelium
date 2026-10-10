@@ -11,7 +11,6 @@
 #include "gfx/GlDebug.hpp"
 #include "gfx/GpuTimer.hpp"
 #include "gfx/Shader.hpp"
-#include "harness/Harness.hpp"
 #include "io/RegionStore.hpp"
 #include "io/WorldStore.hpp"
 #include "jobs/JobSystem.hpp"
@@ -32,6 +31,7 @@
 #include "render/WeatherDirector.hpp"
 #include "render/Wildlife.hpp"
 #include "render/ShadowMap.hpp"
+#include "render/WaterWaves.hpp"
 #include "ui/DebugHud.hpp"
 #include "world/Chunk.hpp"
 #include "world/ChunkManager.hpp"
@@ -57,70 +57,24 @@ using vx::FrameTimers;
 using vx::RenderContext;
 using vx::TaaState;
 using vx::renderFrame;
-using vx::runBenchmark;
 
 static_assert(vx::FxToggles{}.lodDetail == vx::ChunkManager::kDefaultDetailScale,
               "a world nobody has set a reach on must match the setting's default");
-using vx::runFlythrough;
-using vx::runMesherOracle;
-using vx::runSmokeTest;
-using vx::runTour;
 
-int main(int argc, char** argv) {
+int main(int, char** argv) {
     vx::installCrashHandler();
-    bool smoke = false;
-    bool bench = false;
-    int benchRadius = 16;
-    bool benchSaveBaseline = false;
-    bool tour = false;
-    int tourRadius = 16;
-    bool tourSettle = true;
-    bool flythrough = false;
-    int flythroughFrames = 90;
-    std::filesystem::path smokeOut = "smoke.bmp";
-    for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--smoke") == 0) {
-            smoke = true;
-            if (i + 1 < argc)
-                smokeOut = argv[++i];
-        } else if (std::strcmp(argv[i], "--tour") == 0) {
-            tour = true;
-            if (i + 1 < argc && argv[i + 1][0] != '-')
-                tourRadius = std::atoi(argv[++i]);
-        } else if (std::strcmp(argv[i], "--tourmoving") == 0) {
-            tour = true;
-            tourSettle = false;
-        } else if (std::strcmp(argv[i], "--flythrough") == 0) {
-            flythrough = true;
-            if (i + 1 < argc && argv[i + 1][0] != '-')
-                flythroughFrames = std::atoi(argv[++i]);
-        } else if (std::strcmp(argv[i], "--bench") == 0) {
-            bench = true;
-            if (i + 1 < argc && argv[i + 1][0] != '-')
-                benchRadius = std::atoi(argv[++i]);
-        } else if (std::strcmp(argv[i], "--savebaseline") == 0) {
-            benchSaveBaseline = true;
-        } else if (std::strcmp(argv[i], "--crashtest") == 0) {
-            // Verifies the crash handler actually writes a dump, rather than trusting that a
-            // clean compile means a correct SetUnhandledExceptionFilter/MiniDumpWriteDump
-            // call — the whole point of this file existing is #0's own rule against exactly
-            // that kind of unverified claim.
-            volatile int* p = nullptr;
-            *p = 1;
-        }
-    }
 
 #ifndef NDEBUG
     const bool debugContext = true;
 #else
-    const bool debugContext = smoke; // smoke runs want loud GL errors even in Release
+    const bool debugContext = false;
 #endif
 
     auto window = vx::Window::create({
         .width = 1280,
         .height = 720,
         .title = "Voxelium",
-        .visible = !smoke && !bench && !tour && !flythrough,
+        .visible = true,
         .debugContext = debugContext,
     });
     if (!window)
@@ -146,7 +100,7 @@ int main(int argc, char** argv) {
     }
     window->setIcon(assets);
     // Settings are read BEFORE any shader is built. The quality tier is injected into the
-    // shader source, so the compile depends on it — reading settings afterwards would mean
+    // shader source, so the compile depends on it, reading settings afterwards would mean
     // building the whole set at the default tier and then throwing it away.
     //
     // Only fx is applied here; radius and fov land on `world` and `camera`, which do not
@@ -158,32 +112,11 @@ int main(int argc, char** argv) {
     int savedRadius = 16;
     float savedFov = 70.0f;
     const std::filesystem::path settingsFile = "saves/settings.cfg";
-    // A smoke/bench/tour/flythrough run renders from fixed defaults, never a machine's saved
-    // settings, or the reference images would move under whoever happened to run it.
-    const bool liveApp = !smoke && !bench && !tour && !flythrough;
-    if (liveApp && vx::Settings::load(settingsFile, fx, vsync, caveCull, savedRadius, savedFov))
+    if (vx::Settings::load(settingsFile, fx, vsync, caveCull, savedRadius, savedFov))
         VX_INFO("settings: loaded %s", settingsFile.string().c_str());
 
-    // VX_PRESET=0..3 forces a quality preset. The harnesses otherwise render from fixed
-    // defaults on purpose, but a preset table nobody has measured is a table of guesses —
-    // this is what lets --bench and --tour be run at each tier without editing the source.
-    // It applies to the live app too, which makes it the quickest way to reproduce a report
-    // that only happens on Low.
-    if (const char* pv = std::getenv("VX_PRESET")) {
-        const int idx = std::atoi(pv);
-        if (idx >= 0 && idx <= 3) {
-            vx::applyPreset(vx::Preset(idx), fx, savedRadius);
-            benchRadius = savedRadius;
-            tourRadius = savedRadius;
-            VX_INFO("preset: %s (radius %d, scale %.2f, tier %d, shadow %d)",
-                    vx::presetName(vx::Preset(idx)), savedRadius, double(fx.renderScale),
-                    fx.quality, fx.shadowRes);
-        }
-    }
-
     const std::filesystem::path shaders = assets / "shaders";
-    // shared across runs including --smoke: this caches driver output keyed by source and
-    // GL identity, not world state, so there is nothing here for a test run to poison
+    // caches driver output keyed by source and GL identity, not world state
     vx::initShaderCache("saves/shadercache");
     // The four world programs, rebuilt whenever the quality tier changes. Submitted all at
     // once so the driver's compiler threads have the whole set to overlap (#15).
@@ -196,7 +129,8 @@ int main(int argc, char** argv) {
             vx::submitProgram(shaders / "chunk.vert", shaders / "chunk.frag", defines),
             vx::submitComputeProgram(shaders / "cull.comp", defines),
             vx::submitProgram(shaders / "shadow.vert", shaders / "shadow.frag", defines),
-            vx::submitProgram(shaders / "water.vert", shaders / "water.frag", defines),
+            vx::submitTessProgram(shaders / "water.vert", shaders / "water.tesc",
+                                  shaders / "water.tese", shaders / "water.frag", defines),
         };
         WorldPrograms wp;
         wp.draw = vx::resolveProgram(jobs[0]);
@@ -212,9 +146,6 @@ int main(int argc, char** argv) {
     const GLuint drawProgram = world_p.draw;
     const GLuint shadowProgram = world_p.shadow;
     const GLuint waterProgram = world_p.water;
-
-    if (!runMesherOracle())
-        return 1;
 
     vx::Renderer renderer;
     if (!renderer.init(drawProgram, cullProgram0))
@@ -250,16 +181,14 @@ int main(int argc, char** argv) {
     const GLuint blockTex = vx::createBlockTextureArray(assets / "textures");
     RenderContext rc{renderer,   shadowMap,    postfx,   overlay,  &particles,
                      &weather,   &wildlife,    &farTerrain, drawProgram, waterProgram, blockTex};
-    // Lamp light in the air, for the game only: the harnesses render from fixed scenes and
-    // never fill it.
+    // Lamp light in the air.
     vx::LightVolume lightVolume;
-    if (liveApp)
-        rc.lightVolume = &lightVolume;
+    rc.lightVolume = &lightVolume;
 
     // A quality change is the one setting that is not free: the sample counts are baked into the
     // programs, so the tier has to be recompiled rather than branched on. The binary cache makes
     // the second visit to a preset cheap (#15: 349 ms cold for the whole set, 56 ms warm), and
-    // nothing about the world is touched - the arena, the meta buffers and every uploaded chunk
+    // nothing about the world is touched, the arena, the meta buffers and every uploaded chunk
     // stay exactly where they are, so switching preset does not re-stream anything. Shared by the
     // settings window in the game and the one on the title screen.
     const auto applyQualityChange = [&](int qualityBefore, int shadowResBefore) {
@@ -292,29 +221,19 @@ int main(int argc, char** argv) {
         return 1;
     window->hookScroll();
 
-    // isolate the smoke test's save data so repeated runs start clean and can't touch a
-    // real world save
     vx::WorldStore worldStore("saves");
-    std::filesystem::path saveDir = worldStore.liveDir();
+    const std::filesystem::path saveDir = worldStore.liveDir();
     // Made before the title screen: the terrain previewed behind it is built on these workers.
     auto jobs = std::make_unique<vx::JobSystem>();
     VX_INFO("job system: %d workers", jobs->workerCount());
     vx::MenuBackdrop menuBackdrop;
 
     // Every launch is a new world unless the title screen below loads one. The live one is
-    // scratch either way — keeping it means saving it under a name from the ESC menu, which
+    // scratch either way, keeping it means saving it under a name from the ESC menu, which
     // is what makes "new seed each time" safe.
     int worldSeed = 20260721;
-    if (smoke || bench || tour || flythrough) {
-        // The harnesses assert against specific terrain (cave counts, ore counts, the glow
-        // room, bench camera heights), so they pin the seed and never see the title screen —
-        // a human has to be there to click it, which none of these runs have.
-        saveDir = smoke ? smokeOut.parent_path() / "vxsave_smoke" : saveDir;
-        if (smoke) {
-            std::error_code ec;
-            std::filesystem::remove_all(saveDir, ec);
-        }
-    } else {
+    int worldGen = vx::TerrainGenerator::kLatestVersion; // a loaded world keeps the one it was made with
+    {
         // Title screen: the only place a specific seed can be typed at all (the in-game
         // "new world" button has never taken one, only ever rolled a random one) and the
         // first thing shown, rather than always dropping straight into a fresh random world
@@ -334,8 +253,6 @@ int main(int argc, char** argv) {
             return int((v < 0 ? -v : v) & 0x7FFFFFFF);
         };
         std::snprintf(title.seedText, sizeof(title.seedText), "%d", rollSeed());
-        if (const char* fixed = std::getenv("VX_MENU_SEED")) // harness: a seed to look at, not a random one
-            std::snprintf(title.seedText, sizeof(title.seedText), "%s", fixed);
         int rolledSeed = std::atoi(title.seedText);
         // The menu is a real scene, so it runs at the display's rate rather than flat out.
         window->setVsync(true);
@@ -389,18 +306,21 @@ int main(int argc, char** argv) {
             }
 
             int wantSeed = parseSeed(title.seedText, rolledSeed);
+            int wantGen = vx::TerrainGenerator::kLatestVersion;
             if (title.page == 2)
                 for (const vx::WorldStore::Entry& e : title.saved)
-                    if (e.name == title.selected)
+                    if (e.name == title.selected) {
                         wantSeed = e.seed;
-            if (!previewGen || wantSeed != previewSeed) {
+                        wantGen = e.gen; // a saved world is shown as the terrain it was made with
+                    }
+            if (!previewGen || wantSeed != previewSeed || wantGen != previewGen->version()) {
                 if (wantSeed != pendingSeed || !previewGen) {
                     pendingSeed = wantSeed;
                     pendingSince = nowT;
                 }
                 if (!previewGen || nowT - pendingSince > 0.35) {
                     farTerrain.reset(); // waits for a build that is still reading the old one
-                    previewGen = std::make_unique<vx::TerrainGenerator>(wantSeed);
+                    previewGen = std::make_unique<vx::TerrainGenerator>(wantSeed, wantGen);
                     previewSeed = wantSeed;
                 }
             }
@@ -419,26 +339,6 @@ int main(int argc, char** argv) {
                 }
             }
             hud.render();
-            // VX_MENU_SHOT=<frame>[,<page>] writes menu_shot.bmp on that frame and exits: the only
-            // offscreen look at the title screen (VX_MENU_PAGE=2 opens the saved-worlds page).
-            if (const char* ms = std::getenv("VX_MENU_SHOT")) {
-                static int menuFrame = 0;
-                if (++menuFrame == std::atoi(ms) && std::atoi(ms) > 0 && fbw > 0 && fbh > 0) {
-                    std::vector<std::uint8_t> px(std::size_t(fbw) * fbh * 3);
-                    glReadPixels(0, 0, fbw, fbh, GL_BGR, GL_UNSIGNED_BYTE, px.data());
-                    vx::writeBmp24("menu_shot.bmp", fbw, fbh, px);
-                    farTerrain.quiesce();
-                    hud.shutdown();
-                    return 0;
-                }
-                if (menuFrame == 5 && std::getenv("VX_MENU_PLAY"))
-                    title.newWorldRequested = true; // harness: carry on into the loading screen
-                if (menuFrame == 1 && std::getenv("VX_MENU_PAGE")) {
-                    title.page = std::atoi(std::getenv("VX_MENU_PAGE"));
-                    if (title.page == 2 && !title.saved.empty())
-                        title.selected = title.saved.front().name;
-                }
-            }
             window->swapBuffers();
             if (title.quitRequested) {
                 farTerrain.quiesce();
@@ -452,11 +352,11 @@ int main(int argc, char** argv) {
                 worldStore.clearLive();
                 break;
             }
-            if (title.loadRequested && worldStore.load(title.selected, worldSeed)) {
+            if (title.loadRequested && worldStore.load(title.selected, worldSeed, worldGen)) {
                 loaded = true;
                 break;
             }
-            title.loadRequested = false; // load() failed (deleted mid-screen?) — stay put
+            title.loadRequested = false; // load() failed (deleted mid-screen?), stay put
         }
         // the preview generator is about to go; a build still reading it must finish first. The
         // mesh it made is kept: the world about to start has the same seed, so it is the same
@@ -470,11 +370,11 @@ int main(int argc, char** argv) {
                 worldSeed);
     }
 
-    auto world = std::make_unique<vx::ChunkManager>(saveDir, worldSeed);
+    auto world = std::make_unique<vx::ChunkManager>(saveDir, worldSeed, worldGen);
     auto light = std::make_unique<vx::LightEngine>(*world);
     // The workers are joined before world goes, on every way out of main: a mesh, generation
-    // or far-terrain job still running - or still queued, since a stopping worker empties the
-    // queue first - writes into world's chunks, pools and result queues, or reads its
+    // or far-terrain job still running, or still queued, since a stopping worker empties the
+    // queue first, writes into world's chunks, pools and result queues, or reads its
     // generator. Declaring jobs after world used to see to that, until the title screen needed
     // workers first (9a93428) and moved it above; from then on, quitting while chunks were
     // streaming let jobs finish into a freed ChunkManager. A probe that quit mid-flight caught
@@ -486,15 +386,15 @@ int main(int argc, char** argv) {
 
     vx::FlyCamera camera;
     // Spawn ON the ground, not at a fixed altitude. y was hardcoded to 110, which is inside
-    // the rock anywhere the terrain rises above it — and with exponential relief putting
+    // the rock anywhere the terrain rises above it, and with exponential relief putting
     // peaks past 300, that is a lot of the world. surfaceHeight is the generator's own
-    // answer for this column, so it lands on whatever is actually there.
+    // answer for this column, so it lands on whatever is actually there, and spawnColumn
+    // picks dry land, which matters once a world has real seas.
     {
-        constexpr int kSpawnX = 16, kSpawnZ = 16;
-        const int ground = world->generator().surfaceHeight(kSpawnX, kSpawnZ);
-        camera.position = {double(kSpawnX) + 0.5,
-                           double(std::max(ground, vx::kSeaLevelForSpawn) + 3),
-                           double(kSpawnZ) + 0.5};
+        const glm::ivec2 sp = world->generator().spawnColumn();
+        const int ground = world->generator().surfaceHeight(sp.x, sp.y);
+        camera.position = {double(sp.x) + 0.5, double(std::max(ground, vx::kSeaLevelForSpawn) + 3),
+                           double(sp.y) + 0.5};
     }
     camera.yawDeg = -35.0f;
     camera.pitchDeg = -25.0f;
@@ -502,62 +402,14 @@ int main(int argc, char** argv) {
     // (constructed above), and the saved radius/fov must be live BEFORE the loading screen
     // decides how much world to stream and light. Applying it after the settle (as this
     // used to) meant the first settle always ran at ChunkManager's built-in default of 16
-    // regardless of what was saved or what preset was picked — so choosing Ultra (radius 32)
+    // regardless of what was saved or what preset was picked, so choosing Ultra (radius 32)
     // loaded and lit a radius-16 world behind the loading screen, then silently doubled the
     // streaming target the instant gameplay started. That is the exact "chunks don't render
     // past spawn, and it's laggy" report: the game never finished loading, it just stopped
     // showing a loading screen.
-    // A harness runs at the default reach, or at the preset's when VX_PRESET picked one: the
-    // reach is a preset knob, and a bench of Ultra at High's reach would not be Ultra.
     world->detailScale = fx.lodDetail;
-    if (liveApp) {
-        world->radius = savedRadius;
-        camera.fovYDeg = savedFov;
-    } else if (const char* d = std::getenv("VX_LODDETAIL")) {
-        // a harness at another detail distance: it moves the frame time and the picture
-        // together, so a value has to be judged with --bench and --tour both
-        world->detailScale = std::clamp(float(std::atof(d)), 1.0f, 2.0f);
-    }
-
-    if (tour) {
-        const int rcT = runTour(rc, *world, *jobs, *light, camera, *window, tourRadius,
-                                tourSettle);
-        world->saveDirty();
-        return rcT;
-    }
-    if (flythrough) {
-        const int rcF = runFlythrough(rc, *world, *jobs, *light, camera, *window,
-                                      flythroughFrames);
-        world->saveDirty();
-        return rcF;
-    }
-    if (bench) {
-        const int rcB = runBenchmark(rc, *world, *jobs, *light, camera, *window, benchRadius,
-                                     benchSaveBaseline);
-        hud.shutdown();
-        particles.shutdown();
-        wildlife.shutdown();
-        farTerrain.shutdown();
-        overlay.shutdown();
-        postfx.shutdown();
-        shadowMap.shutdown();
-        renderer.shutdown();
-        return rcB;
-    }
-
-    if (smoke) {
-        const int rc2 = runSmokeTest(rc, *world, *jobs, *light, camera, hud, *window, smokeOut,
-                                    assets.parent_path() / "sounds");
-        hud.shutdown();
-        particles.shutdown();
-        wildlife.shutdown();
-        farTerrain.shutdown();
-        overlay.shutdown();
-        postfx.shutdown();
-        shadowMap.shutdown();
-        renderer.shutdown();
-        return rc2;
-    }
+    world->radius = savedRadius;
+    camera.fovYDeg = savedFov;
 
     FrameTimers timers;
     timers.shadow.init();
@@ -571,17 +423,17 @@ int main(int argc, char** argv) {
     // Settle the world before the player ever sees it. Streaming in front of someone is
     // what makes LOD swaps, shadow cascades and chunk pop-in obvious; doing it behind a
     // panel means the first real frame already has all three in place. Bounded, because a
-    // world that never settles must not be an infinite loading screen — if the budget runs
+    // world that never settles must not be an infinite loading screen, if the budget runs
     // out we start anyway and it streams as it always did.
     // Settle the world behind the panel. Used at startup AND for every world change: before,
     // only startup did this, so "reset world" dropped you into an empty world that then
-    // generated itself around you — every chunk, mesh and light settle competing with the
+    // generated itself around you, every chunk, mesh and light settle competing with the
     // frames you were trying to play, which is exactly the stall the loading screen exists
     // to hide.
     const auto settleBehindLoadingScreen = [&](const char* title) {
         constexpr int kMaxFrames = 4000;
         // The real figure, summed from columnRange. It used to be radius*radius*
-        // kWorldChunksY, which at radius 16 is 3072 against ~15200 actually meshed — so the
+        // kWorldChunksY, which at radius 16 is 3072 against ~15200 actually meshed, so the
         // bar hit 100% about a fifth of the way in and sat there.
         const int target = world->expectedMeshedChunks();
         // Monotonic, and capped below 1 until the world really is settled. The estimate is
@@ -611,26 +463,19 @@ int main(int argc, char** argv) {
                 const float p = shown;
                 char phase[96];
                 if (ls.genQueue > 0)
-                    std::snprintf(phase, sizeof(phase), "generating terrain - %d chunks left",
+                    std::snprintf(phase, sizeof(phase), "generating terrain (%d chunks left)",
                                   ls.genQueue);
                 else if (ls.unlit > 0)
-                    std::snprintf(phase, sizeof(phase), "settling light - %d columns left",
+                    std::snprintf(phase, sizeof(phase), "settling light (%d columns left)",
                                   ls.unlit);
                 else
-                    std::snprintf(phase, sizeof(phase), "building meshes - %d of %d",
+                    std::snprintf(phase, sizeof(phase), "building meshes (%d of %d)",
                                   ls.meshed, target);
                 hud.beginFrame();
                 hud.loadingScreen(p, title, phase);
                 glViewport(0, 0, fbw, fbh);
                 menuBackdrop.draw(rc, *jobs, world->generator(), fbw, fbh, glfwGetTime());
                 hud.render();
-                // VX_LOAD_SHOT=<n> writes load_shot.bmp on the n-th loading frame and exits
-                if (const char* ls = std::getenv("VX_LOAD_SHOT"); ls != nullptr && f == std::atoi(ls)) {
-                    std::vector<std::uint8_t> px(std::size_t(fbw) * fbh * 3);
-                    glReadPixels(0, 0, fbw, fbh, GL_BGR, GL_UNSIGNED_BYTE, px.data());
-                    vx::writeBmp24("load_shot.bmp", fbw, fbh, px);
-                    std::exit(0);
-                }
                 window->swapBuffers();
             }
         }
@@ -638,7 +483,7 @@ int main(int argc, char** argv) {
         renderer.updateChunkMeta(drawInfo);
         renderer.updateWaterMeta(waterInfo);
         shadowMap.invalidate();
-        // One completed frame, so the bar lands on 100% instead of cutting away at 97 —
+        // One completed frame, so the bar lands on 100% instead of cutting away at 97,
         // and the first real frame still has to build its shadow cascades, so this is not
         // dead time either.
         {
@@ -665,6 +510,8 @@ int main(int argc, char** argv) {
     bool f2Held = false;
     bool f5Held = false;
     bool mmbHeld = false;
+    bool lmbHeld = false;            // a punch lands on the press, not every frame it is held
+    glm::dvec3 flyPrev{0.0};          // last frame's camera in fly mode, for its velocity
     bool walkMode = false;
     // sounds/ next to the assets dir; nothing ships in it, the user fills it themselves
     vx::AudioEngine audio;
@@ -676,13 +523,13 @@ int main(int argc, char** argv) {
     vx::StormSounds storm;
     storm.selfSchedule = false; // thunder now follows the lightning, after its own delay
     // How blocked the path from a sound to the ear is, 0 clear .. 1 solid. One DDA per sound
-    // EVENT, which is far cheaper than it sounds — the crosshair already runs this same
+    // EVENT, which is far cheaper than it sounds, the crosshair already runs this same
     // raycast every single frame. A break heard through a wall should not arrive at full
     // volume, and this is the only thing that distinguishes the two.
     //
     // Four tiers, narrowest first: this exact block, its material family, the generic clip,
     // and finally the material's own FOOTSTEP at a shifted pitch. The material tier is the
-    // one that matters — block sounds are keyed by numeric id, and this engine stores data in
+    // one that matters, block sounds are keyed by numeric id, and this engine stores data in
     // the id, so water is seven ids and a lamp is twenty-five. Without it, per-block audio
     // meant twenty-five copies of one file and nearly everything fell through to generic.
     const auto audioHit = [](vx::AudioEngine& au, const char* kind, int blockId,
@@ -756,7 +603,7 @@ int main(int argc, char** argv) {
     while (!window->shouldClose()) {
         window->pollEvents();
         // BEFORE anything can play. These used to sit near the end of the frame, after the
-        // physics loop had already fired footsteps — so every sound was positioned against
+        // physics loop had already fired footsteps, so every sound was positioned against
         // the PREVIOUS frame's listener, and on the very first frame against a listener
         // still at the world origin. A footstep a hundred blocks from the ear is attenuated
         // to nothing, which is a silent first step and a subtly wrong position after that.
@@ -826,7 +673,7 @@ int main(int argc, char** argv) {
         renderer.beginFrame();
         hud.beginFrame();
         // One authority on who owns the mouse: the window is focused and no menu is up.
-        // Menus are the ONLY thing that hands the cursor back — alt-tabbing counts because
+        // Menus are the ONLY thing that hands the cursor back, alt-tabbing counts because
         // focus is gone. Everything below reads this rather than testing buttons itself.
         const bool menuOpen = settingsOpen || lampPickerOpen;
         const bool mouseOurs = window->focused() && !menuOpen && !hud.wantsMouse();
@@ -851,6 +698,13 @@ int main(int argc, char** argv) {
                 in.jump = window->keyDown(GLFW_KEY_SPACE);
                 const glm::dvec3 before = player.position;
                 player.step(*world, in);
+                // The animals are solid: shoved aside, and a turtle pushes back a little.
+                const glm::dvec2 give = wildlife.interact(
+                    {player.position, vx::Player::kHalfWidth, vx::Player::kHeight,
+                     glm::vec3(player.velocity), true},
+                    *world);
+                if (give.x != 0.0 || give.y != 0.0)
+                    player.nudge(*world, give);
                 physAccum -= vx::Player::kTickDt;
                 // Footsteps, jumps, landings, splashes and swim strokes all live in
                 // PlayerSounds because every one of them is an edge that has to be
@@ -874,7 +728,13 @@ int main(int argc, char** argv) {
             camera.position = player.eye();
         } else {
             camera.update(*window, dt, hud.wantsMouse(), hud.wantsKeyboard(), mouseOurs);
+            // Flying through them still scatters them; nothing is shoved, a fly camera has no body.
+            const glm::vec3 flyVel = dt > 0.0f ? glm::vec3(camera.position - flyPrev) / dt : glm::vec3(0.0f);
+            wildlife.interact({camera.position - glm::dvec3(0.0, vx::Player::kEyeHeight, 0.0),
+                               vx::Player::kHalfWidth, vx::Player::kHeight, flyVel, false},
+                              *world);
         }
+        flyPrev = camera.position;
 
         if (!settingsOpen && !lampPickerOpen && camera.flying()) {
             const bool lmb = window->mouseDown(GLFW_MOUSE_BUTTON_LEFT);
@@ -885,11 +745,25 @@ int main(int argc, char** argv) {
                     return vx::blocks::opaque(b) || vx::blocks::isCross(b);
                 });
 
-            // Breaking is held, not clicked. Anything that changes what you are aiming at
-            // -- or letting go -- drops the progress, which is what makes the crack read as
+            // An animal in front of the block being aimed at takes the click instead: a punch
+            // on the press (knocked back, runs off, nothing hurt), and no digging past it.
+            float mobDist = 0.0f;
+            const int mob = lmb ? wildlife.pick(camera.position, camera.forward(), 4.5f, mobDist) : -1;
+            const bool mobFirst = mob >= 0 && (!hit.hit || double(mobDist) < hit.distance);
+            if (mobFirst && !lmbHeld) {
+                wildlife.punch(mob, camera.forward());
+                const glm::dvec3 at = wildlife.positionOf(mob);
+                const bool wet = wildlife.swimsAt(mob);
+                audio.playOccluded(wet ? "swim" : "land_hard", at, occlusionTo(at), wet ? 0.7f : 0.55f,
+                                   wet ? 1.35f : 1.8f);
+            }
+            lmbHeld = lmb;
+
+            // Breaking is held, not clicked. Anything that changes what you are aiming at,
+            // or letting go, drops the progress, which is what makes the crack read as
             // damage to THAT block rather than to a global timer.
             breaking = false;
-            if (lmb && hit.hit) {
+            if (lmb && hit.hit && !mobFirst) {
                 if (hit.voxel != breakTarget) {
                     breakTarget = hit.voxel;
                     breakProgress = 0.0f;
@@ -955,13 +829,29 @@ int main(int argc, char** argv) {
         // muffles the world bus and swaps the ambience bed. Computed here rather than next
         // to the render call because everything below wants it in the SAME frame the camera
         // moved, not one behind.
-        const bool eyeUnderwater =
-            vx::blocks::isWater(world->blockAtWorld(glm::ivec3(glm::floor(camera.position))));
+        //
+        // The top water cell holds the surface, and the swell lifts it and drops it: the eye is
+        // under it only below the surface as drawn, which can be a little past either edge of
+        // the cell. Testing the cell alone switched the fog on a fraction of a block early.
+        const bool eyeUnderwater = [&] {
+            const glm::ivec3 eye(glm::floor(camera.position));
+            const auto blockAt = [&](int x, int y, int z) { return world->blockAtWorld({x, y, z}); };
+            const auto wf = vx::WaterWaves::frame(now, camera.position, fx.waveStorm, fx.waves);
+            if (vx::blocks::isWater(blockAt(eye.x, eye.y, eye.z))) {
+                if (vx::blocks::isWater(blockAt(eye.x, eye.y + 1, eye.z)))
+                    return true;
+                return camera.position.y < vx::waterSurfaceY(wf, blockAt, camera.position, eye.y);
+            }
+            // a crest can reach past the top of its cell into the air above
+            if (vx::blocks::isWater(blockAt(eye.x, eye.y - 1, eye.z)))
+                return camera.position.y < vx::waterSurfaceY(wf, blockAt, camera.position, eye.y - 1);
+            return false;
+        }();
         audio.setUnderwater(eyeUnderwater);
         playerSounds.frame(audio, camera.position, eyeUnderwater, float(dt));
 
         // What the world sounds like from here. Sky light answers "how enclosed am I" for
-        // free — the light BFS has already done that work, so this is one chunk lookup
+        // free, the light BFS has already done that work, so this is one chunk lookup
         // rather than a cover raycast every frame.
         {
             const glm::ivec3 ear(glm::floor(camera.position));
@@ -991,6 +881,13 @@ int main(int argc, char** argv) {
                 stormLevel = std::clamp((fx.precip - 0.7f) / 0.3f, 0.0f, 1.0f) * (1.0f - fx.snow);
             }
             ambience.precip = fx.precip;
+            // The sea builds up under heavy rain and a storm and lies down again after, more
+            // slowly than the weather itself turns: about 20 s to rise, 40 to settle.
+            {
+                const float want = std::clamp(std::max(stormLevel, (fx.precip - 0.3f) / 0.7f), 0.0f, 1.0f);
+                const float rate = (want > fx.waveStorm ? 0.05f : 0.025f) * float(dt);
+                fx.waveStorm += std::clamp(want - fx.waveStorm, -rate, rate);
+            }
             {
                 const float snowing = (fx.snow > 0.5f && fx.precip > 0.05f) ? fx.precip : 0.0f;
                 const float melt = camera.position.y < 140.0 ? 0.03f : 0.008f;
@@ -1033,7 +930,7 @@ int main(int argc, char** argv) {
             ambience.nearWater = float(wet) / 27.0f;
             // Where the ear is standing: the generator's biome function at the ear and four
             // points around it (so a shoreline is heard before you are on it), plus a lattice
-            // count of what is physically here - leaves for the canopy, coral for the reef.
+            // count of what is physically here, leaves for the canopy, coral for the reef.
             {
                 constexpr int kSpread = 24;
                 const int offs[5][2] = {{0, 0}, {kSpread, 0}, {-kSpread, 0}, {0, kSpread},
@@ -1084,7 +981,7 @@ int main(int argc, char** argv) {
         }
         // Falling runs faster than water: 6 Hz makes a collapsing pile look like it is
         // being dragged down a step at a time, where gravity should read as quick. Costs
-        // nothing when nothing has been disturbed — the queue is empty and it returns.
+        // nothing when nothing has been disturbed, the queue is empty and it returns.
         static double fallClock = 0.0;
         fallClock += dt;
         if (fallClock >= 1.0 / 12.0) {
@@ -1093,7 +990,7 @@ int main(int argc, char** argv) {
             glm::ivec3 landedAt{0};
             world->stepFalling(renderer, *light, &landed, &landedAt);
             if (landed > 0) {
-                // One sound for the whole collapse, not one per block — thirty grains of
+                // One sound for the whole collapse, not one per block, thirty grains of
                 // sand arriving in the same tick is a single event to the ear. The count
                 // only sets how big it sounds.
                 const glm::dvec3 at(landedAt);
@@ -1147,7 +1044,7 @@ int main(int argc, char** argv) {
             world->collectDrawInfo(drawInfo, waterInfo);
             renderer.updateChunkMeta(drawInfo);
             renderer.updateWaterMeta(waterInfo);
-            // geometry changed, so cached cascades are holding stale casters - but only the
+            // geometry changed, so cached cascades are holding stale casters, but only the
             // ones that can see where it changed
             shadowMap.invalidateNear(world->takeDirtyNearest());
         }
@@ -1250,7 +1147,7 @@ int main(int argc, char** argv) {
         if (worldUi.saveRequested) {
             worldUi.saveRequested = false;
             world->saveDirty(); // the live folder has to hold the edits before we copy it
-            if (worldStore.save(worldUi.saveName, world->seed()))
+            if (worldStore.save(worldUi.saveName, world->seed(), world->genVersion()))
                 worldUi.saved = worldStore.list();
             else
                 VX_ERROR("world save failed: name must have at least one letter or digit");
@@ -1264,7 +1161,7 @@ int main(int argc, char** argv) {
 
         // Both of these swap the world out from under the renderer, so they share one path:
         // drain the workers, swap, then settle behind the loading screen. That last part is
-        // what was missing — a reset used to hand you an empty world and generate it around
+        // what was missing, a reset used to hand you an empty world and generate it around
         // you while you tried to play.
         const bool wantNew = worldUi.resetRequested;
         const bool wantLoad = worldUi.loadRequested && !worldUi.selected.empty();
@@ -1285,10 +1182,10 @@ int main(int argc, char** argv) {
             snowCover = 0.0f;
             farTerrain.reset();
             lightVolume.invalidate();
-            int newSeed = 0;
+            int newSeed = 0, newGen = vx::TerrainGenerator::kLatestVersion;
             const char* title = "voxelium";
-            if (wantLoad && worldStore.load(worldUi.selected, newSeed)) {
-                world->loadWorld(renderer, newSeed, worldStore.liveDir());
+            if (wantLoad && worldStore.load(worldUi.selected, newSeed, newGen)) {
+                world->loadWorld(renderer, newSeed, worldStore.liveDir(), newGen);
                 title = "loading world";
             } else {
                 newSeed = int(std::chrono::steady_clock::now().time_since_epoch().count() ^
@@ -1299,14 +1196,14 @@ int main(int argc, char** argv) {
                 title = "new world";
                 VX_INFO("new world, seed %d", newSeed);
             }
-            // Spawn on the new terrain, not wherever the old world left the camera — the
+            // Spawn on the new terrain, not wherever the old world left the camera, the
             // seed changed, so the ground under that point did too.
             {
-                constexpr int kSpawnX = 16, kSpawnZ = 16;
-                const int ground = world->generator().surfaceHeight(kSpawnX, kSpawnZ);
-                camera.position = {double(kSpawnX) + 0.5,
+                const glm::ivec2 sp = world->generator().spawnColumn();
+                const int ground = world->generator().surfaceHeight(sp.x, sp.y);
+                camera.position = {double(sp.x) + 0.5,
                                    double(std::max(ground, vx::kSeaLevelForSpawn) + 3),
-                                   double(kSpawnZ) + 0.5};
+                                   double(sp.y) + 0.5};
                 player.position = camera.position -
                                   glm::dvec3(0.0, vx::Player::kEyeHeight, 0.0);
                 player.velocity = {0.0, 0.0, 0.0};

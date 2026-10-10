@@ -12,7 +12,7 @@ namespace {
 
 // There is no world ceiling any more, so these are properties of the TERRAIN: the
 // generator never writes a solid voxel above kTerrainTop or below kTerrainBottom. Anything
-// out there that is not loaded is therefore open sky above and bedrock below — which is
+// out there that is not loaded is therefore open sky above and bedrock below, which is
 // what lets an unloaded neighbour be answered without a world bound.
 constexpr int kSkyAbove = kTerrainTop;
 constexpr int kRockBelow = kTerrainBottom;
@@ -25,7 +25,7 @@ ChunkPos chunkOf(const glm::ivec3& wp) {
 }
 
 // Chunk stores light at 8 bits/channel (0..255, see Chunk.hpp's light namespace) but BFS
-// below reasons in 16 discrete steps (0..15) throughout, unchanged - propagation distance,
+// below reasons in 16 discrete steps (0..15) throughout, unchanged, propagation distance,
 // neighbour comparisons, queue behaviour, all exactly as before this widening. *17 is exact
 // (15*17=255) so the round trip is lossless with no rounding ambiguity. The widened range's
 // real benefit shows up at MESH time, not here: GreedyMesher averages up to 4 neighbouring
@@ -36,7 +36,7 @@ constexpr int kLevelScale = 17;
 int storedFromLevel(int level) { return level * kLevelScale; }
 int levelFromStored(int stored) { return stored / kLevelScale; }
 
-// Accumulates wall time into `target` on scope exit, early return included — a seed phase's
+// Accumulates wall time into `target` on scope exit, early return included, a seed phase's
 // while loop can bail out mid-column via its own budget check, so the only exit that is
 // guaranteed to run is a destructor, not a line manually placed after the loop.
 class ScopedNanoAccum {
@@ -172,7 +172,7 @@ void LightEngine::beginSeedColumn(std::int32_t chunkX, std::int32_t chunkZ) {
     m_seed.y1 = y1;
     m_seed.skyAtTop = skyAtTop;
     // whole-chunk fast path: a uniform-air chunk above the surface is all direct sky. Only
-    // valid when the column actually reaches the sky — buried air is dark, not lit.
+    // valid when the column actually reaches the sky, buried air is dark, not lit.
     if (skyAtTop)
         for (int cy = y0; cy <= y1; ++cy)
             if (stack[cy - y0]->uniform() && stack[cy - y0]->uniformId() == blocks::Air)
@@ -234,7 +234,7 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
                 }
                 // The direct-sky column stops at anything that is not clear air. A cutout
                 // (leaves) does not BLOCK light, but it does not pass it at full strength
-                // either — so the descent ends here and the BFS carries it down from this
+                // either, so the descent ends here and the BFS carries it down from this
                 // voxel, attenuating per step. That is what makes a canopy dapple instead
                 // of either going black or letting a full-strength shaft through.
                 const BlockId b = c->get(dx, y & 31, dz);
@@ -255,7 +255,7 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
     // cell's sky voxels are sources from just above where its own descent stopped up to where
     // a neighbouring cell's stopped, plus the one over a cutout the descent stopped on. This
     // used to test each voxel's neighbours' CURRENT light, climbing from the surface until one
-    // was not dark, and the light BFS runs between the frames a seed is spread over - so where
+    // was not dark, and the light BFS runs between the frames a seed is spread over, so where
     // a climb stopped, and with it whether the pocket above got any light, depended on timing.
     // Two loads of the same place disagreed by one or two levels on whole runs of voxels.
     //
@@ -308,7 +308,7 @@ bool LightEngine::stepSeedColumn(double budgetMs) {
         m_seed.phase = SeedPhase::Emissive;
     }
 
-    // emissive blocks — palette check skips the scan for almost every chunk
+    // emissive blocks, palette check skips the scan for almost every chunk
     {
         ScopedNanoAccum _timeThis(m_seedPhaseNanos.emissive);
         while (m_seed.cursor < m_seed.y1 - m_seed.y0 + 1) {
@@ -416,7 +416,7 @@ void LightEngine::seedNewChunk(ChunkPos pos, bool skyAbove) {
         // propagateStep already carries full-strength sky straight down with no
         // attenuation, so re-propagating that layer writes exactly what the descent would
         // have, and it costs nothing where the neighbour above is dark (almost everywhere
-        // at these depths — the BFS dies on the first step).
+        // at these depths, the BFS dies on the first step).
         for (int z = 0; z < kChunkSize; ++z)
             for (int x = 0; x < kChunkSize; ++x)
                 if (light::sky(above->lightAt(x, 0, z)) > 0)
@@ -425,7 +425,7 @@ void LightEngine::seedNewChunk(ChunkPos pos, bool skyAbove) {
         // New top of the band on a column that reaches daylight. Nothing above to descend
         // from, so the sky comes straight in at the top face. This used to set every open voxel
         // to full sky and queue all of them: 32768 entries for a chunk of plain air, times every
-        // column in view each time the camera climbed a chunk - 219M queued over one hill, far
+        // column in view each time the camera climbed a chunk, 219M queued over one hill, far
         // faster than the light could ever be spread, and the first block edit afterwards
         // settled the lot (a freeze of seconds). Now the same descent and the same
         // only-where-it-can-go sources as the column seed; the faces are settled below.
@@ -537,7 +537,7 @@ void LightEngine::removeStep(int channel, Removal r) {
             setLevel(n, channel, 0);
             m_removal[channel].push_back({n, std::uint8_t(nl)});
         } else {
-            // still lit from elsewhere — becomes a re-propagation source
+            // still lit from elsewhere, becomes a re-propagation source
             enqueue(channel, n);
         }
     }
@@ -577,7 +577,7 @@ void LightEngine::onBlockChanged(const glm::ivec3& wp, BlockId oldId, BlockId ne
             continue; // this channel is unchanged; touching it would only churn the BFS
         // Retract first, using the level this voxel ACTUALLY holds rather than the old
         // emitter's nominal value. Swapping a bright emitter for a dimmer one used to take
-        // the "just seed the new value" path, and seeding only ever propagates — it never
+        // the "just seed the new value" path, and seeding only ever propagates, it never
         // pulls back what the old one already lit, so the bright pool stayed and the new
         // colour bled into it. Unreachable while Glow was the only emitter; the lamps make
         // emitter-to-emitter a normal move.
@@ -595,8 +595,8 @@ void LightEngine::onBlockChanged(const glm::ivec3& wp, BlockId oldId, BlockId ne
 
 // A queue is only cleared once it has fully drained, and while the world streams in it never
 // does: new work arrives every frame. The consumed front was then never given back, so the
-// vector held every voxel queued since it last ran dry - 67M entries (800 MB) after half a
-// minute of flying at radius 32 - and each time it outgrew its capacity it copied all of that,
+// vector held every voxel queued since it last ran dry, 67M entries (800 MB) after half a
+// minute of flying at radius 32, and each time it outgrew its capacity it copied all of that,
 // which was a 33, then 68, then 132 ms frame. Dropping the consumed front once it is the bigger
 // half keeps the vector near the live backlog, at O(1) per entry overall, because only the
 // smaller, live part is ever moved.
@@ -683,7 +683,7 @@ void LightEngine::process(double budgetMs) {
 }
 
 std::uint32_t LightEngine::lightAt(const glm::ivec3& wp) const {
-    // debug/verification only, and callers reach it at arbitrary times — never trust a
+    // debug/verification only, and callers reach it at arbitrary times, never trust a
     // cache filled by whatever ran last
     const_cast<LightEngine*>(this)->resetChunkCache();
     return light::pack(getLevel(wp, R), getLevel(wp, G), getLevel(wp, B),

@@ -19,14 +19,14 @@ namespace {
 
 // ONE list, walked by load, save and the clamp pass alike.
 //
-// This used to be three separate lists — an if/else chain in load, a stream of `<<` in save,
-// and a run of std::clamp calls between them — and they drifted, silently and twice. At the
+// This used to be three separate lists, an if/else chain in load, a stream of `<<` in save,
+// and a run of std::clamp calls between them, and they drifted, silently and twice. At the
 // point this was written load read 37 keys and save wrote 29, so autoExposure, emissive,
 // lensFlare, cloudShadow, contactShadow, leafSss, relief and lampSwatch were read on startup
 // and never written: every one of them reset to its default on the next launch, and seven
 // were Tier 3 features that had been built and tuned. It happened AGAIN while adding the
 // audio buses, in the same sitting as the fix. (contactShadow itself was later removed
-// entirely — screen-space contact shadows never earned their compounding-darkness cost.)
+// entirely, screen-space contact shadows never earned their compounding-darkness cost.)
 //
 // A key cannot now exist in one place and not another, because there is only one place. The
 // cost of a new setting is one row.
@@ -38,7 +38,7 @@ struct Bound {
 };
 
 // Every setting the engine persists. Adding one is a row here and nothing else.
-constexpr std::size_t kSettingCount = 50;
+constexpr std::size_t kSettingCount = 51;
 
 // Binds the schema to a live set of values. Non-const because load writes through it; save
 // binds a local copy for the same reason, which is cheaper than a second const walk and
@@ -86,6 +86,7 @@ std::array<Bound, kSettingCount> bind(FxToggles& fx, bool& vsync, bool& caveCull
         {"audioOcclusion", T::Float, &fx.audioOcclusion, 0.0f, 1.0f},
         {"dither", T::Float, &fx.dither, 0.0f, 2.0f},
         {"autoWeather", T::Bool, &fx.autoWeather, 0, 0},
+        {"waves", T::Bool, &fx.waves, 0, 0},
         {"farTerrain", T::Bool, &fx.farTerrain, 0, 0},
         {"detailDist", T::Float, &fx.lodDetail, 1.0f, 2.0f},
         {"precip", T::Float, &fx.precip, 0.0f, 1.0f},
@@ -109,7 +110,7 @@ std::string_view trim(std::string_view s) {
     return s;
 }
 
-// "true"/"1" on, anything else off — keeps hand-edited files forgiving
+// "true"/"1" on, anything else off, keeps hand-edited files forgiving
 void readInto(const Bound& b, std::string_view v) {
     switch (b.type) {
     case Bound::Type::Bool:
@@ -136,7 +137,7 @@ void readInto(const Bound& b, std::string_view v) {
 }
 
 // A corrupt or truncated file could leave nonsense behind, so every numeric value is pinned
-// to the same range the ESC menu enforces — a bad value must not be able to wedge the app on
+// to the same range the ESC menu enforces, a bad value must not be able to wedge the app on
 // the next launch.
 void clampTo(const Bound& b) {
     if (b.type == Bound::Type::Int) {
@@ -268,7 +269,7 @@ int perturbAll(FxToggles& fx, bool& vsync, bool& caveCull, int& radius, float& f
         }
         case Bound::Type::Int: {
             int& v = *static_cast<int*>(b.ptr);
-            // Two candidates so the perturbed value is never accidentally the original —
+            // Two candidates so the perturbed value is never accidentally the original,
             // a field that did not actually change would let a broken load pass unnoticed.
             const int a = int(b.lo) + int((b.hi - b.lo) * 0.37f);
             const int c = int(b.lo) + int((b.hi - b.lo) * 0.61f);

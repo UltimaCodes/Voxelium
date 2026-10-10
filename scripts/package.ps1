@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Builds a distributable Voxelium zip: the Release exe, its MinGW runtime DLLs, and the
-  assets/sounds it reads at startup -- nothing else. No build system installs on its own;
+  assets/sounds it reads at startup, nothing else. No build system installs on its own;
   this only stages and zips what cmake --build already produced.
 
 .PARAMETER Config
@@ -25,7 +25,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root "build\mingw\$Config\voxelium.exe"
 if (-not (Test-Path $exe)) {
-    throw "$exe does not exist -- build it first: cmake --build build/mingw --config $Config"
+    throw "$exe does not exist, build it first: cmake --build build/mingw --config $Config"
 }
 
 $stage = Join-Path $root "dist\voxelium"
@@ -36,16 +36,15 @@ Copy-Item $exe $stage
 foreach ($dll in @("libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll")) {
     $src = Join-Path $MingwBin $dll
     if (-not (Test-Path $src)) {
-        throw "$src not found -- pass -MingwBin pointing at your GCC's bin directory"
+        throw "$src not found, pass -MingwBin pointing at your GCC's bin directory"
     }
     Copy-Item $src $stage
 }
 Copy-Item (Join-Path $root "assets") (Join-Path $stage "assets") -Recurse
-# sounds/ ships its own README with provenance; that file plus the CC0 clips is exactly
-# what .gitignore already lets through, so mirroring that filter here keeps this script from
-# quietly shipping something that was never meant to be redistributed.
+# Only the CC0 clips (credited in README.md), which is exactly what .gitignore already lets
+# through, so mirroring that filter here keeps this script from quietly shipping something
+# that was never meant to be redistributed.
 New-Item -ItemType Directory -Path (Join-Path $stage "sounds") -Force | Out-Null
-Copy-Item (Join-Path $root "sounds\README.md") (Join-Path $stage "sounds") -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $root "sounds\*.flac") (Join-Path $stage "sounds") -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $root "sounds\*.wav") (Join-Path $stage "sounds") -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $root "README.md") $stage

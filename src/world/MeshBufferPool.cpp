@@ -13,7 +13,7 @@ std::vector<PackedQuad>* MeshBufferPool::checkout() {
 }
 
 void MeshBufferPool::checkin(std::vector<PackedQuad>* buf) {
-    buf->clear(); // keeps capacity — the reason this exists
+    buf->clear(); // keeps capacity, the reason this exists
     m_freeList.push_back(buf);
 }
 

@@ -27,7 +27,7 @@ int g_hits = 0;
 int g_misses = 0;
 
 // GL_ARB_parallel_shader_compile. Not in this glad build, so the entry point is fetched
-// by name — it only ever raises a thread-count ceiling, so missing it is harmless.
+// by name, it only ever raises a thread-count ceiling, so missing it is harmless.
 using PFNMaxShaderCompilerThreads = void(APIENTRY*)(GLuint);
 constexpr GLenum kMaxShaderCompilerThreadsArb = 0x91B0;
 
@@ -52,7 +52,7 @@ std::string readTextFile(const std::filesystem::path& path) {
 
 // Minimal `#include "name.glsl"` for shaders, resolved relative to the including file.
 // GLSL has none, and the alternative is keeping the same function in two shaders and
-// watching them drift — which for a density field sampled by both the sky and the terrain
+// watching them drift, which for a density field sampled by both the sky and the terrain
 // would show up as cloud shadows that do not match the clouds.
 //
 // Expanded BEFORE the source is hashed for the program cache, so editing an included file
@@ -90,7 +90,7 @@ std::string readShaderSource(const std::filesystem::path& path, int depth = 0) {
 // non-comment token, so a define cannot simply be prepended.
 //
 // The injected block carries a #line directive so compiler errors keep reporting the line
-// numbers of the ORIGINAL file — without it every message in an injected shader is off by
+// numbers of the ORIGINAL file, without it every message in an injected shader is off by
 // the number of lines added, which is the sort of small lie that costs an hour.
 std::string injectDefines(const std::string& src, std::string_view defines) {
     if (defines.empty())
@@ -203,7 +203,7 @@ GLuint compileStage(GLenum stage, const std::string& source, const char* label) 
 }
 
 // Shared tail: restore from cache if we can, otherwise compile every stage and link.
-// Never queries link status — that is resolveProgram's job, and querying here is exactly
+// Never queries link status, that is resolveProgram's job, and querying here is exactly
 // what serializes the driver's compiler threads.
 ProgramJob buildProgram(std::uint64_t key, std::string label,
                         std::initializer_list<std::pair<GLenum, const std::string*>> stages) {
@@ -288,6 +288,32 @@ ProgramJob submitProgram(const std::filesystem::path& vertPath,
     key = mixHash(key, g_glIdentity);
     return buildProgram(key, vertPath.filename().string() + " + " + fragPath.filename().string(),
                         {{GL_VERTEX_SHADER, &vertSrc}, {GL_FRAGMENT_SHADER, &fragSrc}});
+}
+
+ProgramJob submitTessProgram(const std::filesystem::path& vertPath,
+                             const std::filesystem::path& tescPath,
+                             const std::filesystem::path& tesePath,
+                             const std::filesystem::path& fragPath, std::string_view defines) {
+    const std::string vertSrc = injectDefines(readShaderSource(vertPath), defines);
+    const std::string tescSrc = injectDefines(readShaderSource(tescPath), defines);
+    const std::string teseSrc = injectDefines(readShaderSource(tesePath), defines);
+    const std::string fragSrc = injectDefines(readShaderSource(fragPath), defines);
+    if (vertSrc.empty() || tescSrc.empty() || teseSrc.empty() || fragSrc.empty())
+        return {};
+
+    // salted so it can never share a key with a two-stage program over the same vert + frag
+    constexpr std::uint64_t kTessSalt = 0x5be0cd19137e2179ull;
+    std::uint64_t key = mixHash(hashBytes(vertSrc.data(), vertSrc.size()),
+                                hashBytes(tescSrc.data(), tescSrc.size()));
+    key = mixHash(key, hashBytes(teseSrc.data(), teseSrc.size()));
+    key = mixHash(key, hashBytes(fragSrc.data(), fragSrc.size()));
+    key = mixHash(key, mixHash(g_glIdentity, kTessSalt));
+    return buildProgram(key, vertPath.filename().string() + " + " + tesePath.filename().string() +
+                                 " + " + fragPath.filename().string(),
+                        {{GL_VERTEX_SHADER, &vertSrc},
+                         {GL_TESS_CONTROL_SHADER, &tescSrc},
+                         {GL_TESS_EVALUATION_SHADER, &teseSrc},
+                         {GL_FRAGMENT_SHADER, &fragSrc}});
 }
 
 ProgramJob submitComputeProgram(const std::filesystem::path& compPath,

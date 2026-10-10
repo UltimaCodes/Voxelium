@@ -29,6 +29,9 @@ public:
     bool inWater = false; // chest-deep in water as of the last step(); drives swim + fog
 
     void step(const ChunkManager& world, const PlayerInput& input);
+    // Moves the player sideways (x, z) by d, stopping at walls like a step does: the give when
+    // something solid but not a block is in the way (an animal, Wildlife::interact).
+    void nudge(const ChunkManager& world, const glm::dvec2& d);
     glm::dvec3 eye() const { return position + glm::dvec3(0.0, kEyeHeight, 0.0); }
 
 private:

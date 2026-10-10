@@ -2,7 +2,7 @@
 # tag. FetchContent over git submodules so a fresh clone configures with zero manual steps;
 # SYSTEM so dependency headers are exempt from our -Werror/-WX warning gate.
 #
-# Dependencies arrive at the milestone that needs them — nothing is fetched speculatively.
+# Dependencies arrive at the milestone that needs them, nothing is fetched speculatively.
 
 include(FetchContent)
 
@@ -74,15 +74,15 @@ FetchContent_Declare(miniaudio
 
 FetchContent_MakeAvailable(glfw glm imgui unordered_dense fastnoise2 stb miniaudio)
 
-# stb ships no CMake — expose it as a header-only interface target.
+# stb ships no CMake, expose it as a header-only interface target.
 add_library(stb INTERFACE)
 target_include_directories(stb SYSTEM INTERFACE ${stb_SOURCE_DIR})
 
-# miniaudio's own CMakeLists builds tests/examples we don't want — take the header only.
+# miniaudio's own CMakeLists builds tests/examples we don't want, take the header only.
 add_library(miniaudio INTERFACE)
 target_include_directories(miniaudio SYSTEM INTERFACE ${miniaudio_SOURCE_DIR})
 
-# imgui ships no CMakeLists — build the core + the two backends we use as a static lib.
+# imgui ships no CMakeLists, build the core + the two backends we use as a static lib.
 add_library(imgui STATIC
     ${imgui_SOURCE_DIR}/imgui.cpp
     ${imgui_SOURCE_DIR}/imgui_draw.cpp

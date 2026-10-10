@@ -31,7 +31,7 @@ void shutdownShaderCache(); // reports hits/misses
 // Two-phase load. submit() starts a program compiling+linking and returns immediately;
 // resolve() waits for it. Calling submit on everything first leaves the whole set in
 // flight at once, which is the only way the driver's compiler threads have anything to
-// overlap — the one-call-at-a-time form blocks on each program's link status before the
+// overlap, the one-call-at-a-time form blocks on each program's link status before the
 // next one is even created.
 struct ProgramJob {
     unsigned int program = 0;
@@ -39,11 +39,11 @@ struct ProgramJob {
     std::string label;
 };
 
-// `defines` is injected verbatim after the `#version` line — e.g. "#define VX_QUALITY 3\n".
+// `defines` is injected verbatim after the `#version` line, e.g. "#define VX_QUALITY 3\n".
 //
 // This is how the quality presets reach the shaders. The alternative was uniform loop
 // bounds, but a dynamic bound does not unroll, so it would have made the TOP preset slower
-// than the build had no presets at all — shipping a quality system that regresses Ultra is
+// than the build had no presets at all, shipping a quality system that regresses Ultra is
 // the wrong trade.
 //
 // It needs no new bookkeeping because the cache key already hashes the FULLY EXPANDED source
@@ -53,6 +53,11 @@ struct ProgramJob {
 ProgramJob submitProgram(const std::filesystem::path& vertPath,
                          const std::filesystem::path& fragPath,
                          std::string_view defines = {});
+// Vertex, tessellation control, tessellation evaluation and fragment, for the water surface.
+ProgramJob submitTessProgram(const std::filesystem::path& vertPath,
+                             const std::filesystem::path& tescPath,
+                             const std::filesystem::path& tesePath,
+                             const std::filesystem::path& fragPath, std::string_view defines = {});
 ProgramJob submitComputeProgram(const std::filesystem::path& compPath,
                                 std::string_view defines = {});
 unsigned int resolveProgram(ProgramJob& job);

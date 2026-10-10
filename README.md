@@ -1,204 +1,140 @@
 # Voxelium
 
-voxel engine from scratch in C++20 + OpenGL 4.6 (core profile, DSA everywhere). no engine,
-no bloat. every optimization below is a measured number, not a vibe — see "what's in it".
+a voxel game I wrote from scratch in C++ and OpenGL, no engine. endless worlds with real seas,
+mountain ranges, caves, weather and animals, all streamed in and lit in real time.
 
-![flythrough](assets/flythrough.gif)
+![a mountain range over the sea](media/coast.jpg)
 
-captured with the engine's own `--flythrough` harness mode — a fully-settled world first
-(no streaming pop-in), then a smoothly interpolated camera path, exactly so a promotional
-clip never shows the thing the rest of the test suite exists to catch.
+| | |
+|---|---|
+| ![pyramids in the desert](media/pyramid.jpg) | ![a thunderstorm over the sea](media/storm.jpg) |
+| ![a lighthouse at night](media/night.jpg) | ![a range from the foothills](media/range.jpg) |
+
+## download
+
+grab `voxelium-win64.zip` from the releases page, unzip it anywhere and run `voxelium.exe`.
+windows, and any GPU with OpenGL 4.6.
+
+## the world
+
+every world comes from a seed. there are proper seas with islands and deep water past the
+shallow shelves, coasts that start with a wide sandy beach and only slowly climb into the
+country behind it, mountain ranges that run for kilometres with foothills, bare rock and snow
+on top, and big deserts full of dunes and cacti. forests are oak, birch and spruce with open
+meadows between the dense parts, and spruce takes over up in the cold.
+
+you can see terrain about 5 km out, way past the chunks that are actually loaded, so the
+mountains across the sea are really there instead of the world ending in fog. there's no
+height limit either, dig down or build up as far as you want.
+
+![a whole world, straight from the generator](media/map.jpg)
+
+*one world's map, straight from the generator, about 8 km across*
+
+## underground
+
+caves are big caverns, long winding tunnels and the odd ravine, with water pooled in the
+lowest ones and stalactites hanging off the ceilings. coal and iron sit at their own depths,
+and gravel in the roof comes down when you dig under it. caves are actually dark: the only
+light is what's down there with you (glow crystals, your lamps) and whatever gets in from the
+openings, and lamp light hangs in the air a little, so a lamp makes a pool of light you walk
+out of into the dark.
+
+old mineshafts run through the caves with lamps in the beams and plank bridges over the drops.
+
+## structures
+
+lighthouses on the coast (the lantern turns into a beacon at night), shipwrecks on the
+seabed, broken ruins out in the desert, and sandstone pyramids with a lit chamber inside and
+something hidden under it.
+
+## water
+
+water flows, and sand and gravel fall. the sea has real waves, flat at the beach and bigger
+over deep water, and they get a lot bigger in a storm. it reflects the world around it, throws
+caustics on the seabed and has light shafts coming down through it. under it there are coral
+reefs (branching, brain, tube and glowing coral further down), kelp forests and seagrass.
+
+## weather and sky
+
+the weather runs itself: clouds build up, it rains or snows for a while, then it clears. no
+rain over deserts, snow up on the peaks, and mist over the water at sunrise. the worst storms
+are thunderstorms, with lightning bolts and thunder that arrives later the further away it
+struck. snow settles while it falls and melts once it stops, and things only get wet where the
+rain can actually reach, so caves and overhangs stay dry.
+
+clouds cast shadows that roll across the ground, sunlight comes through the gaps in tree
+canopies, and at night the moon lights the hills and casts its own shadows. the air changes
+with where you are too: dusty over a desert, cool and salty over the sea, a bit green in a
+forest.
+
+## life
+
+butterflies by day, fireflies at night, gulls and bird flocks overhead, fish in the water,
+crabs on the beaches, turtles in the shallows and jellyfish that glow after dark. they're all
+solid: you can't walk through them, punching one knocks it back and sends it running, and
+swimming into a school of fish scatters it.
+
+particles have physics too. block shards bounce and slide to a stop, sand puffs up under your
+feet, sand streams across the dunes in the wind, and gusts sweep through the grass and leaves.
 
 ## building
 
-needs cmake 3.25+, a C++20 compiler, and git + network on the first configure (deps are
-fetched and pinned in `cmake/Dependencies.cmake`, glad is vendored in `external/`).
+hold left click to break (blocks have hardness, and you can see the crack spread), middle
+click to place, F4 for the hotbar. lamps come in 25 colours, middle click one to change it.
+save a world from the ESC menu under any name; only your edits are stored and the terrain
+comes back from the seed, so a save is a few KB.
 
-windows with gcc/mingw (what I use, no visual studio needed):
+## sound
+
+every block sounds like what it's made of, footsteps included. landing gets heavier the
+further you fell, and there are splashes, swim strokes and bubbles. each place has its own
+ambience: birds in the woods, cicadas, frogs at dusk, desert wind, surf and gulls on a beach,
+a low hum over a reef, drips in caves. everything gets muffled underwater and through rock.
+
+## settings
+
+Low / Medium / High / Ultra presets, or change anything and it goes to custom. fov, the colour
+grade, bloom and weather have their own tab, plus audio volumes and your worlds. if Ultra is
+slow, turn **detail dist** down first, it's the biggest cost by far. the whole loaded world is
+drawn in a single GPU call and the lighting runs on its own thread, which is most of why it
+holds up at big render distances.
+
+## controls
+
+- wasd + mouse, space to jump, F5 switches walk/fly (fly: hold RMB, space/ctrl up/down,
+  shift for fast, scroll for speed)
+- hold LMB to break, MMB to place, F4 for the hotbar (1-8 or scroll)
+- MMB on a lamp picks its colour
+- ESC for settings (it pauses), F3 for the debug HUD, F2 saves your edits
+
+## building it yourself
+
+needs cmake 3.25+, a C++20 compiler, and internet on the first configure.
 
     cmake --preset mingw
     cmake --build --preset mingw-release
 
-linux:
+that's windows with gcc/mingw, no visual studio needed. on linux use `gcc` and `gcc-release`.
+it opens straight in Rider or CLion too.
 
-    cmake --preset gcc
-    cmake --build --preset gcc-release
+![flythrough](assets/flythrough.gif)
 
-there's also an `msvc` preset if you have VS lying around. I don't, so it's unverified.
+## credits
 
-`harden` is the same build with libstdc++ container assertions turned on (`cmake --preset
-harden`, `cmake --build --preset harden-release`). worth running when you suspect a data
-race — the assertions are the reason a real one got caught, and unlike a debug build this
-one is fast enough to actually stream a world.
+the bundled textures and recorded sounds are CC0, from opengameart.org:
 
-works out of the box in JetBrains Rider/CLion — open the repo folder, pick the `mingw`
-preset (or the IDE's bundled toolchain), hit run.
+- textures: [16x16 Block Texture Set](https://opengameart.org/content/16x16-block-texture-set) by ARoachIFoundOnMyPillow
+- footsteps: [Fantozzi's Footsteps](https://opengameart.org/content/fantozzis-footsteps-grasssand-stone) by Fantozzi
+- blocks, water and thunder: [75 CC0 breaking / falling / hit SFX](https://opengameart.org/content/75-cc0-breaking-falling-hit-sfx),
+  [100 CC0 SFX #2](https://opengameart.org/content/100-cc0-sfx-2) and
+  [40 CC0 water / splash / slime SFX](https://opengameart.org/content/40-cc0-water-splash-slime-sfx) by rubberduck
+- caves: [Loopable Dungeon Ambience](https://opengameart.org/content/loopable-dungeon-ambience) by JaggedStone,
+  [Dripping water loop](https://opengameart.org/content/dripping-water-loop) by Independent.nu
+- night: [Crickets Ambient Noise](https://opengameart.org/content/crickets-ambient-noise-loopable) by Wolfgang_ (recorded by Ted Kerr)
+- day: [Forest Ambience](https://opengameart.org/content/forest-ambience) by TinyWorlds
+- beach: [Beach Ocean Waves](https://opengameart.org/content/beach-ocean-waves) by jasinski,
+  [Solo Seagull Sound Effects](https://opengameart.org/content/solo-seagull-sound-effects) by Rango Mango
+- cicadas: [Swamp Environment Audio](https://opengameart.org/content/swamp-environment-audio) by LokiF
 
-## running
-
-run `voxelium` from anywhere — it finds `assets/` by walking up from the exe, so build
-trees and IDE working dirs just work.
-
-controls:
-
-- F3 debug HUD, ESC settings/pause, F4 hotbar, F5 walk/fly, F2 save edited chunks
-- fly: hold RMB, wasd + space/ctrl, shift = fast, scroll = speed
-- walk: wasd, space to jump, mouse look
-- LMB **hold** to break (blocks have hardness, and the crack shows on the block), MMB place
-- MMB while looking at a lamp opens its colour picker; the colour sticks for lamps you place
-- F4 opens the hotbar (keys 1-8 or scroll to pick a block)
-
-ESC opens the settings menu (it pauses too), in five tabs:
-
-- **quality** — Low / Medium / High / Ultra presets, plus everything they set: render
-  distance, render scale, the shader tier, shadow map size, and each effect toggle. the
-  preset is worked out from the values rather than remembered, so touching any of them
-  flips it to "custom" straight away. **detail dist** sits under render distance: how far
-  out the ground stays full-detail before it goes coarser. the presets set it too (Ultra
-  reaches furthest, 2.0), and at a big render distance it's the biggest single cost there
-  is: at 32 chunks and 720p on an RTX 2070 SUPER, 2.0 is about 12 ms a frame and 1.25 about
-  9. if Ultra is too slow, pulling this in is the first thing to try; mountains across a
-  lake go blocky sooner.
-- **visuals** — the things a preset deliberately does *not* touch, because they are taste
-  and not performance: fov, crosshair, day/night cycle, night vision, exposure, bloom,
-  and the grade (saturation, contrast, temperature, vignette, grain).
-- **audio** — master plus world/interface/ambience buses, and how much solid rock muffles a
-  sound heard through it.
-- **world** — seed, save, load, delete, new world.
-- **controls** — key reference.
-
-presets are measured, not guessed: **Low 3.47 / Medium 4.61 / High 6.09 / Ultra 7.74 ms**
-at 1280x720 (mean of the three bench views). High is deliberately the build that existed
-before presets did, so the others are an A/B against a known reference. changing the tier
-recompiles the shaders — sample counts are compile-time constants, because a uniform loop
-bound doesn't unroll and would make Ultra slower than having no presets at all. the binary
-cache means the second visit to a preset is nearly free.
-
-F3 is the read-only diagnostics overlay — frame graph, timings, chunk/arena stats, log.
-
-weather is in the visuals tab: rain, snow, and wet surfaces that only get wet where the
-sky can actually reach them — caves, overhangs and ledge undersides stay dry, because the
-shading reads the same voxel sky access the sun does.
-
-it also runs itself. with **auto weather** on (the default) the clouds build for a while, it
-rains or snows for a minute or two, then it clears — no rain over desert, snow up on the
-peaks, and a mist at sunrise that hangs thickest over water. the thickening clouds and their
-shadows come from the same coverage field, so a storm rolling in darkens the ground under it
-instead of just painting the sky grey. turn it off and the sliders are yours again.
-
-cloud shadows are one small texture drawn per frame and read with a few taps along the sun
-ray, and the shadow cascades reach as far as you can see. thick tree canopy lets light
-through in gaps, so you get dappled floors and shafts rather than a flat dark blob.
-
-night is lit by the moon, not by a raised ambient floor — it rides the same shadow cascades
-the sun does, so hills have a lit side after dark and the fill can stay low.
-
-underground is actually dark. a cave only gets light from what's down there with you (glow
-crystals, lamps) and from the sky near its openings, so a lamp makes a pool of light you walk
-out of into the dark instead of every wall sitting at the same grey. the light hangs in the air
-a little too, so lamps glow rather than just painting the rock around them, and the auto
-exposure only takes the edge off the dark instead of turning a cave into daytime.
-
-## sound
-
-blocks sound like what they're made of, footsteps included. breaking, placing and walking
-each try the exact block first, then its **material** (stone, wood, glass, grass, sand,
-snow, dirt, gravel, water), then a generic clip — which matters because this engine stores
-data in the block id, so water is seven ids and a lamp is twenty-five, and keying audio on
-the id alone meant twenty-five copies of one file.
-
-you also get: a scuff when you jump, a landing that gets heavier the further you fell (a
-step off one block is a stride, not a drop), splashes going into and out of water, swim
-strokes, and bubbles while your head is under.
-
-ambience is a pile of looping beds crossfaded by where you actually are — day, night, wind,
-cave, deep underground, underwater, rain, near water, and now the biomes: birdsong under
-leaves, cicadas, frogs at dusk, desert wind, surf and gulls on a beach, and a low reef hum
-underwater. "am i in a cave" is read off the
-voxel **sky light** rather than by casting rays, since the light engine has already worked
-that out, and it needs you to be enclosed *and* underground, so an overhang isn't a cave.
-the worst downpours are thunderstorms: a bolt that forks down out of the cloud deck, a flash across the sky
-and everything under it, and the thunder arriving after, later and quieter the further off it struck.
-
-going underwater runs the world and ambience through a real low-pass sweeping 18 kHz down
-to 700 Hz — menus stay dry, because a menu click isn't in the water with you. sounds are
-also muffled by solid blocks between them and your ear, one raycast per sound, with its own
-slider.
-
-everything bundled is **CC0** or made here, with its source listed in `sounds/README.md` —
-surf, gulls, cave drips and cicadas are real CC0 recordings assembled into loops by
-`scripts/build_ambience_recordings.py`, and the rest of the biome beds are synthesized by
-`scripts/gen_ambience.py`. no clip is required — delete any of them and the engine just stays quiet for that one. drop your own
-in and they take over; the naming rules are in that same file.
-
-## title screen
-
-the game opens on a title screen over a live view of a real world: a coast picked out of the seed, orbited slowly in
-morning light, rendered by the game's own pipeline. **new world** takes a seed (or rolls one) and shows that world
-behind the menu as you type, **continue** lists your saves as cards, **settings** is the same panel as in game, and the
-loading screen sits over the same view while the chunks build.
-
-## worlds
-
-every launch rolls a **new seed**, so the world you are in is scratch. if you want to keep
-one, open ESC, give it a name and hit save — it lands in `saves/worlds/<name>/` with the
-seed that made it. the same panel lists what you have saved (seed and size) and will load
-or delete any of them. loading and starting a new world both go behind the loading screen,
-so the world is built before you are standing in it.
-
-only your edits are stored, never the terrain — that regenerates from the seed — so a saved
-world is usually a few tens of KB.
-
-## biomes
-
-besides the usual hills, forests and mountains there's **desert** (dunes, sandstone, cacti,
-dead brush) and **ocean**: shallow reefs with branching, brain and tube coral, kelp forests,
-seagrass, and glowing coral for deeper water. beaches have their own sand with a shell
-pattern in it instead of plain desert sand, palm trees leaning over the water, and
-waterlogged plants that still count as water for the fluid sim and for swimming. the terrain
-is still a pure function of the seed and the column, so none of it needs neighbour lookups
-or breaks streaming.
-
-trees come in species now: oak, birch (white bark, black scars) and spruce (dark bark, needles), with
-spruce taking over up in the cold and a density field that makes meadows and proper forests instead of
-one even orchard. deserts are a climate rather than a patch of sand - dry, inland, low and rolling -
-so there is always a belt of ordinary country and a beach between one and the sea.
-
-past the chunks that are loaded there is a **far horizon**: a coarse copy of the terrain out to about
-5 km, sampled straight from the generator and built on a worker, so distant mountains, bays and coastlines are
-there instead of the world ending in haze. it has no shadows and no detail and costs almost nothing.
-
-it isn't just scenery either — butterflies by day, fireflies at night, gulls and bird flocks
-crossing overhead, fish you can see through the water, falling leaves in forests. the animals are
-built from small boxes (wings that beat, tails that wag) so they look right from any angle, with no textures.
-
-particles have physics: shards bounce and slide to a stop, dust and sand drift in the same gusts that
-lean the grass, sand and snow puff up under your feet (more when you land), sand streams across dunes
-in the wind, and rain splashes off whatever it hits. wind comes through in gusts that sweep across the
-grass and leaves rather than every blade swaying in lockstep.
-
-the weather has a look to it: haze goes warm and dusty over a desert, cool and salty over the sea and faintly green in a
-forest. snow settles on the ground while it snows, on roofs and canopies first, and melts once it stops. crabs scuttle
-about on the beaches, turtles glide through the shallows, and jellyfish drift in deeper water and glow after dark.
-lighthouses stand on the low coast (the lantern shows as a beacon at night), shipwrecks lie on the seabed, and broken
-ruins sit out in the desert.
-
-## what's in it
-
-12 milestones deep:
-binary greedy meshing + vertex pulling (16-byte quads, no VBO), palette-compressed chunks,
-a jthread job system, GPU-driven culling with the whole world in one indirect draw call,
-cave culling, flood-fill RGB block + sky lighting, FastNoise2 terrain with caves and ores,
-player physics + block editing, a forward HDR pipeline (cascaded shadows, SSAO,
-volumetrics, bloom, ACES), flowing water, falling sand and gravel, cross-plane grass and
-flowers, particles, and region-file persistence.
-
-there's no world height limit either — chunks exist at any Y, so you can dig or build as
-far as you like and the loaded band follows you.
-
-`voxelium --smoke [out.bmp]` renders offscreen, checks that pixels actually got drawn,
-writes a screenshot and exits 0/1. headless self-check, useful for CI later.
-
-`voxelium --flythrough [frames]` is what made the clip at the top of this file: settles a
-world, then interpolates the camera through a short path, writing one `flyframe_NNNN.bmp`
-per frame for something else to assemble into a GIF.
+the birds, desert wind, leaves, frogs and reef hum are synthesized by `scripts/gen_ambience.py`.

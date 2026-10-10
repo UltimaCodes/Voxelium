@@ -95,10 +95,10 @@ std::vector<WorldStore::Entry> WorldStore::list() const {
         std::ifstream in(e.path() / kMeta);
         std::string line;
         while (std::getline(in, line)) {
-            if (line.rfind("seed=", 0) != 0)
-                continue;
-            const std::string v = line.substr(5);
-            std::from_chars(v.data(), v.data() + v.size(), w.seed);
+            if (line.rfind("seed=", 0) == 0)
+                std::from_chars(line.data() + 5, line.data() + line.size(), w.seed);
+            else if (line.rfind("gen=", 0) == 0)
+                std::from_chars(line.data() + 4, line.data() + line.size(), w.gen);
         }
         w.bytes = dirBytes(e.path());
         out.push_back(std::move(w));
@@ -108,7 +108,7 @@ std::vector<WorldStore::Entry> WorldStore::list() const {
     return out;
 }
 
-bool WorldStore::save(const std::string& name, int seed) const {
+bool WorldStore::save(const std::string& name, int seed, int gen) const {
     const std::string clean = sanitize(name);
     if (clean.empty())
         return false;
@@ -125,32 +125,37 @@ bool WorldStore::save(const std::string& name, int seed) const {
         if (!out)
             return false;
         out << "seed=" << seed << "\n";
+        out << "gen=" << gen << "\n";
     }
     const int n = copyRegions(liveDir(), dir);
-    VX_INFO("world saved: \"%s\" seed %d, %d region file(s)", clean.c_str(), seed, n);
+    VX_INFO("world saved: \"%s\" seed %d, generator %d, %d region file(s)", clean.c_str(), seed, gen, n);
     return true;
 }
 
-bool WorldStore::load(const std::string& name, int& seedOut) const {
+bool WorldStore::load(const std::string& name, int& seedOut, int& genOut) const {
     const auto dir = worldDir(sanitize(name));
     std::error_code ec;
     if (!std::filesystem::exists(dir / kMeta, ec))
         return false;
     bool got = false;
+    int gen = 1; // no gen= line: saved before there were versions, so the original terrain
     std::ifstream in(dir / kMeta);
     std::string line;
     while (std::getline(in, line)) {
-        if (line.rfind("seed=", 0) != 0)
-            continue;
-        const std::string v = line.substr(5);
-        if (std::from_chars(v.data(), v.data() + v.size(), seedOut).ec == std::errc())
-            got = true;
+        if (line.rfind("seed=", 0) == 0) {
+            if (std::from_chars(line.data() + 5, line.data() + line.size(), seedOut).ec == std::errc())
+                got = true;
+        } else if (line.rfind("gen=", 0) == 0) {
+            std::from_chars(line.data() + 4, line.data() + line.size(), gen);
+        }
     }
     if (!got)
         return false;
+    genOut = gen;
     clearLive();
     const int n = copyRegions(dir, liveDir());
-    VX_INFO("world loaded: \"%s\" seed %d, %d region file(s)", name.c_str(), seedOut, n);
+    VX_INFO("world loaded: \"%s\" seed %d, generator %d, %d region file(s)", name.c_str(), seedOut,
+            genOut, n);
     return true;
 }
 

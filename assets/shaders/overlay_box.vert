@@ -15,7 +15,7 @@ const int kEdge[24] = int[24](0, 1, 1, 2, 2, 3, 3, 0,  // bottom ring
 void main() {
     vec3 p = kCorner[kEdge[gl_VertexID]];
     // inflate a hair from the centre so the near edges win the depth test and the far
-    // edges lose it — free hidden-line removal against reversed-Z depth
+    // edges lose it, free hidden-line removal against reversed-Z depth
     p += (p - 0.5) * 0.02;
     gl_Position = uViewProj * vec4(uMin + p, 1.0);
 }

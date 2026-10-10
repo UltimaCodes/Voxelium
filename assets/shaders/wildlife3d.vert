@@ -7,8 +7,8 @@
 // have a front and a back and read as animals from any angle.
 //
 // One creature is kParts boxes of 36 vertices each. Boxes a kind does not use collapse to a
-// degenerate triangle. Everything is built in the creature's own frame - x forward, y up,
-// z to its right - and turned into the world by its heading.
+// degenerate triangle. Everything is built in the creature's own frame, x forward, y up,
+// z to its right, and turned into the world by its heading.
 struct S {
     vec4 posSize; // camera-relative centre, then scale
     vec4 tint;    // rgb, then alpha (fades in and out by dithering)
@@ -215,7 +215,17 @@ void main() {
 
     // a fixed soft key from above and to one side; the tint already carries the time of day
     float l = 0.52 + 0.36 * wn.y + 0.14 * dot(wn, normalize(vec3(0.4, 0.0, 0.3)));
-    vColor = s.tint.rgb * pt.col * mix(l, 1.0, gEmit);
+    vec3 base = s.tint.rgb;
+    if (kind == kFish && p <= 1) {
+        // Countershading: a dark back and a pale, silvery belly, graded down the flanks (the
+        // corners carry it, so the side faces interpolate it). One flat colour read as a tinted
+        // block of water from above; this is what makes a real fish stand out from either side.
+        // The belly is the tint desaturated and lifted, so it still dims with the time of day.
+        float up = clamp(localPos.y / 0.22 * 0.5 + 0.5, 0.0, 1.0);
+        vec3 belly = mix(base, vec3(dot(base, vec3(0.3333)) * 1.55), 0.65);
+        base = mix(belly, base * 0.72, smoothstep(0.15, 0.85, up));
+    }
+    vColor = base * pt.col * mix(l, 1.0, gEmit);
     vAlpha = s.tint.a * (kind == kJelly ? 0.78 : 1.0);
     gl_Position = uViewProj * vec4(world, 1.0);
 }

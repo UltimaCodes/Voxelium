@@ -60,7 +60,7 @@ void JobSystem::workerLoop(std::stop_token stop) {
             return; // stop requested
         Job job = std::move(m_queue[m_head]);
         ++m_head;
-        // Compact once consumed entries are past a floor AND the majority of the buffer —
+        // Compact once consumed entries are past a floor AND the majority of the buffer,
         // the floor keeps a small, bursty queue from compacting on nearly every pop; the
         // ratio bounds how far m_head (and so m_queue) can grow over a long session. Erasing
         // a trivially-copyable prefix is a memmove of whatever is left, not a reallocation,

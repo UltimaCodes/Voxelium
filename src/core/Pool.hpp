@@ -7,7 +7,7 @@ namespace vx {
 
 // Slab pool: acquire pops a free object, release pushes it back. Objects are never
 // destroyed while the pool lives, so their internal buffers (palette vectors etc.)
-// keep their capacity across reuse — steady-state load/unload churn allocates nothing.
+// keep their capacity across reuse, steady-state load/unload churn allocates nothing.
 template <typename T>
 class Pool {
 public:

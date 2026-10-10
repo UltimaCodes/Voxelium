@@ -27,7 +27,7 @@ constexpr int kLampLayerEnd = kNamedLayers + blocks::kLampCount;
 // cross-plane foliage tiles: mostly transparent, so they are generated rather than tinted
 constexpr int kCrossLayer0 = kLampLayerEnd;
 // Break-progress crack stages, appended last so the block overlay can sample them out of
-// the same array the world already has bound — no second texture, no second sampler.
+// the same array the world already has bound, no second texture, no second sampler.
 constexpr int kCrackLayer0 = kLampLayerEnd + kCrossLayers;
 // Coast, desert and reef tiles. Appended after the crack stages so every layer number the
 // shaders already hard-code (leaves 7, lamps 15..39, cross 40/41) stays where it was.
@@ -41,7 +41,7 @@ constexpr const char* kNames[kNamedLayers] = {"stone",    "dirt",     "grass_top
                                          "sand",     "snow",     "planks",    "bricks",
                                          "coal_ore", "iron_ore", "gravel"};
 
-// value hash in [0,1) — deterministic per texel so textures are identical every run
+// value hash in [0,1), deterministic per texel so textures are identical every run
 float h01(int x, int y, int salt) {
     std::uint32_t h = std::uint32_t(x) * 0x8DA6B343u ^ std::uint32_t(y) * 0xD8163841u ^
                       std::uint32_t(salt) * 0xCB1AB31Fu;
@@ -132,7 +132,7 @@ Rgba genLeaves(int x, int y) {
     // Punch gaps. Leaves are a cutout block: the holes are what you see through, what light
     // comes through, and what makes the shadow dappled instead of a solid slab. Driven off a
     // different hash than the colour so the holes do not line up with the shading, and
-    // biased so the tile keeps roughly three quarters coverage — many small gaps read as
+    // biased so the tile keeps roughly three quarters coverage, many small gaps read as
     // foliage, a few big ones read as a broken texture.
     const float hole = h01(x, y, 71) * 0.65f + h01(x / 2, y / 2, 72) * 0.35f;
     if (hole > 0.74f)
@@ -207,7 +207,7 @@ Rgba lampTexel(int hue, int x, int y) {
 }
 
 // One crack stage: branches walking out from the centre, more of them and thicker as the
-// stage rises. Transparent everywhere else — this is drawn OVER the block, so anything it
+// stage rises. Transparent everywhere else, this is drawn OVER the block, so anything it
 // does not touch has to leave the block's own texture showing.
 void fillCrack(int stage, Rgba* slot) {
     for (int i = 0; i < kTile * kTile; ++i)
@@ -221,7 +221,7 @@ void fillCrack(int stage, Rgba* slot) {
     };
     const int branches = 2 + stage; // 2..6, not 2..10: this is a 16x16 tile
     for (int b = 0; b < branches; ++b) {
-        // fixed salt per branch so a stage always contains the previous stage's cracks —
+        // fixed salt per branch so a stage always contains the previous stage's cracks,
         // the animation has to look like damage accumulating, not like it is being redrawn
         float x = 7.5f, y = 7.5f;
         const float ang = (float(b) + 0.5f) * 6.2831853f / float(branches) +
@@ -724,7 +724,7 @@ unsigned int createBlockTextureArray(const std::filesystem::path& textureDir) {
             fillCrack(layer - kCrackLayer0, slot);
             continue;
         }
-        if (layer >= kLampLayer0) { // lamps are generated only — one per hue, no filenames
+        if (layer >= kLampLayer0) { // lamps are generated only, one per hue, no filenames
             for (int y = 0; y < kTile; ++y)
                 for (int x = 0; x < kTile; ++x)
                     slot[y * kTile + x] = lampTexel(layer - kLampLayer0, x, y);

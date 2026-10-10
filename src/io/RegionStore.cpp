@@ -95,11 +95,11 @@ RegionStore::Region& RegionStore::ensureLoaded(RegionKey key) {
                 }
             }
         } else if (magicOk && buf.size() >= 8) {
-            VX_ERROR("region %s uses save format v%u, this build reads v%u — ignoring it "
+            VX_ERROR("region %s uses save format v%u, this build reads v%u, ignoring it "
                      "(the terrain regenerates; edits in it are lost)",
                      regionPath(key).string().c_str(), read32(buf.data() + 4), kVersion);
         } else {
-            VX_ERROR("region %s is corrupt — ignoring", regionPath(key).string().c_str());
+            VX_ERROR("region %s is corrupt, ignoring", regionPath(key).string().c_str());
         }
     }
     return m_regions.emplace(key, std::move(region)).first->second;
@@ -147,7 +147,7 @@ void RegionStore::writeRegion(RegionKey key, const Region& region) const {
     }
     out.insert(out.end(), data.begin(), data.end());
 
-    // write to a temp file then rename — a crash mid-write can't corrupt the region
+    // write to a temp file then rename, a crash mid-write can't corrupt the region
     const std::filesystem::path path = regionPath(key);
     const std::filesystem::path tmp = path.string() + ".tmp";
     {

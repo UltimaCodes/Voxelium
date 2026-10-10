@@ -7,7 +7,7 @@
 namespace vx {
 
 // The in-world gameplay HUD, drawn with real GL (never ImGui): the block-selection
-// wireframe and the centre crosshair. Tiny — two vertex-pulled programs sharing one
+// wireframe and the centre crosshair. Tiny, two vertex-pulled programs sharing one
 // empty VAO.
 class Overlay {
 public:
