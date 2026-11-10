@@ -1,19 +1,17 @@
 #version 460 core
 
-// bloom mix, white balance, exposure, ACES filmic (Narkowicz fit), manual sRGB encode,
-// manual so the output is identical on every driver instead of trusting GL_FRAMEBUFFER_SRGB
-// support. Then grade (contrast + saturation), vignette, grain, and an optional unsharp
-// pass to claw back the softness TAA leaves (done in LDR so bright HDR highlights ring).
+// bloom mix, white balance, exposure, filmic curve, vibrance, manual sRGB encode, manual so the
+// output is identical on every driver instead of trusting GL_FRAMEBUFFER_SRGB support. Then grade
+// (contrast + saturation), vignette, grain, and an optional unsharp pass to claw back the softness
+// TAA leaves (done in LDR so bright HDR highlights ring).
 
 in vec2 vUv;
 layout(location = 0) out vec4 outColor;
 
 layout(binding = 0) uniform sampler2D uHdr;
 layout(binding = 2) uniform sampler2D uBloom;
-layout(binding = 3) uniform sampler2D uAdapt; // 1x1 adapted log luminance
 layout(location = 0) uniform float uBloomStrength;
 layout(location = 1) uniform float uExposure;
-layout(location = 11) uniform float uAutoKey; // 0 = auto-exposure off, else the grey target
 layout(location = 3) uniform float uSharpen; // 0 = off
 layout(location = 4) uniform vec2 uTexel;    // 1/resolution
 layout(location = 5) uniform float uVignette;    // 0 = off
@@ -21,12 +19,36 @@ layout(location = 6) uniform float uGrain;       // 0 = off
 layout(location = 7) uniform float uTime;        // grain animation only
 layout(location = 8) uniform float uSaturation;  // 1 = untouched
 layout(location = 9) uniform float uContrast;    // 1 = untouched
-layout(location = 10) uniform float uTemperature; // 0 = neutral, + warm, cool
+layout(location = 10) uniform float uTemperature; // 0 = neutral, positive warm, negative cool
 layout(location = 12) uniform float uScotopic;    // night rod-vision shift, 0 = off
 layout(location = 14) uniform float uDither;      // 8-bit output dither, 0 = off
 
-vec3 aces(vec3 x) {
-    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+// Lottes' curve (GDC 2016): a toe for contrast and a long shoulder, so highlights roll off.
+const float kToe = 1.24, kShoulder = 0.93, kHdrMax = 12.0, kMidIn = 0.18, kMidOut = 0.145;
+const float kMaxD = pow(kHdrMax, kToe * kShoulder), kMidD = pow(kMidIn, kToe * kShoulder);
+const float kMaxA = pow(kHdrMax, kToe), kMidA = pow(kMidIn, kToe);
+const float kCurveB = (kMaxA * kMidOut - kMidA) / ((kMaxD - kMidD) * kMidOut);
+const float kCurveC = (kMaxD * kMidA - kMaxA * kMidD * kMidOut) / ((kMaxD - kMidD) * kMidOut);
+
+vec3 filmic(vec3 x) {
+    vec3 z = pow(x, vec3(kToe));
+    return min(z / (pow(z, vec3(kShoulder)) * kCurveB + kCurveC), vec3(1.0));
+}
+
+// Each channel through the curve alone turns bright greens yellow; half of the result keeps the
+// colour's own hue. Then a lift for the low saturation midtones.
+vec3 toneCurve(vec3 c) {
+    c = max(c, vec3(0.0));
+    float peak = max(max(c.r, c.g), max(c.b, 1e-5));
+    vec3 keptHue = c * (filmic(vec3(peak)).r / peak);
+    vec3 m = mix(filmic(c), keptHue, 0.5);
+    float luma = dot(m, vec3(0.2126, 0.7152, 0.0722));
+    float sat = max(max(m.r, m.g), m.b) - min(min(m.r, m.g), m.b);
+    return max(mix(vec3(luma), m, 1.0 + 0.06 * (1.0 - sat)), vec3(0.0));
+}
+
+vec3 srgbEncode(vec3 c) {
+    return mix(12.92 * c, 1.055 * pow(max(c, vec3(1e-6)), vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
 }
 
 // Ordered dither before the 8-bit write. A sky gradient spans a few hundred code values over
@@ -51,30 +73,6 @@ vec3 whiteBalance(vec3 c) {
     return c * g;
 }
 
-// Manual exposure, times the adaptation factor when auto-exposure is on. The factor is
-// clamped hard: an all-sky frame and a frame inside a sealed cave are several stops apart,
-// and letting the auto term chase that fully turns a dark cave into a grey one, the point
-// is to take the edge off, not to erase the difference between day and underground.
-//
-// The upper bound was 3.0, and night is precisely the case that pins to it: a dark frame
-// asks for all the gain on offer, so every other night fix was being multiplied by 3 on its
-// way to the screen. 2.0 still lifts a cave enough to navigate it and stops the adaptation
-// undoing the shading work.
-//
-// Turned down again at the owner's request, for realism: a dark scene is only brightened part
-// of the way the average asks for (the eye adapts, it does not see in the dark) and to 1.6 at
-// most, so caves and night stay dark with their lamps standing out rather than being lifted
-// toward grey. Darkening a bright scene is untouched.
-float exposureScale() {
-    if (uAutoKey <= 0.0)
-        return uExposure;
-    float avgLum = exp(texture(uAdapt, vec2(0.5)).r);
-    float gain = uAutoKey / max(avgLum, 1e-4);
-    if (gain > 1.0)
-        gain = pow(gain, 0.7);
-    return uExposure * clamp(gain, 0.35, 1.6);
-}
-
 // Scotopic (rod) vision: below about 0.01 cd/m2 the cones stop contributing, so night
 // vision is desaturated and shifted blue, the Purkinje effect. Worth having because it
 // makes a frame READ as night at a higher actual brightness than a purely dark frame does,
@@ -87,14 +85,15 @@ vec3 scotopic(vec3 c, float amount) {
     if (amount <= 0.0)
         return c;
     float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    // full effect in the deep shadows, none by the time anything is even dimly lit
-    float rod = (1.0 - smoothstep(0.0, 0.22, luma)) * amount;
-    vec3 night = vec3(luma) * vec3(0.82, 0.94, 1.28); // desaturated, cool
+    // full effect in the deep shadows, none by the time anything is even dimly lit. Twice the
+    // slider, so the default 0.25 already turns a moonlit field olive-grey, not green.
+    float rod = (1.0 - smoothstep(0.0, 0.30, luma)) * min(amount * 2.0, 1.0);
+    vec3 night = vec3(luma) * vec3(0.88, 0.96, 1.14); // desaturated, a little cool
     return mix(c, night, rod);
 }
 
 vec3 tonemap(vec3 hdr) {
-    return pow(aces(whiteBalance(hdr) * exposureScale()), vec3(1.0 / 2.2));
+    return srgbEncode(toneCurve(whiteBalance(hdr) * uExposure));
 }
 
 // Contrast pivots on 0.5 because it runs after the sRGB encode, where mid grey sits there

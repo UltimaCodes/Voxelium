@@ -1,0 +1,105 @@
+#version 460 core
+
+// Bakes the clouds' noise once at startup, all of it tiling: the big shapes (Perlin eaten away by
+// Worley, so round billows and no streaks), the fine detail that frays their edges, and the weather
+// map that says where cloud is and how tall it grows.
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(r8, binding = 0) writeonly uniform image3D uOut3;
+layout(rg8, binding = 1) writeonly uniform image2D uOut2;
+layout(location = 0) uniform int uMode; // 0 shape, 1 detail, 2 weather
+layout(location = 1) uniform int uSize;
+layout(location = 2) uniform int uSeed;
+
+uvec3 pcg3d(uvec3 v) {
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    v ^= v >> 16u;
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    return v;
+}
+
+vec3 hash3(ivec3 c, int salt) {
+    return vec3(pcg3d(uvec3(c + ivec3(salt, salt * 7, salt * 13) + ivec3(uSeed)))) / 4294967295.0;
+}
+
+ivec3 wrap(ivec3 c, int period) { return ivec3(mod(vec3(c), float(period))); }
+
+// Gradient noise that repeats every `period` cells, -1..1.
+float perlin(vec3 p, int period, int salt) {
+    ivec3 i = ivec3(floor(p));
+    vec3 f = p - floor(p);
+    vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    float result = 0.0;
+    for (int k = 0; k < 8; ++k) {
+        ivec3 o = ivec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+        vec3 g = normalize(hash3(wrap(i + o, period), salt) * 2.0 - 1.0);
+        float d = dot(g, f - vec3(o));
+        vec3 w = mix(vec3(1.0) - u, u, vec3(o));
+        result += d * w.x * w.y * w.z;
+    }
+    return result * 1.6;
+}
+
+// 0 at a feature point rising to 1 between them, inverted so billows are the high parts.
+float worley(vec3 p, int period, int salt) {
+    ivec3 i = ivec3(floor(p));
+    vec3 f = p - floor(p);
+    float best = 1e9;
+    for (int z = -1; z <= 1; ++z)
+        for (int y = -1; y <= 1; ++y)
+            for (int x = -1; x <= 1; ++x) {
+                ivec3 o = ivec3(x, y, z);
+                vec3 d = vec3(o) + hash3(wrap(i + o, period), salt) - f;
+                best = min(best, dot(d, d));
+            }
+    return 1.0 - clamp(sqrt(best), 0.0, 1.0);
+}
+
+float remap(float v, float a, float b, float c, float d) { return c + (v - a) * (d - c) / max(b - a, 1e-5); }
+
+void main() {
+    ivec3 id = ivec3(gl_GlobalInvocationID);
+    if (uMode == 2) {
+        if (id.z != 0 || id.x >= uSize || id.y >= uSize)
+            return;
+        vec2 uv = (vec2(id.xy) + 0.5) / float(uSize);
+        // where cloud is: fronts thousands of blocks across down to single clouds
+        float cover = 0.0, amp = 0.5;
+        int period = 6;
+        for (int o = 0; o < 6; ++o) {
+            cover += amp * perlin(vec3(uv * float(period), 0.5), period, 11 + o);
+            amp *= 0.55;
+            period *= 2;
+        }
+        // how tall it grows there: slow, so a whole region is flat stratus or towering cumulus
+        float kind = 0.5 * perlin(vec3(uv * 3.0, 0.25), 3, 41) + 0.25 * perlin(vec3(uv * 6.0, 0.25), 6, 43) +
+                     0.15 * perlin(vec3(uv * 12.0, 0.25), 12, 47);
+        imageStore(uOut2, id.xy, vec4(clamp(0.5 + cover * 0.72, 0.0, 1.0), clamp(0.5 + kind * 0.95, 0.0, 1.0), 0.0, 0.0));
+        return;
+    }
+    if (id.x >= uSize || id.y >= uSize || id.z >= uSize)
+        return;
+    vec3 uv = (vec3(id) + 0.5) / float(uSize);
+    float value;
+    if (uMode == 0) {
+        float p = 0.0, amp = 0.5;
+        int period = 4;
+        for (int o = 0; o < 4; ++o) {
+            p += amp * perlin(uv * float(period), period, 3 + o);
+            amp *= 0.5;
+            period *= 2;
+        }
+        p = clamp(p * 0.5 + 0.55, 0.0, 1.0);
+        float w = worley(uv * 4.0, 4, 17) * 0.625 + worley(uv * 8.0, 8, 19) * 0.25 + worley(uv * 16.0, 16, 23) * 0.125;
+        // Perlin eaten by Worley: the wisps of one with the round billows of the other
+        value = clamp(remap(p, w - 1.0, 1.0, 0.0, 1.0), 0.0, 1.0);
+    } else {
+        value = worley(uv * 2.0, 2, 29) * 0.625 + worley(uv * 4.0, 4, 31) * 0.25 + worley(uv * 8.0, 8, 37) * 0.125;
+    }
+    imageStore(uOut3, id, vec4(value, 0.0, 0.0, 0.0));
+}

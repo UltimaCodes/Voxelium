@@ -33,12 +33,65 @@ layout(location = 31) uniform vec3 uLightColor;    // radiance of uLightL
 layout(location = 37) uniform vec3 uVolCam;        // camera in light-volume texels, axis order (x, z, y)
 layout(location = 38) uniform vec3 uVolMin;        // the volume's low corner relative to the camera
 layout(location = 39) uniform float uVolOn;        // 1 when some block light is in range
+layout(location = 40) uniform float uShaftGain;    // 0 with no sky over the camera
+layout(location = 41) uniform float uUnderwater;   // 1 when the camera is under water
+layout(location = 42) uniform vec3 uCamPos;        // camera world position
+layout(location = 43) uniform float uTime;
 
 // How much a block of air scatters back of the lamp light in it. Tuned against hidden cave
 // shots so a lamp gets a halo a few blocks across without fogging the cave.
 const float kLampAir = 0.03;
 
 #include "march.glsl"
+
+const float kSeaLevel = 62.0;
+
+float h21(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+float vn(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(h21(i), h21(i + vec2(1, 0)), f.x), mix(h21(i + vec2(0, 1)), h21(i + vec2(1, 1)), f.x), f.y);
+}
+
+// The light under water comes down through the surface in moving sheets. Each point on the ray asks
+// where its light crossed the surface and whether the waves were letting it through there.
+vec3 waterShafts(vec3 rd, float dist) {
+    if (uLightL.y <= 0.05)
+        return vec3(0.0);
+    // Refraction bends it toward straight down.
+    vec3 L = normalize(vec3(uLightL.x * 0.75, uLightL.y, uLightL.z * 0.75));
+#if VX_QUALITY <= 1
+    const int kSteps = 10;
+#else
+    const int kSteps = 18;
+#endif
+    float len = min(dist, 80.0);
+    float stepLen = len / float(kSteps);
+    float t = stepLen * ign(gl_FragCoord.xy);
+    vec3 sum = vec3(0.0);
+    for (int i = 0; i < kSteps; ++i) {
+        vec3 rel = rd * t;
+        vec3 p = uCamPos + rel;
+        float below = kSeaLevel - p.y;
+        if (below > 0.0) {
+            vec2 hit = p.xz + L.xz / L.y * below;
+            // thin moving streaks where the waves focus the light, not broad sheets
+            float n = 0.6 * vn(hit * 0.22 + uTime * vec2(0.11, 0.06)) + 0.4 * vn(hit * 0.57 - uTime * vec2(0.15, 0.09));
+            float sheet = smoothstep(0.56, 0.74, n);
+            // the water it came down through and the water between it and the eye, red first
+            vec3 lost = exp(-vec3(0.22, 0.075, 0.03) * (below / L.y + t));
+            sum += sheet * shadowSingle(rel) * lost;
+        }
+        t += stepLen;
+    }
+    // mostly toward the light, faint across it
+    float phase = 0.12 + 0.88 * pow(max(dot(rd, L), 0.0), 4.0);
+    return uLightColor * (sum * stepLen * phase * 0.03);
+}
 
 void main() {
     // One full-res depth texel stands for the four this pixel covers; the composite's
@@ -47,11 +100,16 @@ void main() {
     ivec2 fullSize = textureSize(uDepth, 0);
     full = min(full, fullSize - 1);
     float rawD = texelFetch(uDepth, full, 0).r;
-    if (rawD <= 0.0) { // sky: the composite paints it without reading this
-        outScatter = vec4(0.0, 0.0, 0.0, 60000.0);
+    vec2 uv = (vec2(full) + 0.5) / vec2(fullSize);
+    if (rawD <= 0.0) { // sky: the composite paints it without reading this, unless it is open water
+        vec3 water = vec3(0.0);
+        if (uUnderwater > 0.5 && uVolumetricOn > 0.5) {
+            vec2 skyNdc = uv * 2.0 - 1.0;
+            water = waterShafts(normalize(uInvViewRot * vec3(skyNdc.x * uProjScale.x, skyNdc.y * uProjScale.y, -1.0)), 80.0);
+        }
+        outScatter = vec4(water * uShaftGain, 60000.0);
         return;
     }
-    vec2 uv = (vec2(full) + 0.5) / vec2(fullSize);
     float viewZ = -uNear / max(rawD, 1e-7);
     vec2 ndc = uv * 2.0 - 1.0;
     vec3 worldRel = uInvViewRot *
@@ -60,7 +118,10 @@ void main() {
     vec3 rd = worldRel / max(dist, 1e-6);
     vec3 light = vec3(0.0);
 
-    if (uVolumetricOn > 0.5) {
+    if (uUnderwater > 0.5) {
+        if (uVolumetricOn > 0.5)
+            light += waterShafts(rd, dist) * uShaftGain;
+    } else if (uVolumetricOn > 0.5) {
         float len = min(dist, 150.0);
 #if   VX_QUALITY == 0
         const int kSteps = 6;
@@ -85,7 +146,7 @@ void main() {
         // uLightColor carries the day/night intensity, so the shafts fade out at night.
         // Raised from 0.00018 (#76): reference shader-pack screenshots show god rays as a
         // dominant compositional element through gaps in foliage/terrain, not a faint haze.
-        light += uLightColor * (scatter * phase * len * 0.00032);
+        light += uLightColor * (scatter * phase * len * 0.00032 * uShaftGain);
     }
 
     // Lamp light in the air. The cascades give the sun its shafts above; a lamp's light only

@@ -24,6 +24,7 @@ out float vAlpha;
 const int kParts = 8;
 const int kVerts = kParts * 36;
 const int kButterfly = 1, kGull = 3, kFish = 4, kLeaf = 5, kBird = 8, kCrab = 9, kTurtle = 10, kJelly = 11;
+const int kSheep = 12, kCow = 13, kPig = 14, kChicken = 15, kRabbit = 16, kDeer = 17, kFox = 18, kFrog = 19, kBee = 20;
 
 // set by a model that glows (a jellyfish): its colour is then used flat, not shaded
 float gEmit = 0.0;
@@ -169,6 +170,130 @@ Part jelly(int p, float ph) {
     return none();
 }
 
+// Sheep, cows, pigs, deer and foxes: a body, a head that drops to graze, something on the head
+// (wool, horns, a snout, a neck), four legs in a diagonal gait, and a tail. Built standing on the
+// creature's position. A negative phase means it is standing still, and how far through grazing.
+Part quadruped(int p, float ph, int kind) {
+    float bodyY = 0.62, legX = 0.27, legZ = 0.16, hipY = 0.38, legH = 0.18, legW = 0.06, grazeAng = 0.9;
+    vec3 bodyH = vec3(0.42, 0.26, 0.28), headC = vec3(0.52, 0.78, 0.0), headH = vec3(0.14, 0.13, 0.11);
+    vec3 headCol = vec3(0.32), legCol = vec3(0.32);
+    vec3 tailC = vec3(-0.44, 0.66, 0.0), tailH = vec3(0.05, 0.07, 0.06), tailCol = vec3(1.0);
+    float tailTilt = 0.0;
+    vec3 xC = vec3(0.50, 0.88, 0.0), xH = vec3(0.11, 0.05, 0.12), xCol = vec3(1.0);
+    if (kind == kCow) {
+        bodyY = 0.82; bodyH = vec3(0.55, 0.30, 0.30); headC = vec3(0.66, 0.98, 0.0); headH = vec3(0.16, 0.16, 0.14);
+        headCol = vec3(0.95); hipY = 0.52; legH = 0.26; legW = 0.08; legX = 0.38; legZ = 0.19; legCol = vec3(0.8);
+        tailC = vec3(-0.57, 0.80, 0.0); tailH = vec3(0.03, 0.22, 0.03); tailCol = vec3(0.8); tailTilt = 0.15;
+        xC = vec3(0.64, 1.15, 0.0); xH = vec3(0.03, 0.03, 0.21); xCol = vec3(1.9, 1.8, 1.5);
+    } else if (kind == kPig) {
+        bodyY = 0.46; bodyH = vec3(0.40, 0.21, 0.24); headC = vec3(0.48, 0.50, 0.0); headH = vec3(0.14, 0.13, 0.15);
+        headCol = vec3(1.0); hipY = 0.26; legH = 0.13; legW = 0.07; legX = 0.25; legZ = 0.15; legCol = vec3(0.92);
+        tailC = vec3(-0.42, 0.54, 0.0); tailH = vec3(0.03, 0.04, 0.03); tailTilt = 0.6; grazeAng = 0.6;
+        xC = vec3(0.63, 0.46, 0.0); xH = vec3(0.03, 0.06, 0.07); xCol = vec3(0.85);
+    } else if (kind == kDeer) {
+        bodyY = 0.98; bodyH = vec3(0.44, 0.21, 0.17); headC = vec3(0.62, 1.42, 0.0); headH = vec3(0.13, 0.09, 0.08);
+        headCol = vec3(1.0); hipY = 0.77; legH = 0.38; legW = 0.045; legX = 0.32; legZ = 0.11; legCol = vec3(0.82);
+        tailC = vec3(-0.46, 1.08, 0.0); tailH = vec3(0.04, 0.06, 0.05); tailCol = vec3(1.5); grazeAng = 1.6;
+        xC = vec3(0.50, 1.22, 0.0); xH = vec3(0.07, 0.17, 0.07); xCol = vec3(1.0);
+    } else if (kind == kFox) {
+        bodyY = 0.36; bodyH = vec3(0.30, 0.11, 0.11); headC = vec3(0.38, 0.44, 0.0); headH = vec3(0.11, 0.09, 0.10);
+        headCol = vec3(1.0); hipY = 0.25; legH = 0.12; legW = 0.035; legX = 0.20; legZ = 0.08; legCol = vec3(0.22);
+        tailC = vec3(-0.44, 0.40, 0.0); tailH = vec3(0.17, 0.07, 0.08); tailCol = vec3(1.05); tailTilt = 0.25; grazeAng = 0.5;
+        xC = vec3(0.51, 0.41, 0.0); xH = vec3(0.06, 0.04, 0.045); xCol = vec3(1.15);
+    }
+    bool walking = ph >= 0.0;
+    float swing = walking ? sin(ph) * 0.55 : 0.0;
+    float graze = walking ? 0.0 : smoothstep(0.15, 0.85, 0.5 + 0.5 * sin((-ph - 1.0) * 2.0));
+    vec3 pivot = vec3(bodyH.x * 0.85, bodyY + bodyH.y * 0.6, 0.0);
+    mat3 hr = rotZ(-graze * grazeAng);
+    if (p == 0) return Part(vec3(0.0, bodyY, 0.0), bodyH, mat3(1), vec3(1.0), true);
+    if (p == 1) return Part(pivot + hr * (headC - pivot), headH, hr, headCol, true);
+    if (p == 2) return Part(pivot + hr * (xC - pivot), xH, hr, xCol, true);
+    if (p >= 3 && p <= 6) {
+        int k = p - 3;
+        float sx = k < 2 ? 1.0 : -1.0;
+        float sz = (k & 1) == 0 ? 1.0 : -1.0;
+        float s = (k == 0 || k == 3) ? 1.0 : -1.0;
+        mat3 r = rotZ(swing * s);
+        vec3 hip = vec3(sx * legX, hipY, sz * legZ);
+        return Part(hip + r * vec3(0.0, -legH, 0.0), vec3(legW, legH, legW), r, legCol, true);
+    }
+    if (p == 7) {
+        mat3 r = rotZ(tailTilt) * rotY(sin(abs(ph) * 0.7) * 0.3);
+        return Part(tailC, tailH, r, tailCol, true);
+    }
+    return none();
+}
+
+Part rabbit(int p, float ph) {
+    if (p == 0) return Part(vec3(0.0, 0.20, 0.0), vec3(0.16, 0.12, 0.11), mat3(1), vec3(1.0), true);
+    if (p == 1) return Part(vec3(0.17, 0.30, 0.0), vec3(0.08, 0.08, 0.07), mat3(1), vec3(1.0), true);
+    if (p == 2 || p == 3) {
+        float side = p == 2 ? 1.0 : -1.0;
+        float twitch = ph < 0.0 ? sin(-ph * 3.0 + side) * 0.15 : 0.0;
+        return Part(vec3(0.13, 0.44, side * 0.035), vec3(0.02, 0.09, 0.025), rotZ(0.25 + twitch), vec3(1.0), true);
+    }
+    if (p == 4) return Part(vec3(0.10, 0.06, 0.0), vec3(0.03, 0.06, 0.07), mat3(1), vec3(0.9), true);
+    if (p == 5 || p == 6) {
+        float side = p == 5 ? 1.0 : -1.0;
+        return Part(vec3(-0.08, 0.06, side * 0.075), vec3(0.08, 0.05, 0.03), mat3(1), vec3(0.95), true);
+    }
+    if (p == 7) return Part(vec3(-0.17, 0.24, 0.0), vec3(0.035, 0.035, 0.035), mat3(1), vec3(1.5), true);
+    return none();
+}
+
+Part chicken(int p, float ph) {
+    bool walking = ph >= 0.0;
+    float peck = walking ? 0.0 : smoothstep(0.6, 0.95, 0.5 + 0.5 * sin((-ph - 1.0) * 6.0));
+    vec3 pivot = vec3(0.10, 0.40, 0.0);
+    mat3 hr = rotZ(-peck * 1.1);
+    float swing = walking ? sin(ph) * 0.6 : 0.0;
+    if (p == 0) return Part(vec3(0.0, 0.30, 0.0), vec3(0.16, 0.13, 0.11), mat3(1), vec3(1.0), true);
+    if (p == 1) return Part(pivot + hr * (vec3(0.14, 0.48, 0.0) - pivot), vec3(0.07, 0.07, 0.06), hr, vec3(1.0), true);
+    if (p == 2) return Part(pivot + hr * (vec3(0.22, 0.47, 0.0) - pivot), vec3(0.035, 0.02, 0.02), hr, vec3(1.5, 1.0, 0.2), true);
+    if (p == 3) return Part(pivot + hr * (vec3(0.14, 0.57, 0.0) - pivot), vec3(0.045, 0.03, 0.012), hr, vec3(1.5, 0.25, 0.2), true);
+    if (p == 4 || p == 5) {
+        float side = p == 4 ? 1.0 : -1.0;
+        mat3 r = rotZ(swing * side);
+        return Part(vec3(0.0, 0.17, side * 0.05) + r * vec3(0.0, -0.085, 0.0), vec3(0.015, 0.085, 0.015), r, vec3(1.4, 1.0, 0.3), true);
+    }
+    if (p == 6) return Part(vec3(-0.01, 0.31, 0.0), vec3(0.13, 0.08, 0.125), mat3(1), vec3(0.92), true);
+    if (p == 7) return Part(vec3(-0.17, 0.40, 0.0), vec3(0.05, 0.08, 0.07), rotZ(0.4), vec3(0.95), true);
+    return none();
+}
+
+Part frog(int p, float ph) {
+    if (p == 0) return Part(vec3(0.0, 0.09, 0.0), vec3(0.12, 0.06, 0.10), mat3(1), vec3(1.0), true);
+    if (p == 1) return Part(vec3(0.11, 0.12, 0.0), vec3(0.06, 0.05, 0.09), mat3(1), vec3(1.05), true);
+    if (p == 2 || p == 3) {
+        float side = p == 2 ? 1.0 : -1.0;
+        return Part(vec3(0.12, 0.18, side * 0.055), vec3(0.025), mat3(1), vec3(0.35), true);
+    }
+    if (p == 4 || p == 5) {
+        float side = p == 4 ? 1.0 : -1.0;
+        return Part(vec3(-0.07, 0.05, side * 0.11), vec3(0.08, 0.03, 0.04), mat3(1), vec3(0.9), true);
+    }
+    if (p == 6 || p == 7) {
+        float side = p == 6 ? 1.0 : -1.0;
+        return Part(vec3(0.08, 0.035, side * 0.08), vec3(0.02, 0.035, 0.02), mat3(1), vec3(0.9), true);
+    }
+    return none();
+}
+
+Part bee(int p, float ph) {
+    if (p == 0) return Part(vec3(0.0), vec3(0.32, 0.20, 0.20), mat3(1), vec3(1.0), true);
+    if (p == 1) return Part(vec3(-0.08, 0.0, 0.0), vec3(0.05, 0.205, 0.205), mat3(1), vec3(0.08), true);
+    if (p == 2) return Part(vec3(0.12, 0.0, 0.0), vec3(0.05, 0.205, 0.205), mat3(1), vec3(0.08), true);
+    if (p == 3) return Part(vec3(0.38, 0.0, 0.0), vec3(0.10, 0.13, 0.13), mat3(1), vec3(0.12), true);
+    if (p == 4 || p == 5) {
+        float side = p == 4 ? 1.0 : -1.0;
+        mat3 r = rotX(side * mix(0.2, 1.0, 0.5 + 0.5 * sin(ph)));
+        return Part(r * vec3(0.02, 0.0, side * 0.24), vec3(0.16, 0.01, 0.22), r, vec3(0.85, 1.1, 5.0), true);
+    }
+    if (p == 6) return Part(vec3(-0.36, 0.0, 0.0), vec3(0.05), mat3(1), vec3(0.08), true);
+    return none();
+}
+
 Part leaf(int p, float ph) {
     if (p != 0) return none();
     mat3 r = rotY(ph * 0.7) * rotX(sin(ph) * 1.1) * rotZ(ph * 0.5);
@@ -192,6 +317,11 @@ void main() {
     else if (kind == kCrab) pt = crab(p, ph);
     else if (kind == kTurtle) pt = turtle(p, ph);
     else if (kind == kJelly) pt = jelly(p, ph);
+    else if (kind == kSheep || kind == kCow || kind == kPig || kind == kDeer || kind == kFox) pt = quadruped(p, ph, kind);
+    else if (kind == kRabbit) pt = rabbit(p, ph);
+    else if (kind == kChicken) pt = chicken(p, ph);
+    else if (kind == kFrog) pt = frog(p, ph);
+    else if (kind == kBee) pt = bee(p, ph);
     else pt = leaf(p, ph);
 
     if (!pt.on) {

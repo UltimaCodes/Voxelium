@@ -15,9 +15,25 @@ namespace {
 // CPU mirror of the std430 ChunkMeta in cull.comp.
 struct GpuChunkMeta {
     std::int32_t x, y, z, first;
-    std::uint32_t count, pad0, pad1, pad2;
+    std::uint32_t count, sunlit, pad0, pad1;
+    std::uint32_t buckets[7], pad2;
 };
-static_assert(sizeof(GpuChunkMeta) == 32);
+static_assert(sizeof(GpuChunkMeta) == 64);
+
+// Up to one draw per direction group of every chunk, see cull.comp. Five words each: the chunks'
+// commands are DrawElementsIndirectCommand, the water's a DrawArraysIndirectCommand and a pad.
+constexpr std::uint32_t kCmdsPerChunk = 7;
+constexpr GLsizei kCmdStride = 20;
+// The chunks are drawn indexed, four vertices a quad, so each corner runs the vertex shader once
+// rather than once for each of the two triangles it is in. One shared index buffer, long enough
+// for the most quads one draw can have (more than any chunk holds); cull.comp has the same number.
+constexpr std::uint32_t kIndexedQuads = 262144;
+
+GpuChunkMeta toGpu(const ChunkDrawInfo& c) {
+    GpuChunkMeta m{c.chunkPos.x, c.chunkPos.y, c.chunkPos.z, std::int32_t(c.firstQuad), c.quadCount, c.sunlit, 0, 0, {}, 0};
+    std::copy(std::begin(c.buckets), std::end(c.buckets), std::begin(m.buckets));
+    return m;
+}
 
 constexpr GLbitfield kWriteMapFlags =
     GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
@@ -52,11 +68,22 @@ bool Renderer::init(unsigned int drawProgram, unsigned int cullProgram) {
     m_waterMetaCpu.assign(std::size_t(kMetaBytes), 0);
 
     glCreateBuffers(1, &m_cmdBuf);
-    glNamedBufferStorage(m_cmdBuf, GLsizeiptr(kMaxChunks) * 16, nullptr, 0);
+    glNamedBufferStorage(m_cmdBuf, GLsizeiptr(kMaxChunks) * kCmdsPerChunk * kCmdStride, nullptr, 0);
+    {
+        std::vector<std::uint32_t> idx(std::size_t(kIndexedQuads) * 6);
+        for (std::uint32_t q = 0; q < kIndexedQuads; ++q) {
+            const std::uint32_t v = q * 4;
+            const std::uint32_t tri[6] = {v, v + 1, v + 2, v, v + 2, v + 3};
+            std::copy(std::begin(tri), std::end(tri), idx.begin() + std::ptrdiff_t(q) * 6);
+        }
+        glCreateBuffers(1, &m_indexBuf);
+        glNamedBufferStorage(m_indexBuf, GLsizeiptr(idx.size() * sizeof(std::uint32_t)), idx.data(), 0);
+        glVertexArrayElementBuffer(m_vao, m_indexBuf);
+    }
     glCreateBuffers(1, &m_countBuf);
-    glNamedBufferStorage(m_countBuf, sizeof(GLuint), nullptr, 0);
+    glNamedBufferStorage(m_countBuf, 2 * sizeof(GLuint), nullptr, 0); // draws, then chunks
     glCreateBuffers(1, &m_offsetsBuf);
-    glNamedBufferStorage(m_offsetsBuf, GLsizeiptr(kMaxChunks) * 16, nullptr, 0);
+    glNamedBufferStorage(m_offsetsBuf, GLsizeiptr(kMaxChunks) * kCmdsPerChunk * 16, nullptr, 0);
 
     glCreateBuffers(1, &m_readbackBuf);
     glNamedBufferStorage(m_readbackBuf, kFrameRing * sizeof(GLuint), nullptr, kReadMapFlags);
@@ -85,8 +112,8 @@ void Renderer::shutdown() {
             m_fence[i] = nullptr;
         }
     const GLuint buffers[] = {m_arenaBuf,   m_metaBuf,     m_cmdBuf, m_countBuf,
-                              m_offsetsBuf, m_readbackBuf, m_visBuf, m_waterMetaBuf};
-    glDeleteBuffers(8, buffers);
+                              m_offsetsBuf, m_readbackBuf, m_visBuf, m_waterMetaBuf, m_indexBuf};
+    glDeleteBuffers(9, buffers);
     glDeleteVertexArrays(1, &m_vao);
 }
 
@@ -239,11 +266,8 @@ void Renderer::updateChunkMeta(std::span<const ChunkDrawInfo> chunks) {
     m_chunkCount = std::min(std::uint32_t(chunks.size()), kMaxChunks);
     ++m_metaVersion;
     auto* meta = reinterpret_cast<GpuChunkMeta*>(m_metaCpu.data());
-    for (std::uint32_t i = 0; i < m_chunkCount; ++i) {
-        const ChunkDrawInfo& c = chunks[i];
-        meta[i] = {c.chunkPos.x, c.chunkPos.y, c.chunkPos.z, std::int32_t(c.firstQuad),
-                   c.quadCount, c.sunlit, 0, 0};
-    }
+    for (std::uint32_t i = 0; i < m_chunkCount; ++i)
+        meta[i] = toGpu(chunks[i]);
 }
 
 void Renderer::updateVisibility(std::span<const std::uint32_t> bits) {
@@ -256,11 +280,8 @@ void Renderer::updateWaterMeta(std::span<const ChunkDrawInfo> chunks) {
     m_waterChunkCount = std::min(std::uint32_t(chunks.size()), kMaxChunks);
     ++m_waterMetaVersion;
     auto* meta = reinterpret_cast<GpuChunkMeta*>(m_waterMetaCpu.data());
-    for (std::uint32_t i = 0; i < m_waterChunkCount; ++i) {
-        const ChunkDrawInfo& c = chunks[i];
-        meta[i] = {c.chunkPos.x, c.chunkPos.y, c.chunkPos.z, std::int32_t(c.firstQuad),
-                   c.quadCount, c.sunlit, 0, 0};
-    }
+    for (std::uint32_t i = 0; i < m_waterChunkCount; ++i)
+        meta[i] = toGpu(chunks[i]);
 }
 
 void Renderer::syncSlot(bool water) {
@@ -286,13 +307,13 @@ void Renderer::syncSlot(bool water) {
 
 void Renderer::cullInto(bool water, const Frustum& frustum, const glm::ivec3& cameraChunk,
                         const glm::vec3& cameraFrac, bool caveCull, bool sunlitOnly,
-                        unsigned int slice) {
+                        unsigned int slice, unsigned int slices, bool faceCull) {
     syncSlot(water);
     constexpr GLsizeiptr kMetaBytes = GLsizeiptr(kMaxChunks) * GLsizeiptr(sizeof(GpuChunkMeta));
     constexpr GLsizeiptr kVisBytes = kMaxChunks / 8;
     const unsigned int chunkCount = water ? m_waterChunkCount : m_chunkCount;
     const GLuint zero = 0;
-    glClearNamedBufferSubData(m_countBuf, GL_R32UI, 0, sizeof(GLuint), GL_RED_INTEGER,
+    glClearNamedBufferSubData(m_countBuf, GL_R32UI, 0, 2 * sizeof(GLuint), GL_RED_INTEGER,
                               GL_UNSIGNED_INT, &zero);
 
     glUseProgram(m_cullProgram);
@@ -305,6 +326,8 @@ void Renderer::cullInto(bool water, const Frustum& frustum, const glm::ivec3& ca
     glProgramUniform1ui(m_cullProgram, 11, sunlitOnly ? 1u : 0u);
     glProgramUniform1ui(m_cullProgram, 12, slice);
     glProgramUniform1ui(m_cullProgram, 13, water ? 4u : 6u); // water draws one patch a quad
+    glProgramUniform1ui(m_cullProgram, 14, faceCull && !water ? 1u : 0u);
+    glProgramUniform1ui(m_cullProgram, 15, slices);
     glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, water ? m_waterMetaBuf : m_metaBuf,
                       kMetaBytes * m_slot, kMetaBytes);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_cmdBuf);
@@ -317,8 +340,8 @@ void Renderer::cullInto(bool water, const Frustum& frustum, const glm::ivec3& ca
 
 void Renderer::cullFrustum(const Frustum& frustum, const glm::ivec3& cameraChunk,
                            const glm::vec3& cameraFrac, bool caveCull, bool sunlitOnly,
-                           unsigned int slice) {
-    cullInto(false, frustum, cameraChunk, cameraFrac, caveCull, sunlitOnly, slice);
+                           unsigned int slice, unsigned int slices) {
+    cullInto(false, frustum, cameraChunk, cameraFrac, caveCull, sunlitOnly, slice, slices);
 }
 
 void Renderer::drawIndirect(unsigned int program, const glm::mat4& viewProj) {
@@ -331,7 +354,8 @@ void Renderer::drawIndirect(unsigned int program, const glm::mat4& viewProj) {
     glBindVertexArray(m_vao);
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, m_cmdBuf);
     glBindBuffer(GL_PARAMETER_BUFFER, m_countBuf);
-    glMultiDrawArraysIndirectCount(GL_TRIANGLES, nullptr, 0, GLsizei(kMaxChunks), 0);
+    glMultiDrawElementsIndirectCount(GL_TRIANGLES, GL_UNSIGNED_INT, nullptr, 0, GLsizei(kMaxChunks * kCmdsPerChunk),
+                                     kCmdStride);
 }
 
 void Renderer::drawWorld(const glm::mat4& viewProj, const Frustum& frustum,
@@ -339,11 +363,11 @@ void Renderer::drawWorld(const glm::mat4& viewProj, const Frustum& frustum,
                          bool caveCull) {
     if (m_chunkCount == 0)
         return;
-    cullInto(false, frustum, cameraChunk, cameraFrac, caveCull);
+    cullInto(false, frustum, cameraChunk, cameraFrac, caveCull, false, 0, 0, /*faceCull=*/true);
     drawIndirect(m_drawProgram, viewProj);
 
-    // HUD visible-count: copied now, read kFrameRing frames later off the fence ring
-    glCopyNamedBufferSubData(m_countBuf, m_readbackBuf, 0,
+    // HUD visible-count (chunks, not draws): copied now, read kFrameRing frames later off the fence ring
+    glCopyNamedBufferSubData(m_countBuf, m_readbackBuf, sizeof(GLuint),
                              GLintptr(m_slot) * GLintptr(sizeof(GLuint)), sizeof(GLuint));
 }
 
@@ -362,7 +386,7 @@ void Renderer::drawWater(unsigned int program, const glm::mat4& viewProj,
     glBindBuffer(GL_PARAMETER_BUFFER, m_countBuf);
     // each water quad is one patch: water.tesc decides how finely the waves subdivide it
     glPatchParameteri(GL_PATCH_VERTICES, 4);
-    glMultiDrawArraysIndirectCount(GL_PATCHES, nullptr, 0, GLsizei(kMaxChunks), 0);
+    glMultiDrawArraysIndirectCount(GL_PATCHES, nullptr, 0, GLsizei(kMaxChunks * kCmdsPerChunk), kCmdStride);
 }
 
 void Renderer::endFrame() {
@@ -371,7 +395,7 @@ void Renderer::endFrame() {
 
 int Renderer::debugReadDrawCount() const {
     GLuint count = 0;
-    glGetNamedBufferSubData(m_countBuf, 0, sizeof(GLuint), &count); // implicit sync
+    glGetNamedBufferSubData(m_countBuf, sizeof(GLuint), sizeof(GLuint), &count); // chunks; implicit sync
     return int(count);
 }
 

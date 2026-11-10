@@ -36,7 +36,9 @@ void main() {
     }
     vec3 rel = local + tcOffset[0];
     if (dir == 2u && uWaveScale > 0.0)
-        rel.y += swell(rel.xz).x * wave * uWaveScale * waveFade(length(rel));
+        // the mesher's strength keeps the surface pinned at the waterline and off the blocks
+        rel.y += (swell(rel.xz).x * wave + breaker(rel.xz, seaDistance(rel.xz)).x * smoothstep(0.0, 0.45, wave)) *
+                 uWaveScale * waveFade(length(rel));
     vWorldRel = rel;
     vDir = dir;
     vSky = sky;

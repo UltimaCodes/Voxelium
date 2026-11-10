@@ -59,6 +59,10 @@ public:
     // colours that exist, so offering more would mean quietly snapping the answer.
     bool lampPicker(bool& open, int& swatch);
 
+    // Every block, in tabs, with a search box. Clicking one puts it in the selected hotbar slot;
+    // hovering one and pressing 1..9 puts it in that slot.
+    void blockPicker(bool& open, int* hotbar, int& selected, unsigned int iconAtlas);
+
     // Full-screen loading panel. Shown while a world settles, at startup and on every
     // world change, so the first frame the player sees has its LOD, shadows and chunks
     // already in place instead of assembling itself around them.
@@ -106,13 +110,21 @@ public:
     void titleScreen(TitleUi& ui);
 
     void render();
+    // What the menus want heard this frame. Call once a frame, before render().
+    struct UiSounds {
+        bool hover = false;
+        bool click = false;
+    };
+    UiSounds uiSounds();
 
     void toggle() { m_visible = !m_visible; }
     bool visible() const { return m_visible; }
     bool wantsMouse() const;
     bool wantsKeyboard() const;
+    bool typing() const; // a text box has the keyboard
 
 private:
+    unsigned int m_lastHovered = 0;
     static constexpr int kSamples = 240;
     float m_frameMs[kSamples] = {};
     int m_cursor = 0;

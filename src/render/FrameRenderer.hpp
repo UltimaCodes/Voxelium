@@ -53,6 +53,10 @@ struct SkyLight {
     glm::vec3 color;    // radiance of lightDir: warm sun by day, dim cool moon by night
     glm::vec3 sunColor; // radiance of the SUN specifically; 0 at night. Sun disc, lens flare
     glm::vec3 ambient;  // sky fill: blue by day, dark cool at night
+    // Land has its own balance so the water, the sky and the air keep the values above.
+    glm::vec3 landSun;     // direct light on land, sun or moon
+    glm::vec3 landAmbient; // sky fill on land
+    glm::vec3 waterLevel;  // what the water's body and reflection are multiplied by
     float daylight;     // 1 full day, 0 after dusk. Was derived in four shaders from sunL.y
 };
 
@@ -82,8 +86,9 @@ struct RenderContext {
     unsigned int drawProgram;
     unsigned int waterProgram;
     unsigned int blockTex;
-    // Null where lamp light in the air is not wanted. The caller keeps it filled (update), the
-    // frame only reads it.
+    // The voxel light around the camera: smooth light and bounce on the chunks, lamp light in the
+    // air. Null where there are no chunks to light. The caller keeps it filled (update), the frame
+    // only reads it.
     LightVolume* lightVolume = nullptr;
 };
 

@@ -1,8 +1,9 @@
 #version 460 core
 
-// Vertex pulling: no vertex attributes at all. gl_VertexID / 6 picks the quad out of
-// the SSBO, gl_VertexID % 6 picks the corner. Bit layout must match
-// src/mesh/QuadFormat.hpp, that header is the source of truth.
+// Vertex pulling: no vertex attributes at all. Drawn indexed, four vertices a quad (the two
+// triangles share a diagonal, so each corner runs once): gl_VertexID / 4 picks the quad out of
+// the SSBO, gl_VertexID % 4 picks the corner. Bit layout must match src/mesh/QuadFormat.hpp,
+// that header is the source of truth.
 layout(std430, binding = 0) readonly buffer Quads { uvec4 quads[]; };
 layout(std430, binding = 1) readonly buffer Offsets { vec4 uOffsets[]; };
 
@@ -16,8 +17,8 @@ flat out uint vLayer; // texture-array layer
 flat out uint vDir;
 flat out vec4 vLight; // block light r,g,b then sky (0..1), the quad's brightest corner
 out float vShade;     // per-corner AO x light, interpolated -> smooth corner shading
+flat out uint vWet;   // the face looks out into water (QuadFormat w3 bit 0)
 
-const int kTri[6] = int[6](0, 1, 2, 0, 2, 3);
 const vec2 kCorner[6][4] = vec2[6][4](
     vec2[4](vec2(0, 0), vec2(0, 1), vec2(1, 1), vec2(1, 0)), // +X
     vec2[4](vec2(1, 0), vec2(1, 1), vec2(0, 1), vec2(0, 0)), // -X
@@ -30,10 +31,18 @@ const vec2 kCorner[6][4] = vec2[6][4](
 #include "texlayer.glsl"
 
 
-// corner order for the cross planes, matching kTri
+// corner order for the cross planes
 const vec2 kQuadCorner[4] = vec2[4](vec2(0, 0), vec2(0, 1), vec2(1, 1), vec2(1, 0));
 
 const float kBloat = 0.001; // greedy T-junction pinhole fix (docs/M4)
+
+uint cellHash3(vec3 p) {
+    ivec3 c = ivec3(floor(p + 0.5));
+    uint h = uint(c.x) * 0x8DA6B343u ^ uint(c.y) * 0xD8163841u ^ uint(c.z) * 0xCB1AB31Fu;
+    h ^= h >> 15;
+    h *= 0x2C1B3C6Du;
+    return h ^ (h >> 12);
+}
 
 // Wind comes in gusts that sweep across the ground rather than every blade moving in step:
 // a slow travelling wave in WORLD space (so walking does not drag it along), squared so most of
@@ -45,17 +54,45 @@ float windGust(vec3 camRelPos) {
 }
 
 void main() {
-    uvec4 q = quads[gl_VertexID / 6];
-    int corner = kTri[gl_VertexID % 6];
+    uvec4 q = quads[gl_VertexID >> 2];
+    int corner = gl_VertexID & 3;
 
     vec3 origin = vec3(uvec3(q.x & 31u, (q.x >> 5) & 31u, (q.x >> 10) & 31u));
     float w = float(((q.x >> 15) & 31u) + 1u);
     float h = float(((q.x >> 20) & 31u) + 1u);
     uint dir = (q.x >> 25) & 7u;
     uint block = q.y & 255u;
+    vWet = q.w & 1u;
 
     // dir 6/7 are the two diagonal planes of a cross-plane foliage voxel, the values the
     // 3-bit dir field never used. They are quads like any other, just not axis aligned.
+    if (dir >= 6u && isCarpet(block)) {
+        // one flat quad on the floor of the cell; the second plane is dropped
+        if (dir == 7u) {
+            gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+            return;
+        }
+        vec3 cell = origin + uOffsets[gl_DrawID].xyz;
+        uint hc = cellHash3(cell + uCamPos);
+        // a lily pad floats on the water in the cell below, the others lie on the ground
+        float y = block == 89u ? -0.088 : 0.012;
+        int k = cell.y + y > 0.0 ? 3 - corner : corner; // seen from below, wind it the other way
+        vec2 cc = kQuadCorner[k];
+        vec3 wpos = cell + vec3(cc.x, y, cc.y);
+        vec2 t = cc - 0.5;
+        uint r = hc & 3u;
+        t = r == 1u ? vec2(-t.y, t.x) : (r == 2u ? -t : (r == 3u ? vec2(t.y, -t.x) : t));
+        vWorldRel = wpos;
+        vUv = t + 0.5;
+        vLayer = texLayer(block, dir);
+        vDir = dir;
+        uint sh12 = (q.y >> 8u) & 0xFFFu;
+        vShade = float((sh12 >> (uint(corner) * 3u)) & 7u) / 7.0;
+        vLight = vec4(float(q.z & 255u), float((q.z >> 8) & 255u), float((q.z >> 16) & 255u),
+                      float((q.z >> 24) & 255u)) / 255.0;
+        gl_Position = uViewProj * vec4(wpos, 1.0);
+        return;
+    }
     if (dir >= 6u) {
         vec2 cc = kQuadCorner[corner];
         vec3 p = (dir == 6u) ? vec3(cc.x, cc.y, cc.x) : vec3(cc.x, cc.y, 1.0 - cc.x);
@@ -90,7 +127,7 @@ void main() {
         // the tile. Without this the blades render upside down, which also hangs them from
         // the top of the block, the "floating grass".
         vUv = vec2(cc.x, 1.0 - cc.y);
-        vLayer = texLayer(block, dir);
+        vLayer = variantLayer(block, texLayer(block, dir), cellHash3(origin + uOffsets[gl_DrawID].xyz + uCamPos));
         vDir = dir;
         uint sh12 = (q.y >> 8u) & 0xFFFu;
         vShade = float((sh12 >> (uint(corner) * 3u)) & 7u) / 7.0;
@@ -113,7 +150,7 @@ void main() {
     vec3 world = pos + uOffsets[gl_DrawID].xyz;
 
     // leaf sway: gentle wind wobble driven by world position + time
-    if (block == 7u || block == 54u || block == 70u || block == 71u) {
+    if (block == 7u || block == 54u || block == 70u || block == 71u || block == 110u || block == 112u || block == 113u) {
         float ph = world.x * 0.5 + world.z * 0.5;
         float gust = windGust(world);
         world.x += 0.06 * sin(uTime * 1.6 + ph) * gust;
@@ -128,6 +165,9 @@ void main() {
 
     vWorldRel = world;
     vUv = c * vec2(w, h); // tile once per block, GL_REPEAT wraps it
+    // texture row 0 is the top of a tile, so a side face counts v down from its top edge
+    if (dir != 2u && dir != 3u)
+        vUv.y = (1.0 - c.y) * h;
     vLayer = texLayer(block, dir);
     vDir = dir;
     // w2 is the packed light word verbatim: r, g, b, sky bytes in that order

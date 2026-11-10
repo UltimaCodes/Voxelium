@@ -9,19 +9,22 @@ layout(local_size_x = 64) in;
 
 struct ChunkMeta {
     ivec4 posFirst; // xyz = chunk pos in chunk units, w = first quad in the arena
-    uvec4 countPad; // x = quad count
+    uvec4 countPad; // x = quad count, y = sunlit
+    // The quads in groups by direction, +X -X +Y -Y +Z -Z then cross-plane foliage (zw of
+    // groupsB: foliage, unused). All zero when the range is not grouped.
+    uvec4 groupsA;
+    uvec4 groupsB;
 };
 
+// Five words a command: DrawElementsIndirectCommand for the chunks (count, instances, first
+// index, base vertex, base instance), DrawArraysIndirectCommand plus a pad for the water.
 struct DrawCmd {
-    uint count;
-    uint instanceCount;
-    uint first;
-    uint baseInstance;
+    uint w[5];
 };
 
 layout(std430, binding = 0) readonly buffer Meta { ChunkMeta meta[]; };
 layout(std430, binding = 1) writeonly buffer Cmds { DrawCmd cmds[]; };
-layout(std430, binding = 2) buffer DrawCount { uint drawCount; };
+layout(std430, binding = 2) buffer DrawCount { uint drawCount; uint chunkCount; };
 layout(std430, binding = 3) writeonly buffer Offsets { vec4 offsets[]; };
 layout(std430, binding = 4) readonly buffer Vis { uint visBits[]; }; // cave-culling flood result
 
@@ -31,18 +34,34 @@ layout(location = 7) uniform vec3 uCameraFrac;
 layout(location = 8) uniform uint uChunkCount;
 layout(location = 9) uniform uint uCaveCull;
 layout(location = 10) uniform uint uPlaneCount;
-// shadow pass: skip chunks sealed from the sky. the shadow map keeps the depth NEAREST
-// the light, and a sealed chunk is always behind whatever encloses it, so it can never
-// change the result, dropping it is exact, not an approximation.
+// far shadow cascade: skip chunks sealed from the sky, see ShadowMap::render. Not exact: they hold
+// the only faces that shade a cave. Nobody sees into one from there.
 layout(location = 11) uniform uint uSunlitOnly;
-// The far shadow cascade is drawn an eighth at a time (ShadowMap::kFarSlices): 8 = draw
-// everything, 0..7 = only the chunks on that cell of a 2x2x2 checkerboard. Keyed on the chunk's
-// position, not its slot here, because the slots are reordered whenever chunks load or unload
-// and a chunk must not move to a slice that has already been drawn.
+// The cached shadow cascades are redrawn a slice a frame (ShadowMap::kSlices): with uSlices
+// set (8, 16 or 32), only the chunks whose cell of a 4x4x2 checkerboard falls in slice uSlice.
+// Keyed on the chunk's position, not its slot here, because the slots are reordered whenever
+// chunks load or unload and a chunk must not move to a slice that has already been drawn.
 layout(location = 12) uniform uint uSlice;
-// Vertices per quad in the commands written: 6 (two triangles) for everything but the water,
-// which draws each quad as one 4-vertex patch for the tessellation stages to subdivide.
+layout(location = 15) uniform uint uSlices; // 0: everything
+// 6: the chunks, two indexed triangles a quad. 4: the water, which draws each quad as one
+// 4-vertex patch for the tessellation stages to subdivide.
 layout(location = 13) uniform uint uVertsPerQuad;
+// 1: draw only the direction groups with a face the camera can be in front of. Every face of a
+// group faces away from a camera on the far side of the chunk's slab, and back faces are culled
+// anyway, so this drops them before the vertex shader instead of after it.
+layout(location = 14) uniform uint uFaceCull;
+
+// Quads one indexed draw can reach: the index buffer's length (Renderer.cpp kIndexedQuads).
+const uint kIndexedQuads = 262144u;
+
+DrawCmd command(uint firstQuad, uint quads) {
+    DrawCmd c;
+    if (uVertsPerQuad == 4u)
+        c.w = uint[5](quads * 4u, 1u, firstQuad * 4u, 0u, 0u);
+    else // gl_VertexID is the base vertex plus the index, so quad * 4 + corner indexes the arena
+        c.w = uint[5](min(quads, kIndexedQuads) * 6u, 1u, 0u, firstQuad * 4u, 0u);
+    return c;
+}
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
@@ -54,8 +73,8 @@ void main() {
         return; // sealed from the sky: contributes nothing to a sun shadow map
 
     ChunkMeta m = meta[i];
-    if (uSlice < 8u && (uint(m.posFirst.x & 1) | (uint(m.posFirst.z & 1) << 1) |
-                        (uint(m.posFirst.y & 1) << 2)) != uSlice)
+    if (uSlices != 0u && (uint(m.posFirst.x & 3) | (uint(m.posFirst.z & 3) << 2) |
+                          (uint(m.posFirst.y & 1) << 4)) % uSlices != uSlice)
         return;
     vec3 offset = vec3((m.posFirst.xyz - uCameraChunk) * 32) - uCameraFrac;
     vec3 center = offset + 16.0;
@@ -65,9 +84,46 @@ void main() {
             return; // box entirely behind this plane
     }
 
-    uint slot = atomicAdd(drawCount, 1u);
-    // gl_VertexID starts at `first` for each MDI sub-draw, so first = quad*6 makes the
-    // vertex shader's gl_VertexID/6 index the global arena directly (quad*4 for water)
-    cmds[slot] = DrawCmd(m.countPad.x * uVertsPerQuad, 1u, uint(m.posFirst.w) * uVertsPerQuad, 0u);
-    offsets[slot] = vec4(offset, 0.0);
+    uint counts[7] = uint[7](m.groupsA.x, m.groupsA.y, m.groupsA.z, m.groupsA.w, m.groupsB.x, m.groupsB.y, m.groupsB.z);
+    uint grouped = counts[0] + counts[1] + counts[2] + counts[3] + counts[4] + counts[5] + counts[6];
+    if (uFaceCull == 0u || grouped == 0u) {
+        uint slot = atomicAdd(drawCount, 1u);
+        cmds[slot] = command(uint(m.posFirst.w), m.countPad.x);
+        offsets[slot] = vec4(offset, 0.0);
+        atomicAdd(chunkCount, 1u);
+        return;
+    }
+    // +X faces sit on planes from the chunk's low side + 1 up: a camera at or below that low side is
+    // behind every one of them. A block of margin either way; the cross-plane foliage always draws.
+    bool open[7] = bool[7](offset.x < 0.0, offset.x + 32.0 > 0.0, offset.y < 0.0, offset.y + 32.0 > 0.0,
+                           offset.z < 0.0, offset.z + 32.0 > 0.0, true);
+    // neighbouring open groups are one draw
+    uint runFirst[7], runCount[7];
+    uint runs = 0u, at = uint(m.posFirst.w);
+    bool inRun = false;
+    for (int g = 0; g < 7; ++g) {
+        if (counts[g] == 0u)
+            continue;
+        if (open[g]) {
+            if (inRun) {
+                runCount[runs - 1u] += counts[g];
+            } else {
+                runFirst[runs] = at;
+                runCount[runs] = counts[g];
+                ++runs;
+                inRun = true;
+            }
+        } else {
+            inRun = false;
+        }
+        at += counts[g];
+    }
+    if (runs == 0u)
+        return;
+    uint slot = atomicAdd(drawCount, runs);
+    for (uint r = 0u; r < runs; ++r) {
+        cmds[slot + r] = command(runFirst[r], runCount[r]);
+        offsets[slot + r] = vec4(offset, 0.0);
+    }
+    atomicAdd(chunkCount, 1u);
 }

@@ -20,6 +20,7 @@ inline constexpr int kChunkSize3 = kChunkSize * kChunkSize * kChunkSize;
 // kVerticalRadius is how many chunks above and below the camera stay loaded. It is a
 // streaming budget, not a limit: walk up and the band comes with you.
 inline constexpr int kVerticalRadius = 7; // 7 => 480 blocks of resident column
+inline constexpr int kHighestLookDown = 19; // chunk y (about 640): past it the ground is left to the far terrain
 
 // Where the GENERATOR puts terrain. This is a property of the noise, not of the world, and
 // exists so light and generation can bound their work: the generator never writes a solid
@@ -132,14 +133,79 @@ inline constexpr BlockId SpruceWood = 68;
 inline constexpr BlockId BirchWood = 69;
 inline constexpr BlockId SpruceLeaves = 70; // cutout
 inline constexpr BlockId BirchLeaves = 71;  // cutout
-inline constexpr int kBlockCount = 72; // through BirchLeaves
+// Ground cover. Cross plants, then the carpets: flat on whatever is under them, drawn from the
+// same cross quads (the vertex stage lays them down).
+inline constexpr BlockId TallGrass = 72;
+inline constexpr BlockId Fern = 73;
+inline constexpr BlockId DryGrass = 74;
+inline constexpr BlockId DuneGrass = 75;
+inline constexpr BlockId JungleGrass = 76;
+inline constexpr BlockId FlowerRed = 77;
+inline constexpr BlockId FlowerBlue = 78;
+inline constexpr BlockId FlowerPurple = 79;
+inline constexpr BlockId FlowerWhite = 80;
+inline constexpr BlockId FlowerOrange = 81;
+inline constexpr BlockId MushroomBrown = 82;
+inline constexpr BlockId MushroomRed = 83;
+inline constexpr BlockId Reed = 84;
+inline constexpr BlockId FireflyBush = 85;
+inline constexpr BlockId CactusFlower = 86;
+inline constexpr BlockId LeafLitter = 87; // carpet
+inline constexpr BlockId Pebbles = 88;    // carpet
+inline constexpr BlockId LilyPad = 89;    // carpet, sits on the water below it
+// Ground of the newer biomes.
+inline constexpr BlockId Moss = 90;
+inline constexpr BlockId ForestFloor = 91;
+inline constexpr BlockId JungleFloor = 92;
+inline constexpr BlockId SavannaGrass = 93;
+inline constexpr BlockId SnowyGrass = 94;
+inline constexpr BlockId DryDirt = 95;
+inline constexpr BlockId Permafrost = 96;
+inline constexpr BlockId Mud = 97;
+inline constexpr BlockId RedSand = 98;
+inline constexpr BlockId Clay = 99;
+inline constexpr BlockId Ice = 100;
+inline constexpr BlockId Terracotta = 101;
+inline constexpr BlockId TerracottaRed = 102;
+inline constexpr BlockId TerracottaYellow = 103;
+inline constexpr BlockId TerracottaBrown = 104;
+inline constexpr BlockId TerracottaWhite = 105;
+inline constexpr BlockId Granite = 106;
+inline constexpr BlockId Andesite = 107;
+inline constexpr BlockId Slate = 108;
+inline constexpr BlockId AcaciaWood = 109;
+inline constexpr BlockId AcaciaLeaves = 110; // cutout
+inline constexpr BlockId JungleWood = 111;
+inline constexpr BlockId JungleLeaves = 112; // cutout
+inline constexpr BlockId BerryBush = 113;    // cutout
+// Logs lying down, along x and along z.
+inline constexpr BlockId WoodX = 114;
+inline constexpr BlockId WoodZ = 115;
+inline constexpr BlockId SpruceWoodX = 116;
+inline constexpr BlockId SpruceWoodZ = 117;
+inline constexpr BlockId BirchWoodX = 118;
+inline constexpr BlockId BirchWoodZ = 119;
+inline constexpr BlockId Cobblestone = 120;
+inline constexpr BlockId MossyCobble = 121;
+inline constexpr BlockId StoneBricks = 122;
+inline constexpr BlockId Glass = 123; // cutout
+inline constexpr BlockId SprucePlanks = 124;
+inline constexpr BlockId BirchPlanks = 125;
+inline constexpr BlockId AcaciaPlanks = 126;
+inline constexpr BlockId JunglePlanks = 127;
+inline constexpr int kBlockCount = 128;
 
 inline constexpr bool isLeafBlock(BlockId id) {
-    return id == Leaves || id == PalmLeaves || id == SpruceLeaves || id == BirchLeaves;
+    return id == Leaves || id == PalmLeaves || id == SpruceLeaves || id == BirchLeaves || id == AcaciaLeaves ||
+           id == JungleLeaves || id == BerryBush;
 }
 inline constexpr bool isLogBlock(BlockId id) {
-    return id == Wood || id == PalmWood || id == SpruceWood || id == BirchWood;
+    return id == Wood || id == PalmWood || id == SpruceWood || id == BirchWood || id == AcaciaWood ||
+           id == JungleWood || (id >= WoodX && id <= BirchWoodZ);
 }
+inline constexpr bool isCarpet(BlockId id) { return id >= LeafLitter && id <= LilyPad; }
+inline constexpr bool isPlanks(BlockId id) { return id == Planks || (id >= SprucePlanks && id <= JunglePlanks); }
+inline constexpr bool isTerracotta(BlockId id) { return id >= Terracotta && id <= TerracottaWhite; }
 
 inline constexpr bool isCoral(BlockId id) { return id >= BrainCoral && id <= BubbleCoral; }
 // Plants that grow underwater. The cell holds the plant instead of water, so it has to count
@@ -149,12 +215,13 @@ inline constexpr bool isWaterlogged(BlockId id) {
     return id == Seagrass || id == Kelp || (id >= CoralFanPink && id <= CoralFanOrange);
 }
 inline constexpr bool isCross(BlockId id) {
-    return id == GrassTuft || id == Flower || id == DeadBush || id == Shell || isWaterlogged(id);
+    return id == GrassTuft || id == Flower || id == DeadBush || id == Shell || isWaterlogged(id) ||
+           (id >= TallGrass && id <= LilyPad);
 }
 
 // Blocks with nothing under them fall. Sand and gravel only, dirt and stone staying put
 // is what keeps a cliff a cliff.
-inline constexpr bool falls(BlockId id) { return id == Sand || id == Gravel; }
+inline constexpr bool falls(BlockId id) { return id == Sand || id == Gravel || id == RedSand; }
 
 inline constexpr int luminance(BlockId id) {
     return (id == Glow || isLamp(id)) ? 14 : (id == GlowCoral ? 12 : 0);
@@ -174,12 +241,14 @@ inline constexpr float hardness(BlockId id) {
         return 0.40f;
     if (isCoral(id) || id == GlowCoral)
         return 0.60f;
-    if (id == Sand || id == Gravel || id == Snow)
+    if (id == Sand || id == Gravel || id == Snow || id == RedSand || id == Glass || id == Ice)
         return 0.30f;
-    if (id == Dirt || id == Grass)
+    if (id == Dirt || id == Grass || (id >= Moss && id <= Clay))
         return 0.42f;
-    if (isLogBlock(id) || id == Planks || id == Glow || isLamp(id))
+    if (isLogBlock(id) || isPlanks(id) || id == Glow || isLamp(id))
         return 0.70f;
+    if (isTerracotta(id))
+        return 0.90f;
     if (id == CoalOre || id == IronOre)
         return 1.60f;
     if (id == Bricks)
@@ -189,19 +258,20 @@ inline constexpr float hardness(BlockId id) {
 
 // Emitted colour of a light-emitting block, 0..15 per channel. The three channels
 // propagate independently, so an emitter's hue survives all the way out to its falloff
-// rather than being a white blob tinted at the end. Glow is a warm ember: red carries
-// furthest, blue dies first, so its pool goes orange at the edges the way firelight does.
+// rather than being a white blob tinted at the end. Glow is firelight: a warm yellow pool
+// (the shader squares the channels, so 14/12/7 reads yellow, not white) whose red carries
+// furthest and blue dies first, so it goes orange at the edges.
 // This table is the entire interface for adding an emitter.
 inline constexpr int emitR(BlockId id) {
     return id == Glow ? 14 : (isLamp(id) ? kLampRGB[std::size_t(id - LampFirst)].r
                                          : (id == GlowCoral ? 3 : 0));
 }
 inline constexpr int emitG(BlockId id) {
-    return id == Glow ? 10 : (isLamp(id) ? kLampRGB[std::size_t(id - LampFirst)].g
+    return id == Glow ? 12 : (isLamp(id) ? kLampRGB[std::size_t(id - LampFirst)].g
                                          : (id == GlowCoral ? 11 : 0));
 }
 inline constexpr int emitB(BlockId id) {
-    return id == Glow ? 5 : (isLamp(id) ? kLampRGB[std::size_t(id - LampFirst)].b
+    return id == Glow ? 7 : (isLamp(id) ? kLampRGB[std::size_t(id - LampFirst)].b
                                         : (id == GlowCoral ? 12 : 0));
 }
 inline constexpr bool emissive(BlockId id) {
@@ -224,7 +294,7 @@ inline constexpr bool opaque(BlockId id) {
 //   - it does NOT stop light, it attenuates it, so a canopy dapples instead of casting a
 //     solid black interior
 //   - it DOES still collide; a tree is not walk-through
-inline constexpr bool isCutout(BlockId id) { return isLeafBlock(id); }
+inline constexpr bool isCutout(BlockId id) { return isLeafBlock(id) || id == Glass; }
 
 // Hides the faces behind it, and blocks the cave-cull visibility flood. A cutout does not.
 inline constexpr bool occludes(BlockId id) { return opaque(id) && !isCutout(id); }
@@ -235,7 +305,7 @@ inline constexpr bool blocksLight(BlockId id) { return occludes(id); }
 // What one step THROUGH this voxel costs the light BFS. Ordinary air is 1. Leaves take a
 // couple of levels out of whatever crosses them, which is what turns a canopy from a black
 // hole into a soft gradient with bright gaps.
-inline constexpr int lightCost(BlockId id) { return isCutout(id) ? 3 : 1; }
+inline constexpr int lightCost(BlockId id) { return isLeafBlock(id) ? 3 : 1; }
 
 // 8 = full source, 1 = thinnest film, 0 = not water. The source level never decays; every
 // other level is recomputed from its neighbours each fluid tick.
@@ -268,21 +338,27 @@ inline constexpr const char* soundMaterial(BlockId id) {
         return "grass"; // a plant you push through, not the water around it
     if (isWater(id))
         return "water";
-    if (isLamp(id) || id == Glow || id == GlowCoral)
+    if (isLamp(id) || id == Glow || id == GlowCoral || id == Glass || id == Ice)
         return "glass";
-    if (isCross(id) || isLeafBlock(id) || id == Grass || id == Cactus)
+    if (id == Pebbles)
+        return "gravel";
+    if (isCross(id) || isLeafBlock(id) || id == Grass || id == Cactus || id == Moss || id == JungleFloor ||
+        id == SavannaGrass)
         return "grass";
+    if (isLogBlock(id) || isPlanks(id) || id == Coconut)
+        return "wood";
     switch (id) {
-        case Wood:
-        case PalmWood:
-        case SpruceWood:
-        case BirchWood:
-        case Coconut:
-        case Planks: return "wood";
         case Sand:
-        case BeachSand: return "sand";
-        case Snow: return "snow";
-        case Dirt: return "dirt";
+        case BeachSand:
+        case RedSand: return "sand";
+        case Snow:
+        case SnowyGrass: return "snow";
+        case Dirt:
+        case ForestFloor:
+        case DryDirt:
+        case Permafrost:
+        case Mud:
+        case Clay: return "dirt";
         case Gravel: return "gravel";
         default: return "stone"; // stone, bricks, the ores, and anything added later
     }

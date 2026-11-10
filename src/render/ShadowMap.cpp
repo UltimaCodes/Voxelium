@@ -16,13 +16,14 @@ bool ShadowMap::init(unsigned int shadowProgram, int resolution) {
     m_resolution = resolution;
     m_shadowProgram = shadowProgram;
 
-    // one layer per cascade, plus the spare the far cascade is redrawn into a slice at a time
+    // one layer per cascade, plus the spares the mid and far ones are redrawn into a slice at a time
     glCreateTextures(GL_TEXTURE_2D_ARRAY, 1, &m_depthArray);
     glTextureStorage3D(m_depthArray, 1, GL_DEPTH_COMPONENT32F, m_resolution, m_resolution,
-                       kCascades + 1);
+                       spareLayer(kCascades - 1) + 1);
     // new storage holds nothing yet, so everything is drawn whole on the next frame
     m_forceAll = true;
-    m_farSlice = -1;
+    for (Spare& s : m_spare)
+        s.slice = -1;
     glTextureParameteri(m_depthArray, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTextureParameteri(m_depthArray, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTextureParameteri(m_depthArray, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
@@ -138,6 +139,11 @@ void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& sunL) {
     constexpr std::chrono::milliseconds kInterval[kCascades] = {std::chrono::milliseconds(0),
                                                                 std::chrono::milliseconds(60),
                                                                 std::chrono::milliseconds(700)};
+    // How far the sun may move before a cascade follows it (cosine of the angle): 0.57 degrees
+    // for the mid one, 1.5 for the far one, whose texels are nine times the size and whose
+    // shadows are seen from 130 blocks off. Following the sun at 0.57 there too restarted its
+    // redraw, an eighth of ~30 ms a frame, every 0.4 s of a default day.
+    constexpr float kSunStep[kCascades] = {1.0f, 0.99995f, 0.99966f};
 
     for (int c = 0; c < kCascades; ++c) {
         // The shaders pick a cascade by distance from the camera (length(pos) against the
@@ -159,10 +165,12 @@ void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& sunL) {
         // Cascade 0 always re-anchors: it's only ~130 chunks and contact shadows are the
         // ones you'd notice lagging. The far two re-anchor only once the ideal centre has
         // drifted past the slack, or the sun has actually moved.
+        // They start early: a redraw lands up to kRedrawSec later, and until it does the old
+        // contents must still cover the camera's ball at flying speed (40 blocks a second).
         const double drift = glm::length(idealWorld - m_anchorWorld[c]);
-        const bool sunMoved = glm::dot(m_anchorSun[c], sunL) < 0.99995f;
-        const bool reanchor = m_forceAll || c == 0 || m_radius[c] == 0.0f ||
-                              drift > double(radius * kSlack) || sunMoved;
+        const bool sunMoved = glm::dot(m_anchorSun[c], sunL) < kSunStep[c];
+        const double reach = double(radius * kSlack) * (c == 1 ? 0.5 : 0.75);
+        const bool reanchor = m_forceAll || c == 0 || m_radius[c] == 0.0f || drift > reach || sunMoved;
 
         // snap the centre to the texel grid in light space, double precision so the snap is
         // exact anywhere in the world and shadows never swim
@@ -171,27 +179,28 @@ void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& sunL) {
             const double cy = std::floor(glm::dot(ly, idealWorld) / texel) * texel;
             return lx * cx + ly * cy + lz * glm::dot(lz, idealWorld);
         };
-        // The far cascade's routine redraws are drawn a slice a frame (see the header). One
-        // already under way is what answers any drift or sun change against the old contents,
-        // and a pending redraw waits for it rather than being spent on it. A jump the old
-        // contents cannot cover at all (a teleport, a respawn) is drawn whole, as before.
-        const bool sliced = c == kCascades - 1 && !m_forceAll && m_radius[c] != 0.0f &&
+        // The mid and far cascades' routine redraws are drawn a slice a frame (see the header).
+        // One already under way is what answers any drift or sun change against the old
+        // contents, and a pending redraw waits for it rather than being spent on it. A jump the
+        // old contents cannot cover at all (a teleport, a respawn) is drawn whole, as before.
+        Spare& spare = m_spare[c];
+        const bool sliced = c > 0 && !m_forceAll && m_radius[c] != 0.0f &&
                             drift <= 2.0 * double(radius * kSlack);
-        if (c == kCascades - 1 && !sliced)
-            m_farSlice = -1; // drawn whole this frame, so a half-drawn spare is stale
+        if (!sliced)
+            spare.slice = -1; // drawn whole this frame, so a half-drawn spare is stale
         bool redraw = reanchor;
-        if (m_pending[c] && now - m_lastRedraw[c] >= kInterval[c] && !(sliced && m_farSlice >= 0)) {
+        if (m_pending[c] && now - m_lastRedraw[c] >= kInterval[c] && !(sliced && spare.slice >= 0)) {
             m_pending[c] = false;
             redraw = true;
         }
         if (sliced) {
-            if (redraw && m_farSlice < 0) {
+            if (redraw && spare.slice < 0) {
                 m_lastRedraw[c] = now;
-                m_farAnchor = snapped();
-                m_farSun = sunL;
-                m_farUp = glm::vec3(ly);
-                m_farRadius = radius;
-                m_farSlice = 0;
+                spare.anchor = snapped();
+                spare.sun = sunL;
+                spare.up = glm::vec3(ly);
+                spare.radius = radius;
+                spare.slice = 0;
             }
         } else if (reanchor) {
             m_lastRedraw[c] = now;
@@ -211,8 +220,8 @@ void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& sunL) {
         // a little since does not turn the lookup against the map.
         m_vp[c] = cascadeMatrix(m_anchorWorld[c], m_anchorSun[c], m_anchorUp[c], m_radius[c],
                                 cameraPos);
-        if (c == kCascades - 1 && m_farSlice >= 0)
-            m_farVp = cascadeMatrix(m_farAnchor, m_farSun, m_farUp, m_farRadius, cameraPos);
+        if (spare.slice >= 0)
+            spare.vp = cascadeMatrix(spare.anchor, spare.sun, spare.up, spare.radius, cameraPos);
     }
     m_forceAll = false;
 }
@@ -220,7 +229,7 @@ void ShadowMap::update(const glm::dvec3& cameraPos, const glm::vec3& sunL) {
 glm::mat4 ShadowMap::cascadeMatrix(const glm::dvec3& anchor, const glm::vec3& sun,
                                    const glm::vec3& up, float r, const glm::dvec3& cameraPos) {
     const glm::vec3 centerRel(anchor - cameraPos);
-    const glm::mat4 view = glm::lookAt(centerRel - sun * (r + 120.0f), centerRel, up);
+    const glm::mat4 view = glm::lookAt(centerRel + sun * (r + 120.0f), centerRel, up);
     const glm::mat4 proj = glm::ortho(-r, r, -r, r, 0.1f, 2.0f * r + 160.0f);
     return proj * view;
 }
@@ -246,31 +255,44 @@ void ShadowMap::render(Renderer& renderer, const glm::ivec3& cameraChunk,
         // cull to this cascade's ortho box: the near cascade draws a handful of chunks
         // instead of the whole world. cave culling stays off here, a chunk hidden from
         // the camera can still cast a shadow the camera sees
-        renderer.cullFrustum(Frustum::fromOrtho(m_vp[c]), cameraChunk, cameraFrac, false, true);
+        // Only the far cascade skips sealed chunks. This pass draws faces turned from the light, so
+        // the ground over a cave casts nothing and a cave's own ceiling is all that shades it. Far off
+        // nobody sees into a cave, and the sky level keeps the sun out of it anyway.
+        renderer.cullFrustum(Frustum::fromOrtho(m_vp[c]), cameraChunk, cameraFrac, false, c == kCascades - 1);
         glNamedFramebufferTextureLayer(m_fbo, GL_DEPTH_ATTACHMENT, m_depthArray, 0, c);
         glClear(GL_DEPTH_BUFFER_BIT);
         renderer.drawIndirect(m_shadowProgram, m_vp[c]);
     }
 
-    // one eighth of a routine far-cascade redraw, into the spare layer
-    if (m_farSlice >= 0) {
-        constexpr int far = kCascades - 1;
-        renderer.cullFrustum(Frustum::fromOrtho(m_farVp), cameraChunk, cameraFrac, false, true,
-                             unsigned(m_farSlice));
-        glNamedFramebufferTextureLayer(m_fbo, GL_DEPTH_ATTACHMENT, m_depthArray, 0, kCascades);
-        if (m_farSlice == 0)
-            glClear(GL_DEPTH_BUFFER_BIT);
-        renderer.drawIndirect(m_shadowProgram, m_farVp);
-        if (++m_farSlice == kFarSlices) {
-            // complete: it replaces the far cascade from this frame's lighting on
-            glCopyImageSubData(m_depthArray, GL_TEXTURE_2D_ARRAY, 0, 0, 0, kCascades, m_depthArray,
-                               GL_TEXTURE_2D_ARRAY, 0, 0, 0, far, m_resolution, m_resolution, 1);
-            m_anchorWorld[far] = m_farAnchor;
-            m_anchorSun[far] = m_farSun;
-            m_anchorUp[far] = m_farUp;
-            m_radius[far] = m_farRadius;
-            m_vp[far] = m_farVp;
-            m_farSlice = -1;
+    // A slice of each routine redraw under way, into that cascade's spare layer: more than one
+    // at a low frame rate, so the redraw is done before the camera can outrun the old contents.
+    const auto now = std::chrono::steady_clock::now();
+    const float dt = std::clamp(std::chrono::duration<float>(now - m_lastRender).count(), 0.0f, 0.25f);
+    m_lastRender = now;
+    for (int c = 1; c < kCascades; ++c) {
+        Spare& spare = m_spare[c];
+        if (spare.slice < 0)
+            continue;
+        const int due = int(std::ceil(float(kSlices[c]) * dt / kRedrawSec[c]));
+        const int last = std::min(spare.slice + std::max(due, 1), kSlices[c]);
+        glNamedFramebufferTextureLayer(m_fbo, GL_DEPTH_ATTACHMENT, m_depthArray, 0, spareLayer(c));
+        for (; spare.slice < last; ++spare.slice) {
+            renderer.cullFrustum(Frustum::fromOrtho(spare.vp), cameraChunk, cameraFrac, false,
+                                 c == kCascades - 1, unsigned(spare.slice), unsigned(kSlices[c]));
+            if (spare.slice == 0)
+                glClear(GL_DEPTH_BUFFER_BIT);
+            renderer.drawIndirect(m_shadowProgram, spare.vp);
+        }
+        if (spare.slice == kSlices[c]) {
+            // complete: it replaces the cascade from this frame's lighting on
+            glCopyImageSubData(m_depthArray, GL_TEXTURE_2D_ARRAY, 0, 0, 0, spareLayer(c), m_depthArray,
+                               GL_TEXTURE_2D_ARRAY, 0, 0, 0, c, m_resolution, m_resolution, 1);
+            m_anchorWorld[c] = spare.anchor;
+            m_anchorSun[c] = spare.sun;
+            m_anchorUp[c] = spare.up;
+            m_radius[c] = spare.radius;
+            m_vp[c] = spare.vp;
+            spare.slice = -1;
             ++m_redraws;
         }
     }

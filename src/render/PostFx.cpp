@@ -46,7 +46,7 @@ bool PostFx::init(const std::filesystem::path& shaderDir, std::string_view defin
 
 bool PostFx::reloadPrograms(std::string_view defines) {
     const std::filesystem::path& shaderDir = m_shaderDir;
-    // all nine submitted before any of them is waited on, so the driver's compiler threads
+    // all submitted before any of them is waited on, so the driver's compiler threads
     // have the whole set to chew through at once instead of one program at a time
     const auto fs = shaderDir / "fullscreen.vert";
     ProgramJob jobs[] = {
@@ -57,16 +57,14 @@ bool PostFx::reloadPrograms(std::string_view defines) {
         submitProgram(fs, shaderDir / "bloom_up.frag", defines),
         submitProgram(fs, shaderDir / "final.frag", defines),
         submitProgram(fs, shaderDir / "taa.frag", defines),
-        submitProgram(fs, shaderDir / "ssgi.frag", defines),
         submitProgram(fs, shaderDir / "motionblur.frag", defines),
-        submitProgram(fs, shaderDir / "lumdown.frag", defines),
-        submitProgram(fs, shaderDir / "expose.frag", defines),
         submitProgram(fs, shaderDir / "apply_ao.frag", defines),
         submitProgram(fs, shaderDir / "cloudmap.frag", defines),
         submitProgram(fs, shaderDir / "scatter.frag", defines),
+        submitProgram(fs, shaderDir / "clouds3d.frag", defines),
     };
-    unsigned int built[14];
-    for (int i = 0; i < 14; ++i)
+    unsigned int built[std::size(jobs)];
+    for (std::size_t i = 0; i < std::size(jobs); ++i)
         built[i] = resolveProgram(jobs[i]);
     for (const unsigned int p : built) {
         if (p == 0) { // leave the working set alone rather than half-swapping it
@@ -78,9 +76,8 @@ bool PostFx::reloadPrograms(std::string_view defines) {
     }
     // Only now is it safe to drop the old set.
     const unsigned int old[] = {m_progSsao,    m_progBlur,  m_progComposite, m_progBloomDown,
-                                m_progBloomUp, m_progFinal, m_progTaa,       m_progSsgi,
-                                m_progMotion,  m_progLumDown, m_progExpose,  m_progApplyAo,
-                                m_progCloudMap, m_progScatter};
+                                m_progBloomUp, m_progFinal, m_progTaa,       m_progMotion,
+                                m_progApplyAo, m_progCloudMap, m_progScatter, m_progClouds3d};
     for (const unsigned int p : old)
         if (p)
             glDeleteProgram(p);
@@ -92,30 +89,99 @@ bool PostFx::reloadPrograms(std::string_view defines) {
     m_progBloomUp = built[4];
     m_progFinal = built[5];
     m_progTaa = built[6];
-    m_progSsgi = built[7];
-    m_progMotion = built[8];
-    m_progLumDown = built[9];
-    m_progExpose = built[10];
-    m_progApplyAo = built[11];
-    m_progCloudMap = built[12];
-    m_progScatter = built[13];
+    m_progMotion = built[7];
+    m_progApplyAo = built[8];
+    m_progCloudMap = built[9];
+    m_progScatter = built[10];
+    m_progClouds3d = built[11];
     if (m_vao == 0)
         glCreateVertexArrays(1, &m_vao);
     if (m_cloudTex == 0) {
         m_cloudTex = makeTex2D(GL_R8, kCloudMapRes, kCloudMapRes, GL_LINEAR, 6);
         m_cloudFbo = makeFbo(m_cloudTex);
     }
+    if (m_cloudShape == 0)
+        bakeCloudNoise();
+    if (m_causticsTex == 0) {
+        m_progCaustics = loadComputeProgram(m_shaderDir / "caustics_tex.comp");
+        glCreateTextures(GL_TEXTURE_2D, 1, &m_causticsTex);
+        glTextureStorage2D(m_causticsTex, 1, GL_R8, 512, 512);
+        glTextureParameteri(m_causticsTex, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTextureParameteri(m_causticsTex, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTextureParameteri(m_causticsTex, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTextureParameteri(m_causticsTex, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glClearTexImage(m_causticsTex, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+    }
     return true;
+}
+
+void PostFx::updateCaustics(float time) {
+    if (m_progCaustics == 0)
+        return;
+    glUseProgram(m_progCaustics);
+    glProgramUniform1f(m_progCaustics, 0, time);
+    glBindImageTexture(0, m_causticsTex, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R8);
+    glDispatchCompute(512 / 8, 512 / 8, 1);
+    glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
+}
+
+void PostFx::bakeCloudNoise() {
+    const auto make3d = [](int size, int mips) {
+        GLuint t = 0;
+        glCreateTextures(GL_TEXTURE_3D, 1, &t);
+        glTextureStorage3D(t, mips, GL_R8, size, size, size);
+        glTextureParameteri(t, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTextureParameteri(t, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTextureParameteri(t, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTextureParameteri(t, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTextureParameteri(t, GL_TEXTURE_WRAP_R, GL_REPEAT);
+        return t;
+    };
+    constexpr int kShape = 64, kDetail = 32, kWeather = 512;
+    m_cloudShape = make3d(kShape, 5);
+    m_cloudDetail = make3d(kDetail, 4);
+    glCreateTextures(GL_TEXTURE_2D, 1, &m_cloudWeather);
+    glTextureStorage2D(m_cloudWeather, 1, GL_RG8, kWeather, kWeather);
+    glTextureParameteri(m_cloudWeather, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTextureParameteri(m_cloudWeather, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTextureParameteri(m_cloudWeather, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTextureParameteri(m_cloudWeather, GL_TEXTURE_WRAP_T, GL_REPEAT);
+
+    const GLuint prog = loadComputeProgram(m_shaderDir / "cloudnoise.comp");
+    if (prog == 0) {
+        VX_ERROR("clouds: no noise bake, the sky will be empty");
+        return;
+    }
+    glUseProgram(prog);
+    glProgramUniform1i(prog, 2, 20260721);
+    const auto run3d = [&](GLuint tex, int mode, int size) {
+        glBindImageTexture(0, tex, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R8);
+        glProgramUniform1i(prog, 0, mode);
+        glProgramUniform1i(prog, 1, size);
+        glDispatchCompute(GLuint(size + 3) / 4, GLuint(size + 3) / 4, GLuint(size + 3) / 4);
+        glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        glGenerateTextureMipmap(tex);
+    };
+    run3d(m_cloudShape, 0, kShape);
+    run3d(m_cloudDetail, 1, kDetail);
+    glBindImageTexture(1, m_cloudWeather, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RG8);
+    glProgramUniform1i(prog, 0, 2);
+    glProgramUniform1i(prog, 1, kWeather);
+    glDispatchCompute(kWeather / 4, kWeather / 4, 1);
+    glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
+    glDeleteProgram(prog);
 }
 
 void PostFx::shutdown() {
     destroyTargets();
     const GLuint progs[] = {m_progSsao,  m_progBlur,    m_progComposite, m_progBloomDown,
-                            m_progBloomUp, m_progFinal, m_progTaa,       m_progSsgi,
-                            m_progMotion, m_progLumDown, m_progExpose,   m_progApplyAo,
-                            m_progCloudMap, m_progScatter};
+                            m_progBloomUp, m_progFinal, m_progTaa,       m_progMotion,
+                            m_progApplyAo, m_progCloudMap, m_progScatter, m_progClouds3d};
     for (const GLuint p : progs)
         glDeleteProgram(p);
+    const GLuint noise[] = {m_cloudShape, m_cloudDetail, m_cloudWeather, m_causticsTex};
+    glDeleteTextures(4, noise);
+    glDeleteProgram(m_progCaustics);
     glDeleteFramebuffers(1, &m_cloudFbo);
     glDeleteTextures(1, &m_cloudTex);
     glDeleteVertexArrays(1, &m_vao);
@@ -130,6 +196,7 @@ void PostFx::updateCloudMap(const glm::dvec3& camPos, float time, float cloudBia
     glBindFramebuffer(GL_FRAMEBUFFER, m_cloudFbo);
     glViewport(0, 0, kCloudMapRes, kCloudMapRes);
     glUseProgram(m_progCloudMap);
+    glBindTextureUnit(11, m_cloudWeather);
     glProgramUniform2fv(m_progCloudMap, 0, 1, &m_cloudOrigin.x);
     glProgramUniform1f(m_progCloudMap, 1, kCloudMapSpan);
     glProgramUniform1f(m_progCloudMap, 2, time);
@@ -149,16 +216,13 @@ void PostFx::destroyTargets() {
     glDeleteFramebuffers(6, fbos);
     glDeleteFramebuffers(kBloomMips, m_bloomFbo);
     const GLuint texes[] = {m_hdrColor, m_depth,  m_hdr2,    m_ssaoTex,   m_ssaoBlurTex, m_sceneCopy,
-                            m_taa[0],   m_taa[1], m_ssgiTex, m_motionTex, m_terrainDepth};
+                            m_taa[0],   m_taa[1], m_motionTex, m_terrainDepth};
     glDeleteTextures(GLsizei(std::size(texes)), texes);
-    glDeleteFramebuffers(1, &m_ssgiFbo);
     glDeleteFramebuffers(1, &m_scatterFbo);
     glDeleteTextures(1, &m_scatterTex);
+    glDeleteFramebuffers(2, m_cloudsFbo);
+    glDeleteTextures(2, m_clouds);
     glDeleteFramebuffers(1, &m_motionFbo);
-    glDeleteFramebuffers(1, &m_lumFbo);
-    glDeleteFramebuffers(2, m_adaptFbo);
-    glDeleteTextures(1, &m_lumTex);
-    glDeleteTextures(2, m_adapt);
     glDeleteTextures(kBloomMips, m_bloomTex);
     m_width = 0;
 }
@@ -193,25 +257,14 @@ void PostFx::createTargets(int width, int height) {
     m_ssaoBlurTex = makeTex2D(GL_RG16F, hw, hh);
     m_ssaoBlurFbo = makeFbo(m_ssaoBlurTex);
 
-    // half-res coloured bounce; LINEAR so the composite upsample is smooth
-    m_ssgiTex = makeTex2D(GL_RGBA16F, hw, hh);
-    m_ssgiFbo = makeFbo(m_ssgiTex);
     // half-res light in the air; read back with texelFetch, so NEAREST
     m_scatterTex = makeTex2D(GL_RGBA16F, hw, hh, GL_NEAREST);
     m_scatterFbo = makeFbo(m_scatterTex);
-
-    // Auto-exposure: a mipped log-luminance square whose last mip is the scene average, and
-    // two 1x1 textures the adaptation ping-pongs between. Fixed size, so this costs the
-    // same at any resolution and does not need rebuilding on resize (it is here only
-    // because everything else target-shaped is).
-    // r/g/b: the world's log luminance, the share of it that is world, the whole frame's
-    m_lumTex = makeTex2D(GL_RGBA16F, kLumSize, kLumSize, GL_LINEAR, kLumMips);
-    m_lumFbo = makeFbo(m_lumTex);
     for (int i = 0; i < 2; ++i) {
-        m_adapt[i] = makeTex2D(GL_R16F, 1, 1);
-        m_adaptFbo[i] = makeFbo(m_adapt[i]);
+        m_clouds[i] = makeTex2D(GL_RGBA16F, hw, hh);
+        m_cloudsFbo[i] = makeFbo(m_clouds[i]);
     }
-    m_adaptValid = false; // nothing to adapt from until the first luminance pass has run
+    m_cloudsValid = false;
 
     int bw = width;
     int bh = height;
@@ -305,19 +358,9 @@ void PostFx::run(const RunParams& p) {
     // SSAO itself now runs in applyOpaqueSsao(), BEFORE water is drawn, see that method and
     // apply_ao.frag for why. By this point in the frame water is already in m_hdrColor.
 
-    // screen-space GI: gather one bounce of coloured light at half res from the lit scene
-    if (p.toggles.ssgi) {
-        glBindFramebuffer(GL_FRAMEBUFFER, m_ssgiFbo);
-        glViewport(0, 0, std::max(m_width / 2, 1), std::max(m_height / 2, 1));
-        glUseProgram(m_progSsgi);
-        glProgramUniform2fv(m_progSsgi, 0, 1, &p.projScale.x);
-        glProgramUniform1f(m_progSsgi, 1, p.nearPlane);
-        glProgramUniform1f(m_progSsgi, 2, p.time);
-        glBindTextureUnit(0, m_depth);
-        glBindTextureUnit(1, m_hdrColor);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-    }
-
+    // A shaft needs a sky to come from. In a cave whatever the cascades let through is not one:
+    // with no sky over the camera there are none, coming back on the way to the surface.
+    const float skyGate = std::clamp((p.toggles.eyeSky - 0.08f) / 0.32f, 0.0f, 1.0f);
     // Light in the air, sun shafts and lamp glow, marched at half res; the composite reads it
     // back up depth-aware. It was marched per full-res pixel inside the composite.
     const bool sunShafts = p.toggles.volumetric && p.toggles.shadows;
@@ -332,7 +375,11 @@ void PostFx::run(const RunParams& p) {
         glProgramUniformMatrix3fv(m_progScatter, 2, 1, GL_FALSE, &p.invViewRot[0][0]);
         glProgramUniformMatrix4fv(m_progScatter, 6, 3, GL_FALSE, &p.shadows->cascadeVp()[0][0][0]);
         glProgramUniform3fv(m_progScatter, 18, 1, &splits.x);
-        glProgramUniform1f(m_progScatter, 24, sunShafts ? 1.0f : 0.0f);
+        glProgramUniform1f(m_progScatter, 24, sunShafts && skyGate > 0.0f ? 1.0f : 0.0f);
+        glProgramUniform1f(m_progScatter, 40, skyGate);
+        glProgramUniform1f(m_progScatter, 41, p.underwater ? 1.0f : 0.0f);
+        glProgramUniform3fv(m_progScatter, 42, 1, &p.camPos.x);
+        glProgramUniform1f(m_progScatter, 43, std::fmod(p.time, 4096.0f));
         glProgramUniform3fv(m_progScatter, 30, 1, &p.lightL.x);
         glProgramUniform3fv(m_progScatter, 31, 1, &p.lightColor.x);
         glProgramUniform3fv(m_progScatter, 37, 1, &p.lightVolumeCam.x);
@@ -344,7 +391,47 @@ void PostFx::run(const RunParams& p) {
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
 
-    // composite: sky, SSGI, the air light, fog, still HDR
+    // The clouds, half res, a quarter of the pixels a frame, the rest carried over.
+    if (p.toggles.clouds) {
+        const int next = 1 - m_cloudsIndex;
+        glBindFramebuffer(GL_FRAMEBUFFER, m_cloudsFbo[next]);
+        glViewport(0, 0, std::max(m_width / 2, 1), std::max(m_height / 2, 1));
+        glUseProgram(m_progClouds3d);
+        const glm::vec3 camDelta = p.camPos - m_cloudsPrevCam;
+        // a teleport has nothing to carry over
+        const bool history = m_cloudsValid && glm::dot(camDelta, camDelta) < 64.0f * 64.0f;
+        glProgramUniform2fv(m_progClouds3d, 0, 1, &p.projScale.x);
+        glProgramUniform1f(m_progClouds3d, 1, p.nearPlane);
+        glProgramUniformMatrix3fv(m_progClouds3d, 2, 1, GL_FALSE, &p.invViewRot[0][0]);
+        glProgramUniformMatrix3fv(m_progClouds3d, 5, 1, GL_FALSE, &m_cloudsPrevRot[0][0]);
+        glProgramUniform3fv(m_progClouds3d, 8, 1, &camDelta.x);
+        glProgramUniform3fv(m_progClouds3d, 9, 1, &p.camPos.x);
+        glProgramUniform1f(m_progClouds3d, 10, p.time);
+        glProgramUniform3fv(m_progClouds3d, 11, 1, &p.lightL.x);
+        glProgramUniform3fv(m_progClouds3d, 12, 1, &p.lightColor.x);
+        glProgramUniform3fv(m_progClouds3d, 13, 1, &p.skyAmbient.x);
+        glProgramUniform1f(m_progClouds3d, 14, p.daylight);
+        glProgramUniform1f(m_progClouds3d, 15, p.toggles.flash);
+        glProgramUniform1i(m_progClouds3d, 16, m_cloudsFrame++);
+        glProgramUniform1f(m_progClouds3d, 17, history ? 1.0f : 0.0f);
+        glProgramUniform3fv(m_progClouds3d, 18, 1, &p.sunL.x);
+        glProgramUniform1f(m_progClouds3d, 19, p.toggles.precip * (1.0f - 0.4f * p.toggles.snow));
+        glProgramUniform1f(m_progClouds3d, 33, p.toggles.cloudCover());
+        glBindTextureUnit(3, m_depth);
+        glBindTextureUnit(4, m_clouds[m_cloudsIndex]);
+        glBindTextureUnit(11, m_cloudWeather);
+        glBindTextureUnit(12, m_cloudShape);
+        glBindTextureUnit(13, m_cloudDetail);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        m_cloudsIndex = next;
+        m_cloudsValid = true;
+        m_cloudsPrevRot = p.invViewRot;
+        m_cloudsPrevCam = p.camPos;
+    } else {
+        m_cloudsValid = false;
+    }
+
+    // composite: sky, the air light, fog, still HDR
     glBindFramebuffer(GL_FRAMEBUFFER, m_hdr2Fbo);
     glViewport(0, 0, m_width, m_height);
     glUseProgram(m_progComposite);
@@ -362,23 +449,25 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform3fv(m_progComposite, 30, 1, &p.lightL.x);
     glProgramUniform3fv(m_progComposite, 31, 1, &p.lightColor.x);
     glProgramUniform1f(m_progComposite, 32, p.daylight);
-    glProgramUniform1f(m_progComposite, 33, p.toggles.cloudBias);
+    glProgramUniform1f(m_progComposite, 33, p.toggles.cloudCover());
     glProgramUniform1f(m_progComposite, 34, p.toggles.flash);
     glProgramUniform3fv(m_progComposite, 35, 1, p.toggles.biomeTint);
     glProgramUniform1f(m_progComposite, 36, p.toggles.biomeHaze);
+    glProgramUniform1f(m_progComposite, 43, p.toggles.aurora);
     glProgramUniformMatrix4fv(m_progComposite, 6, 3, GL_FALSE,
                               &p.shadows->cascadeVp()[0][0][0]);
     glProgramUniform3fv(m_progComposite, 18, 1, &splits.x);
     glProgramUniform1f(m_progComposite, 19, p.underwater ? 1.0f : 0.0f);
     glProgramUniform1f(m_progComposite, 20, p.toggles.clouds ? 1.0f : 0.0f);
     glProgramUniform1f(m_progComposite, 21, p.time);
-    glProgramUniform1f(m_progComposite, 22, p.toggles.ssgi ? 1.0f : 0.0f);
     glProgramUniform1f(m_progComposite, 40, scatter ? 1.0f : 0.0f);
+    glProgramUniform1f(m_progComposite, 41, skyGate);
+    glProgramUniform1f(m_progComposite, 42, p.toggles.precip * (1.0f - 0.4f * p.toggles.snow));
+    glBindTextureUnit(6, m_clouds[m_cloudsIndex]);
     glBindTextureUnit(5, m_scatterTex);
     glBindTextureUnit(0, m_hdrColor);
     glBindTextureUnit(1, p.shadows->texture());
     glBindTextureUnit(3, m_depth);
-    glBindTextureUnit(4, m_ssgiTex);
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
     // temporal AA: reproject + blend last frame's resolve into this one. everything
@@ -453,39 +542,6 @@ void PostFx::run(const RunParams& p) {
         glDisable(GL_BLEND);
     }
 
-    // Eye adaptation, from the resolved HDR image and before the tonemap that consumes it.
-    // Three tiny passes (64x64, a mip chain, and one texel), so the cost is noise next to
-    // any of the full-res passes above.
-    if (p.toggles.autoExposure) {
-        glBindFramebuffer(GL_FRAMEBUFFER, m_lumFbo);
-        glViewport(0, 0, kLumSize, kLumSize);
-        glUseProgram(m_progLumDown);
-        const glm::vec2 srcTexel(1.0f / float(m_width), 1.0f / float(m_height));
-        glProgramUniform2fv(m_progLumDown, 0, 1, &srcTexel.x);
-        glBindTextureUnit(0, resolved);
-        glBindTextureUnit(1, m_depth); // the sky is not metered
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-        glGenerateTextureMipmap(m_lumTex); // last mip is the geometric mean of the frame
-
-        const int next = 1 - m_adaptIndex;
-        glBindFramebuffer(GL_FRAMEBUFFER, m_adaptFbo[next]);
-        glViewport(0, 0, 1, 1);
-        glUseProgram(m_progExpose);
-        glProgramUniform1f(m_progExpose, 0, float(kLumMips - 1));
-        // Time constants, not per-frame lerps: a fixed blend factor would adapt at a rate
-        // that depends on framerate, so the same walk into a cave would settle differently
-        // at 60 and 144 fps.
-        const float dt = std::clamp(p.dt, 0.0f, 0.25f);
-        glProgramUniform1f(m_progExpose, 1, 1.0f - std::exp(-dt / 0.6f)); // into light
-        glProgramUniform1f(m_progExpose, 2, 1.0f - std::exp(-dt / 1.8f)); // into darkness
-        glProgramUniform1f(m_progExpose, 3, m_adaptValid ? 1.0f : 0.0f);
-        glBindTextureUnit(0, m_lumTex);
-        glBindTextureUnit(1, m_adapt[m_adaptIndex]);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-        m_adaptIndex = next;
-        m_adaptValid = true;
-    }
-
     // tonemap + sRGB into the caller's framebuffer
     glBindFramebuffer(GL_FRAMEBUFFER, p.targetFbo);
     glViewport(0, 0, p.targetWidth, p.targetHeight);
@@ -510,16 +566,13 @@ void PostFx::run(const RunParams& p) {
     glProgramUniform1f(m_progFinal, 8, p.toggles.saturation);
     glProgramUniform1f(m_progFinal, 9, p.toggles.contrast);
     glProgramUniform1f(m_progFinal, 10, p.toggles.temperature);
-    // Faded in as daylight goes, so it costs nothing by day and never touches a day frame.
-    glProgramUniform1f(m_progFinal, 12, p.toggles.scotopic * (1.0f - p.daylight));
+    // Faded in as daylight goes, and down a cave at any hour: an eye in the dark sees it the same way.
+    // An open day frame is untouched.
+    const float enclosed = 1.0f - glm::smoothstep(0.1f, 0.6f, p.toggles.eyeSky);
+    glProgramUniform1f(m_progFinal, 12, p.toggles.scotopic * std::max(1.0f - p.daylight, enclosed));
     glProgramUniform1f(m_progFinal, 14, p.toggles.dither);
-    // Middle grey would be 0.18; aimed a little under it so every scene sits a touch darker
-    // (owner, for realism). Only meaningful when the adaptation actually ran this frame.
-    glProgramUniform1f(m_progFinal, 11,
-                       (p.toggles.autoExposure && m_adaptValid) ? 0.165f : 0.0f);
     glBindTextureUnit(0, resolved);
     glBindTextureUnit(2, m_bloomTex[0]);
-    glBindTextureUnit(3, m_adapt[m_adaptIndex]);
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
     glEnable(GL_DEPTH_TEST);

@@ -14,7 +14,8 @@ namespace vx {
 //   w1: block:8 | shade:12 | 12 spare bits
 //   w2: light, the raw uint32 from namespace light in Chunk.hpp (r:8, g:8, b:8, sky:8),
 //       stored verbatim, no repacking
-//   w3: spare, reserved, always 0 for now
+//   w3: flags. bit 0 (kQuadWet): the face looks out into water, so chunk.frag lights it
+//       through the water above. The rest spare, 0.
 //
 // This used to be a single uint64 with both words "exactly full", no bit anywhere to
 // grow into. Chunk's light word widening from 4 to 8 bits/channel (16 -> 256 levels, the
@@ -55,6 +56,7 @@ inline constexpr int kQuadDirShift = 25;
 inline constexpr int kQuadBlockShift = 0;  // within w1
 inline constexpr int kQuadShadeShift = 8;  // within w1
 inline constexpr int kQuadMaxBlockId = 256;
+inline constexpr std::uint32_t kQuadWet = 1u; // in w3
 
 inline constexpr int kQuadShadeBits = 3;              // per corner
 inline constexpr std::uint32_t kQuadShadeMax = 7;     // fully lit, unoccluded corner

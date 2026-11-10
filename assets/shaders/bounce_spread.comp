@@ -1,0 +1,26 @@
+#version 460 core
+
+// One step of the bounce light spreading out from bounce_seed's sunlit surfaces: a cell light can
+// pass takes the brightest of its six neighbours, less a share for the distance, or its own source if
+// that is more. Rock stops it, so it goes round a corner into a cave mouth but not through a wall,
+// and dies away a dozen blocks into shade. Run a few times; the volume wraps.
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(binding = 0) uniform sampler3D uSeed; // r: source, g: 1 where light can pass
+layout(binding = 1) uniform sampler3D uPrev; // r: the light so far
+layout(r16f, binding = 0) uniform writeonly image3D uOut;
+
+const float kCarry = 0.78; // what is left after one cell (2 blocks)
+
+void main() {
+    ivec3 cell = ivec3(gl_GlobalInvocationID);
+    vec2 s = texelFetch(uSeed, cell, 0).rg;
+    float best = 0.0;
+    if (s.g > 0.5) {
+        const ivec3 kNb[6] = ivec3[6](ivec3(1, 0, 0), ivec3(-1, 0, 0), ivec3(0, 1, 0), ivec3(0, -1, 0),
+                                      ivec3(0, 0, 1), ivec3(0, 0, -1));
+        for (int k = 0; k < 6; ++k)
+            best = max(best, texelFetch(uPrev, (cell + kNb[k]) & 63, 0).r);
+    }
+    imageStore(uOut, cell, vec4(max(s.r, best * kCarry)));
+}

@@ -105,12 +105,14 @@ public:
     }
 
     BlockId blockAtWorld(const glm::ivec3& wp) const;
-    // Sky light 0..15 at a world voxel, 0 where nothing is loaded. The ambience director
-    // wants "how enclosed is the ear", and this already answers it exactly, the light BFS
-    // has done the work, so asking costs one chunk lookup instead of a cover raycast every
-    // frame. An absent chunk reads 0 (sealed) rather than 15, so streaming in never makes a
-    // cave briefly sound like open sky.
-    int skyLightAtWorld(const glm::ivec3& wp) const;
+    // How open to the sky a world voxel is, 0 sealed .. 1 open, 0 where nothing is loaded. The
+    // ambience and the eye want "how enclosed is this spot", and this already answers it exactly,
+    // the light BFS has done the work, so asking costs one chunk lookup instead of a cover raycast
+    // every frame. An absent chunk reads sealed, so streaming in never makes a cave briefly sound
+    // like open sky.
+    float skyAccessAt(const glm::ivec3& wp) const;
+    // The same for placed lights, 0..1: how much lamp or glow light reaches this cell.
+    float blockLightAt(const glm::ivec3& wp) const;
     // debug: has this column been through a completed light seed?
     bool columnSeeded(ChunkPos col) const { return m_seededColumns.contains(col); }
     bool columnProvisional(ChunkPos col) const { return m_provisionalColumns.contains(col); }
@@ -256,10 +258,11 @@ public:
         // one frame early, with stale light still baked into the quads on screen.
         // An edited chunk's eviction save counts as well: it runs on a worker but is not one of
         // the counted jobs, and a caller that drains on this before switching worlds would
-        // otherwise pull the world out from under it (SPEC #142).
+        // otherwise pull the world out from under it (SPEC #142). So does one still waiting
+        // for a worker to let go of it before its save can start.
         return !m_genQueue.empty() || m_jobsInFlight > 0 || !m_uploads.empty() ||
                m_pendingMesh > 0 || !m_seedQueue.empty() || m_seedActive || m_meshScanDirty ||
-               m_scanConfirm || m_sliceRunning ||
+               m_scanConfirm || m_sliceRunning || m_editsAwaitingSave > 0 ||
                m_savesInFlight.load(std::memory_order_acquire) > 0;
     }
 
@@ -345,6 +348,7 @@ private:
         // see MeshBufferPool.hpp. null = no geometry of that kind, or nothing meshed yet.
         std::vector<PackedQuad>* quadBuf = nullptr;
         std::vector<PackedQuad>* waterBuf = nullptr;
+        std::uint32_t buckets[7] = {}; // quadBuf's groups by direction, see GreedyStats
     };
 
     struct MeshResult {
@@ -462,6 +466,9 @@ public:
     // lit voxel, and a whole chunk of separation is 32. That bound is what keeps digging
     // deep from having to load every chunk back up to daylight.
     void columnRange(int cx, int cz, int& y0, int& y1, bool& skyAtTop) const;
+    // Past this far below the camera's band a chunk is thrown out. Keeps what columnRange loads
+    // for a camera flying high above the ground.
+    bool belowResidentRange(ChunkPos pos) const;
 
 private:
     // The surface at the column's centre, and the highest block the generator can put anywhere
@@ -545,6 +552,7 @@ private:
     int m_genInFlight = 0;  // the generation jobs among them
     int m_regenInFlight = 0; // and the detailed re-gens
     int m_pendingMesh = 0;
+    int m_editsAwaitingSave = 0; // edited chunks on the evict list whose save has not started
     int m_lateSeeds = 0; // see Stats::lateSeeds
     // the per-frame mesh scan is O(loaded chunks); only run it when something could have
     // created mesh work (gen/light/LOD change) instead of every frame. set by those events,
@@ -561,6 +569,7 @@ private:
     std::atomic<int> m_genCount{0};
     std::atomic<int> m_meshCount{0};
     std::atomic<int> m_savesInFlight{0}; // eviction saves still on a worker (see busy())
+    std::atomic<int> m_jobsRunning{0};   // gen, re-gen and mesh jobs not finished yet (see loadWorld)
     std::atomic<int> m_saveDelayMs{0};
     void waitForSaves() const;
 };

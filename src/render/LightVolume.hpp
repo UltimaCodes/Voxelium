@@ -5,6 +5,7 @@
 #include <glm/glm.hpp>
 
 #include <cstdint>
+#include <filesystem>
 #include <vector>
 
 namespace vx {
@@ -46,6 +47,16 @@ public:
     // the old world's light until its turn comes round.
     void invalidate();
 
+    // Sunlight thrown back off the ground nearby, as a field at half the volume's resolution with
+    // the same wrap (bounce_seed.comp, bounce_spread.comp). Worked out from this frame's light
+    // volume and shadow cascades, so after both. With `shadows` off the cascades are not read and
+    // the sky light says what the sun reaches.
+    bool initBounce(const std::filesystem::path& shaderDir);
+    void computeBounce(bool shadows, unsigned int shadowTex, const glm::mat4* cascadeVp, const glm::vec3& splits,
+                       const glm::vec3& cascadeTexel, const glm::vec3& sunL);
+    unsigned int bounceTexture() const { return m_bounce[1]; }
+    bool haveBounce() const { return m_seedProg != 0 && m_spreadProg != 0; }
+
 private:
     struct Slot {
         ChunkPos pos{INT32_MIN, INT32_MIN, INT32_MIN};
@@ -54,6 +65,9 @@ private:
     void upload(const ChunkManager& world, ChunkPos pos);
 
     unsigned int m_tex = 0;
+    unsigned int m_seed = 0;       // rg: the sunlit surfaces, and where light can pass
+    unsigned int m_bounce[2] = {}; // the light spreading from them, ping-ponged
+    unsigned int m_seedProg = 0, m_spreadProg = 0;
     Slot m_slots[kChunks * kChunks * kChunks];
     int m_cursor = 0;
     std::vector<std::uint32_t> m_staging;

@@ -42,6 +42,9 @@ public:
         float desert = 0.0f;
         float reef = 0.0f;
         float nearWater = 0.0f;
+        float swamp = 0.0f;
+        float jungle = 0.0f;
+        float snow = 0.0f;
         bool underwater = false;
     };
 
@@ -79,9 +82,22 @@ public:
     glm::dvec3 positionOf(int index) const { return m_pool[index].pos; }
     bool swimsAt(int index) const;
 
+    // Animals calling out (a sheep, a cow, a hen): where, and which clip, collected during update
+    // for the caller to play. Returns how many were written.
+    struct Call {
+        const char* clip;
+        glm::dvec3 pos;
+    };
+    int takeCalls(Call* out, int max);
+
 
 private:
-    enum Kind : std::uint8_t { Butterfly = 1, Firefly, Gull, Fish, Leaf, Mote, Bubble, Bird, Crab, Turtle, Jelly };
+    enum Kind : std::uint8_t {
+        Butterfly = 1, Firefly, Gull, Fish, Leaf, Mote, Bubble, Bird, Crab, Turtle, Jelly,
+        Sheep, Cow, Pig, Chicken, Rabbit, Deer, Fox, Frog, Bee
+    };
+    // the animals that walk the land, in herds
+    static bool walks(Kind k) { return k >= Sheep && k <= Frog; }
     // Everything with a body writes depth. The swimmers used to be left out so a fish near the
     // surface would not grow the water's shoreline foam around itself, and that made them
     // see-through: their own boxes drew over each other in any order, and the water tint and
@@ -106,6 +122,7 @@ private:
         glm::vec3 kick{0.0f};    // a shove or a punch, on top of whatever it is doing; decays
         glm::vec3 fleeDir{0.0f}; // away from the player, xz
         float flee = 0.0f;       // seconds left of running from the player
+        float call = 0.0f;       // seconds until it next calls out
     };
     // Size of an animal's body for the player to bump into or hit: horizontal radius and half
     // height around its position, scaled by its size, from the boxes in wildlife3d.vert.
@@ -143,6 +160,14 @@ private:
                    int& x, int& z, int& surface, int& floor);
     void spawnTurtle(const ChunkManager& w, const glm::dvec3& cam);
     void spawnJelly(const ChunkManager& w, const glm::dvec3& cam);
+    void spawnHerd(const ChunkManager& w, const glm::dvec3& cam);
+    void spawnBee(const ChunkManager& w, const glm::dvec3& cam);
+    void walk(Critter& c, float dt, const ChunkManager& w, const glm::dvec3& cam, const Env& env, double dist2);
+    // where the middle of an animal's body is: walkers stand on their position
+    static glm::dvec3 centerOf(const Critter& c);
+    Call m_calls[16];
+    int m_callCount = 0;
+    float m_herdClock = 0.0f;
 
     unsigned int m_prog = 0;   // the glows, as camera-facing sprites
     unsigned int m_prog3d = 0; // the animals, as boxes
@@ -160,6 +185,12 @@ private:
     float m_flockClock = 30.0f;
     float m_time = 0.0f;
     float m_light = 1.0f; // how bright the unlit sprites are drawn, from the time of day
+    glm::vec3 m_hand{0.0f}; // a lamp in the player's hand, light levels 0..15 (FxToggles::handLight)
+
+public:
+    void setHandLight(const glm::vec3& levels) { m_hand = levels; }
+
+private:
 };
 
 } // namespace vx

@@ -30,12 +30,11 @@ layout(binding = 1) uniform sampler2D uAo;
 
 void main() {
     vec3 color = texture(uScene, vUv).rgb;
-    // Same exception the old composite.frag step had: a surface producing its own light is
-    // not RECEIVING ambient light, so occluding it is meaningless, unguarded, this put a
-    // dark band along the bottom edge of every lamp. Same threshold, tuned the same way
-    // (1.0 leaked onto 2.4% of a daylight frame, this leaves 0).
+    // A light's own face is not receiving ambient, occluding it put a dark band under every lamp.
     float lum = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    float emitting = smoothstep(2.0, 3.2, lum);
-    float ao = mix(texture(uAo, vUv).r, 1.0, emitting);
-    outColor = vec4(vec3(ao), 1.0);
+    float emitting = smoothstep(1.6, 2.6, lum);
+    vec2 aoDepth = texture(uAo, vUv).rg;
+    // Contact only: at range it turned terraces into stripes.
+    float reach = 0.7 * (1.0 - smoothstep(32.0, 96.0, -aoDepth.g));
+    outColor = vec4(vec3(mix(1.0, aoDepth.r, reach * (1.0 - emitting))), 1.0);
 }

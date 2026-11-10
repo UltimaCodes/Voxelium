@@ -17,6 +17,9 @@ struct ChunkDrawInfo {
     std::uint32_t firstQuad;
     std::uint32_t quadCount;
     std::uint32_t sunlit; // 0 = sealed from the sky, skipped by the shadow pass
+    // the quads in order by direction (+X -X +Y -Y +Z -Z, cross-plane foliage); all zero when
+    // they are not grouped, and then the range is only ever drawn whole
+    std::uint32_t buckets[7] = {};
 };
 
 // The whole-world renderer: one persistent-mapped quad arena with a free-list
@@ -85,15 +88,17 @@ public:
 
     // For the shadow pass: cull chunks against an arbitrary frustum (a cascade's ortho
     // box) into the command buffers, then draw with any depth program. Called once per
-    // cascade so far casters aren't drawn into tight near cascades. `slice` 0..7 keeps only
-    // one cell of a 2x2x2 checkerboard of chunks (see cull.comp); 8 keeps them all.
+    // cascade so far casters aren't drawn into tight near cascades. With `slices` set, only
+    // the chunks of slice `slice` of that many are kept (a checkerboard, see cull.comp).
     void cullFrustum(const Frustum& frustum, const glm::ivec3& cameraChunk,
                      const glm::vec3& cameraFrac, bool caveCull, bool sunlitOnly = false,
-                     unsigned int slice = 8);
+                     unsigned int slice = 0, unsigned int slices = 0);
     void drawIndirect(unsigned int program, const glm::mat4& viewProj);
+    // faceCull: draw only the direction groups that can face the camera (the main view; a shadow
+    // pass draws back faces, so it keeps them all)
     void cullInto(bool water, const Frustum& frustum, const glm::ivec3& cameraChunk,
                   const glm::vec3& cameraFrac, bool caveCull, bool sunlitOnly = false,
-                  unsigned int slice = 8);
+                  unsigned int slice = 0, unsigned int slices = 0, bool faceCull = false);
 
     int gpuVisibleChunks() const { return m_visibleChunks; } // ~3 frames of latency
     int debugReadDrawCount() const;                          // syncs; smoke test only
@@ -140,6 +145,7 @@ private:
     unsigned int m_offsetsBuf = 0;
     unsigned int m_readbackBuf = 0;
     unsigned int m_visBuf = 0;
+    unsigned int m_indexBuf = 0; // two triangles over four vertices, for every quad a draw can hold
 
     PackedQuad* m_arenaMap = nullptr;
     void* m_metaMap = nullptr;

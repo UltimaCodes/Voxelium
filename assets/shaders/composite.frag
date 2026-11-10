@@ -17,8 +17,7 @@
 #define VX_SHADOW_RES 1536.0
 #endif
 
-// paints a real sky for pixels with no geometry (gradient + sun disc + horizon glow, no extra
-// pass), and adds SSGI, the light in the air (marched at half res by scatter.frag), underwater
+// paints the sky for pixels with no geometry (clouds3d.frag marched the clouds), and adds the light in the air (marched at half res by scatter.frag), underwater
 // and distance fog. output stays HDR; bloom and tonemapping come after.
 
 in vec2 vUv;
@@ -26,7 +25,6 @@ layout(location = 0) out vec4 outColor;
 
 layout(binding = 0) uniform sampler2D uScene;
 layout(binding = 3) uniform sampler2D uDepth;
-layout(binding = 4) uniform sampler2D uSsgi;
 layout(binding = 1) uniform sampler2DArrayShadow uShadowMap;
 layout(binding = 5) uniform sampler2D uScatter; // half-res light in the air (scatter.frag), a = its distance
 
@@ -42,7 +40,6 @@ layout(location = 18) uniform vec3 uCascadeSplit;
 layout(location = 19) uniform float uUnderwater; // 1 when the camera eye is submerged
 layout(location = 20) uniform float uCloudsOn;
 layout(location = 21) uniform float uTime;
-layout(location = 22) uniform float uSsgiOn;
 layout(location = 24) uniform float uVolumetricOn; // sun shafts on (underwater ones here; the rest in scatter.frag)
 // location 23 (uAoOn) retired, AO moved to apply_ao.frag, run before water is drawn
 layout(location = 25) uniform vec3 uSunColor;      // day/night sun radiance
@@ -56,52 +53,20 @@ layout(location = 36) uniform float uBiomeHaze;    // and thickens it, 0..~0.2
 layout(location = 27) uniform float uFlare;        // lens flare strength, 0 = off
 layout(location = 28) uniform vec3 uCamPos;        // camera world position (clouds are world-anchored)
 layout(location = 40) uniform float uScatterOn;    // 1 when scatter.frag ran this frame
+layout(location = 41) uniform float uSkyGate;      // 0 with no sky over the camera
+layout(location = 42) uniform float uOvercast;
+layout(location = 43) uniform float uAurora;     // northern lights, 0 off     // rain and storm: the sky goes flat and grey
+layout(binding = 6) uniform sampler2D uClouds;     // clouds3d.frag: rgb their light, a what gets through
 // location 29 (uContact) retired, screen-space contact shadows removed entirely (owner
 // call: subtle at best, and every previous tuning pass on this effect, #58's darkening
 // stack, #84's "hard black" fix, was fighting it compounding with AO/cloud shadow/direct
 // light on the same pixel rather than adding anything the cascades didn't already give)
 
 #include "clouds.glsl"
+#include "sky.glsl"
 
-const vec3 kWaterDeep = vec3(0.03, 0.13, 0.20);
+const vec3 kWaterDeep = vec3(0.02, 0.08, 0.21);
 const float kSeaLevel = 62.0; // matches gen/TerrainGenerator kSeaLevel
-
-// Caustics. Voronoi-ish: two layers of cellular distance, scrolled against each other and
-// sharpened, which is the standard trick for the bright wandering web on a seabed. Two
-// layers at different scales and speeds because ONE layer reads as an obvious repeating
-// pattern the moment it covers any area, hiding the repeat is most of the work here.
-float causticLayer(vec2 p, float t) {
-    vec2 i = floor(p);
-    vec2 f = p - i;
-    float best = 1e9;
-    for (int y = -1; y <= 1; ++y)
-        for (int x = -1; x <= 1; ++x) {
-            vec2 g = vec2(float(x), float(y));
-            // per-cell feature point, orbiting so the web moves rather than pulses
-            vec2 o = vec2(cl_hash(i + g), cl_hash(i + g + 37.1));
-            o = 0.5 + 0.5 * sin(t * 0.9 + 6.2831 * o);
-            best = min(best, length(g + o - f));
-        }
-    return best;
-}
-
-// 0..1 caustic brightness at a world XZ, for a surface `depth` below the waterline.
-float caustics(vec2 worldXz, float depth, float t) {
-    vec2 p = worldXz * 0.55;
-    float a = causticLayer(p, t);
-    float b = causticLayer(p * 1.83 + 11.3, t * 1.17);
-    // Sharpen: caustics are thin bright filaments between dark cells, not soft blobs.
-    // CLAMP FIRST. causticLayer returns a cell distance, and a feature point in a diagonal
-    // neighbour can sit ~2.1 away, so 1 - min(a,b) goes negative, and pow() with a negative
-    // base is undefined in GLSL. This driver hands back NaN, which propagates through the
-    // tonemap and comes out as solid black blocks across the seabed.
-    float c = pow(clamp(1.0 - min(a, b), 0.0, 1.0), 6.0);
-    // They are strongest just under the surface and wash out with depth as the light
-    // spreads, and they cannot exist above the waterline at all.
-    return c * exp(-depth * 0.16);
-}
-
-float ign(vec2 p); // defined below; the cloud march dithers with it
 
 vec3 viewRay() {
     vec2 ndc = vUv * 2.0 - 1.0;
@@ -193,124 +158,49 @@ vec3 moonDisc(vec3 dir, vec3 moonDir, float night) {
     return (surface * (0.45 + 0.55 * limb) * night * edge) + halo;
 }
 
+// Northern lights: curtains hanging in a layer high over the land, folding along a slow wandering
+// line, green low down going to violet at the top, with fine vertical rays that drift sideways.
+vec3 aurora(vec3 dir, float night) {
+    if (dir.y < 0.02 || uAurora <= 0.0)
+        return vec3(0.0);
+    vec3 col = vec3(0.0);
+    float t = uTime * 0.03;
+    for (int i = 0; i < 10; ++i) {
+        float h = float(i) / 9.0;                 // 0 bottom of the curtain .. 1 top
+        float alt = 1.0 + h * 0.9;
+        vec2 p = dir.xz / dir.y * alt * 0.9 + vec2(t * 0.4, 0.0);
+        // the fold line: where the curtain hangs on this layer
+        float fold = sin(p.x * 0.9 + sin(p.y * 0.6 + t) * 1.6 + t * 1.3) * 0.7 + sin(p.x * 0.35 - t * 0.7) * 1.1;
+        float band = exp(-abs(p.y - fold) * (3.0 - h * 1.6));
+        float rays = 0.55 + 0.45 * sin(p.x * 14.0 + sin(p.x * 3.1 + t * 4.0) * 2.0 + t * 6.0);
+        vec3 tint = mix(vec3(0.15, 1.0, 0.45), vec3(0.55, 0.25, 1.0), smoothstep(0.35, 1.0, h));
+        col += tint * band * rays * (1.0 - h * 0.6);
+    }
+    float horizon = smoothstep(0.02, 0.18, dir.y);
+    return col * (0.045 * uAurora * night * horizon);
+}
+
 vec3 skyColor(vec3 dir) {
-    float up = clamp(dir.y, 0.0, 1.0);
-    float alt = uSunL.y;                             // sun altitude, -1..1
-    float day = clamp(alt * 3.0 + 0.12, 0.0, 1.0);   // 1 day, 0 night
-    // day/night gradient
-    // Night endpoints cut ~2.5x (was 0.01/0.015/0.05 zenith, 0.04/0.06/0.12 horizon). The
-    // measurement that forced this: at the --tour night stop the SKY is most of the frame's
-    // brightness, and distance fog melts the far terrain into it too, so the sky gradient
-    // was setting the exposure of the whole image. A horizon green of 0.06 lands at ~70/255
-    // after ACES and the gamma encode, which is dusk, not night, and no amount of retuning
-    // the surface shading can pull an image down past what its own sky is sitting at.
-    // Stars and the moon are ADDED after this, so darkening here makes them read stronger.
-    vec3 zenith = mix(vec3(0.004, 0.006, 0.020), vec3(0.14, 0.34, 0.80), day);
-    vec3 horizon = mix(vec3(0.016, 0.025, 0.050), vec3(0.66, 0.78, 0.92), day);
-    vec3 col = mix(horizon, zenith, pow(up, 0.5));
-    if (dir.y < 0.0)
-        col = mix(horizon, mix(vec3(0.024, 0.028, 0.036), vec3(0.34, 0.38, 0.44), day),
-                  clamp(-dir.y * 3.0, 0.0, 1.0));
-
+    float day = clamp(uSunL.y * 3.0 + 0.12, 0.0, 1.0);
+    vec3 col = skyGradient(dir, uSunL, day, uOvercast);
     float sd = max(dot(dir, uSunL), 0.0);
-    float above = smoothstep(-0.03, 0.06, alt);
-    float lowSun = clamp(1.0 - abs(alt) * 2.2, 0.0, 1.0) * day; // sunrise/sunset warmth
-    col += vec3(1.0, 0.34, 0.10) * pow(sd, 3.0) * lowSun * 2.4;            // warm band
-    col = mix(col, col * vec3(1.2, 0.92, 0.72), lowSun * 0.5);            // golden-hour cast
-    col += vec3(1.0, 0.55, 0.28) * pow(sd, 8.0) * 0.6 * above;             // glow
-    col += uSunColor * smoothstep(0.9986, 0.9995, sd) * 3.2 * above;       // sun disc
-
-    // Stars fade out well before the sky is properly light, a linear 1-day left them
-    // visible as bright specks through dawn and dusk.
-    float night = pow(1.0 - day, 2.2);
+    col += uSunColor * (smoothstep(0.9986, 0.9995, sd) * 3.2 * smoothstep(-0.03, 0.06, uSunL.y) * (1.0 - uOvercast));
+    // Stars fade out well before the sky is properly light.
+    float night = pow(1.0 - day, 2.2) * (1.0 - uOvercast);
     if (night > 0.004) {
         col += starField(dir, night) * step(-0.02, dir.y); // none below the horizon
+        col += aurora(dir, night);
         col += moonDisc(dir, -uSunL, night);               // moon rides opposite the sun
     }
     return col;
-}
-
-// Raymarched clouds. The field itself lives in clouds.glsl because the terrain shader
-// samples the same one for shadows.
-//
-// Marched, not painted: the ray is intersected with the slab and stepped through it,
-// accumulating extinction with Beer's law and lighting each step with a short march toward
-// the sun. That is what gives silver lining, depth at the edges, and clouds that pass
-// overhead instead of sliding with the camera.
-vec4 clouds(vec3 dir) {
-    if (dir.y < 0.02)
-        return vec4(0.0); // looking at or below the horizon: the slab is never hit
-
-    float t0 = (kCloudBase - uCamPos.y) / dir.y;
-    float t1 = (kCloudTop - uCamPos.y) / dir.y;
-    if (t1 < t0) { float tmp = t0; t0 = t1; t1 = tmp; } // inside or above the layer
-    t0 = max(t0, 0.0);
-    if (t1 <= t0)
-        return vec4(0.0);
-    // Cap the marched span: looking near the horizon the slab is kilometres long, and the
-    // far end contributes nothing but cost.
-    t1 = min(t1, t0 + 2600.0);
-
-#if   VX_QUALITY == 0
-    const int kSteps = 6;
-#elif VX_QUALITY == 1
-    const int kSteps = 8;
-#elif VX_QUALITY == 3
-    const int kSteps = 20;
-#else
-    const int kSteps = 12;
-#endif
-    float stepLen = (t1 - t0) / float(kSteps);
-    // Dither the start so the step boundaries do not band across the sky.
-    float jitter = ign(gl_FragCoord.xy) * stepLen;
-
-    float transmittance = 1.0;
-    vec3 scattered = vec3(0.0);
-    float day = uDaylight;
-    vec3 sunTint = mix(vec3(0.55, 0.60, 0.70), vec3(1.05, 1.02, 0.98), day);
-
-    for (int i = 0; i < kSteps; ++i) {
-        float t = t0 + jitter + stepLen * float(i);
-        vec3 p = uCamPos + dir * t;
-        float d = cloudDensity(p, uTime);
-        if (d <= 0.001)
-            continue;
-        // Self-shadowing: three coarse steps toward the sun. Cheap, and it is what separates
-        // a lit top from a heavy base.
-        float shadowD = 0.0;
-        for (int j = 1; j <= 3; ++j)
-            shadowD += cloudDensity(p + uLightL * (float(j) * 26.0), uTime);
-        float lit = exp(-shadowD * 0.55);
-        // Forward scattering: bright rim when looking toward the sun through thin cloud.
-        float phase = 0.55 + 0.45 * pow(max(dot(dir, uLightL), 0.0), 4.0);
-        // The ambient half was an ungated constant, so a cloud deck stayed lit after dark
-        // and the cloud band measured brighter than the sky it sat in. Faded with daylight,
-        // keeping 12% so moonlit cloud still reads as shape rather than a hole in the stars.
-        vec3 lightCol = uLightColor * lit * phase +
-                        vec3(0.30, 0.36, 0.46) * 0.55 * mix(0.12, 1.0, uDaylight) +
-                        vec3(0.80, 0.88, 1.10) * (0.6 * uFlash); // the cloud itself lights up
-        float extinction = d * 0.055 * stepLen;
-        float absorbed = 1.0 - exp(-extinction);
-        scattered += transmittance * absorbed * lightCol * sunTint;
-        transmittance *= 1.0 - absorbed;
-        if (transmittance < 0.02)
-            break;
-    }
-    float alpha = clamp(1.0 - transmittance, 0.0, 1.0);
-    if (alpha <= 0.001)
-        return vec4(0.0);
-    // Fade the layer out toward the horizon, where the march is least accurate and clouds
-    // would otherwise pile into a hard band.
-    alpha *= smoothstep(0.02, 0.16, dir.y);
-    return vec4(scattered / max(alpha, 1e-4), alpha);
 }
 
 vec3 skyWithClouds(vec3 dir) {
     vec3 s = skyColor(dir);
     s += vec3(0.55, 0.65, 0.95) * uFlash * 0.2 * (0.45 + 0.55 * clamp(dir.y * 2.0, 0.0, 1.0));
     if (uCloudsOn > 0.5) {
-        vec4 c = clouds(dir);
-        s = mix(s, c.rgb, c.a);
+        vec4 c = texture(uClouds, vUv);
+        s = s * c.a + c.rgb;
     }
     return s;
 }
@@ -407,7 +297,16 @@ vec3 lensFlare() {
         float r = length(q);
         sum += vec3(1.0, 0.72, 0.45) * (1.0 - smoothstep(0.0, 0.020, abs(r - 0.16))) * 0.22;
     }
-    return sum * uSunColor * vis * edge * uFlare;
+    // a hint of the lens, never a thing in the picture
+    return sum * uSunColor * vis * edge * uFlare * 0.35;
+}
+
+// The water you are in, looking this way: brighter toward the surface, darker the deeper you are,
+// following the light above it, and close to black in a lake with no sky over it.
+vec3 waterBody(vec3 d) {
+    float depth = max(kSeaLevel - uCamPos.y, 0.0);
+    return kWaterDeep * (0.62 + 0.85 * smoothstep(-0.5, 0.9, d.y)) * exp(-depth * 0.012) *
+           mix(0.10, 1.0, uDaylight) * mix(0.05, 1.0, uSkyGate);
 }
 
 // Screen-space contact shadows used to live here (removed, owner call: not worth what it
@@ -425,7 +324,34 @@ void main() {
     // sky pixel (reversed-z far = 0): paint the sky instead of the flat clear colour.
     // underwater there is no sky, the far distance is just deep water.
     if (rawD <= 0.0) {
-        outColor = vec4((uUnderwater > 0.5 ? kWaterDeep : skyWithClouds(dir)) + flare, 1.0);
+        if (uUnderwater > 0.5) {
+            vec3 water = waterBody(dir);
+            // Looking up you see the sky through the surface: the whole sky squeezed into a cone
+            // overhead (Snell's window), blurred by the ripples and tinted by the water above you,
+            // brightest toward the sun, and fading into the water body toward the cone's edge. No
+            // clouds and no sun disc: a rippled surface smears both.
+            if (dir.y > 0.05 && uSkyGate > 0.0) {
+                float depth = max(kSeaLevel - uCamPos.y, 0.0);
+                vec2 hit = uCamPos.xz + dir.xz / dir.y * depth;
+                vec2 ripple = vec2(sin(hit.x * 0.61 + uTime * 0.9) + sin(hit.y * 0.37 - uTime * 0.7),
+                                   sin(hit.y * 0.53 + uTime * 0.8) + sin(hit.x * 0.41 + uTime * 0.6)) * 0.07;
+                vec3 bent = normalize(vec3(dir.x + ripple.x, dir.y, dir.z + ripple.y));
+                float h = length(bent.xz);
+                float sinAir = min(h * 1.333, 1.0);
+                vec3 air = vec3(bent.xz / max(h, 1e-4) * sinAir, sqrt(1.0 - sinAir * sinAir)).xzy;
+                float day = clamp(uSunL.y * 3.0 + 0.12, 0.0, 1.0);
+                vec3 through = skyGradient(air, uSunL, day, uOvercast);
+                float sd = max(dot(air, uSunL), 0.0);
+                through += uSunColor * (pow(sd, 32.0) * 0.9 + pow(sd, 6.0) * 0.12) *
+                           smoothstep(-0.03, 0.06, uSunL.y) * (1.0 - uOvercast);
+                // the cone's edge is the sky's horizon, which the surface lets through least of all
+                float window = smoothstep(0.0, 0.6, air.y) * smoothstep(0.3, 0.8, dir.y + ripple.x * 0.5);
+                vec3 path = exp(-vec3(0.20, 0.09, 0.05) * depth / max(dir.y, 0.2));
+                water = mix(water, through * path, window * 0.8 * uSkyGate);
+            }
+            outColor = vec4(water + (uScatterOn > 0.5 ? upsampleScatter(60000.0) : vec3(0.0)), 1.0);
+        } else
+            outColor = vec4(skyWithClouds(dir) + flare, 1.0);
         return;
     }
 
@@ -438,10 +364,6 @@ void main() {
     // base was a dark band under every lamp, #49) moved there too, using the same luminance
     // window (an emitter totals ~3.2 pre-tonemap, the brightest sunlit terrain ~1.7, a
     // threshold of 1.0 leaked onto 2.4% of a daylight frame, 2.0 leaves 0).
-    if (uSsgiOn > 0.5)
-        color += texture(uSsgi, vUv).rgb * 1.15; // one-bounce indirect fill (#75 raised to 1.6,
-        // walked back after "too bright, no contrast", see ssgi.frag's kRadius comment)
-
     // reconstruct the camera-relative world position once, for the air light + fog
     float viewZ = -uNear / max(rawD, 1e-7);
     vec2 ndc = vUv * 2.0 - 1.0;
@@ -449,47 +371,41 @@ void main() {
                     vec3(ndc.x * uProjScale.x * -viewZ, ndc.y * uProjScale.y * -viewZ, viewZ);
     float dist = length(worldRel);
 
-    if (uScatterOn > 0.5)
+    if (uScatterOn > 0.5 && uUnderwater < 0.5)
         color += upsampleScatter(dist);
 
     if (uUnderwater > 0.5) {
-        // Caustics on whatever the light lands on down here. Driven by world position, so
-        // they stay put on the seabed as you swim rather than sliding with the view.
-        vec3 wpos = uCamPos + worldRel;
-        float depth = max(kSeaLevel - wpos.y, 0.0);
-        float caus = caustics(wpos.xz, depth, uTime);
-        // Only where the sun actually reaches: caustics are focused sunlight, so they have
-        // no business on a face in shadow or in a cave.
-        float lit = shadowSingle(worldRel) * uDaylight;
-        color += uSunColor * caus * lit * 0.55;
-
-        // underwater: absorb reds and fog toward deep water with distance (Beer-Lambert-ish)
-        color *= vec3(0.55, 0.82, 1.0);
-        color = mix(color, kWaterDeep, 1.0 - exp(-dist * 0.10));
-
-        // Underwater god rays. The volumetric pass above marches the shadow cascades, which
-        // gives shafts through gaps in the terrain; this adds the surface itself as the
-        // occluder, so light comes down in bands broken by the swell. Cheap because it only
-        // needs the ray's crossing of the waterline, not a march.
-        if (uVolumetricOn > 0.5 && uSunL.y > 0.05 && uDaylight > 0.0) {
-            vec3 rd = normalize(worldRel);
-            float tSurf = (kSeaLevel - uCamPos.y) / max(rd.y, 1e-3);
-            if (tSurf > 0.0 && tSurf < dist) {
-                vec2 hit = (uCamPos + rd * tSurf).xz;
-                float shaft = caustics(hit * 0.6, 0.0, uTime * 0.8);
-                float fade = smoothstep(0.0, 40.0, tSurf) * (1.0 - smoothstep(40.0, 140.0, tSurf));
-                color += uSunColor * shaft * fade * pow(max(dot(rd, uSunL), 0.0), 3.0) * 0.5;
-            }
-        }
+        // The water between the eye and what it looks at: each colour lost at its own rate, red
+        // within a few blocks, blue last, and the water's own colour scattered in to take its place.
+        // (What the light lost on its way DOWN, and the caustics, are on the surfaces themselves,
+        // chunk.frag, so the seabed looks the same from above the water as from in it.)
+        vec3 through = exp(-vec3(0.20, 0.09, 0.05) * dist); // as water.frag looks down through it
+        color = color * through + waterBody(normalize(worldRel)) * (1.0 - through);
+        // after the fog, or the water swallows its own shafts
+        if (uScatterOn > 0.5)
+            color += upsampleScatter(dist);
     } else {
-        // distance fog: melt the far edge of the loaded world into the sky, so the render
-        // boundary reads as haze/horizon instead of a hard cut
-        float fog = smoothstep(uFog.x, uFog.y, dist);
-        // biome haze: a layer of dust, salt or damp on top of the distance fog, coming in over the
-        // first few hundred blocks so it is what the middle distance looks like, not the horizon
+        // Air between here and there, thicker low down, so valleys hold it and mountains stand out of
+        // it, in the colour of the sky behind them: no white band, they melt into it. It always closes
+        // right in before the world runs out.
+        float k = 1.0 / 170.0;
+        float kd = k * dir.y;
+        float through = abs(kd) > 1e-4 ? (1.0 - exp(-kd * dist)) / kd : dist;
+        float thick = (1.8 / uFog.y) * exp(-max(uCamPos.y - kSeaLevel, 0.0) * k) * through;
+        float fog = max(1.0 - exp(-thick), smoothstep(uFog.y * 0.72, uFog.y, dist));
+        // biome haze: a layer of dust, salt or damp on top, coming in over the first few hundred blocks
         fog = 1.0 - (1.0 - fog) * (1.0 - uBiomeHaze * smoothstep(40.0, 700.0, dist));
-        if (fog > 0.001)
-            color = mix(color, skyWithClouds(dir) * uBiomeTint, fog);
+        if (fog > 0.001) {
+            float day = clamp(uSunL.y * 3.0 + 0.12, 0.0, 1.0);
+            vec3 fogDir = normalize(vec3(dir.x, max(dir.y, 0.03), dir.z));
+            color = mix(color, skyGradient(fogDir, uSunL, day, uOvercast) * uBiomeTint, fog);
+        }
+        // Only a camera in or above the layer has cloud in front of the ground. clouds3d stopped the
+        // ray at the ground for it.
+        if (uCloudsOn > 0.5 && uCamPos.y >= kCloudBase) {
+            vec4 c = texture(uClouds, vUv);
+            color = color * c.a + c.rgb;
+        }
     }
 
     outColor = vec4(color + flare, 1.0);

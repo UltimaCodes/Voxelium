@@ -5,13 +5,18 @@
 #include "core/Log.hpp"
 #include "mesh/QuadFormat.hpp"
 #include "render/Camera.hpp"
+#include "gfx/BlockTextures.hpp"
+#include "world/BlockInfo.hpp"
 #include "world/Chunk.hpp" // lamp hue count, for the colour picker's tooltip
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 
 #include <algorithm>
+#include <string>
+#include <cctype>
 #include <filesystem>
 #include <initializer_list>
 
@@ -140,6 +145,7 @@ void DebugHud::beginFrame() {
 
 bool DebugHud::wantsMouse() const { return ImGui::GetIO().WantCaptureMouse; }
 bool DebugHud::wantsKeyboard() const { return ImGui::GetIO().WantCaptureKeyboard; }
+bool DebugHud::typing() const { return ImGui::GetIO().WantTextInput; }
 
 void DebugHud::diagnostics(const FrameStats& stats, const FlyCamera& camera) {
     m_frameMs[m_cursor] = stats.frameMs;
@@ -198,7 +204,7 @@ void DebugHud::diagnostics(const FrameStats& stats, const FlyCamera& camera) {
                 double(camera.position.x), double(camera.position.y), double(camera.position.z),
                 double(camera.yawDeg), double(camera.pitchDeg), double(camera.baseSpeed),
                 camera.flying() ? "  [flying]" : "");
-    ImGui::TextDisabled("%s | ESC settings | F4 hotbar | LMB break, MMB place | F5 mode | F2 "
+    ImGui::TextDisabled("%s | ESC settings | E blocks | LMB break, RMB place, MMB pick | F5 mode | F2 "
                         "save",
                         stats.walkMode ? "walk" : "fly");
 
@@ -259,6 +265,85 @@ bool DebugHud::lampPicker(bool& open, int& swatch) {
     if (picked)
         open = false;
     return picked;
+}
+
+void DebugHud::blockPicker(bool& open, int* hotbar, int& selected, unsigned int iconAtlas) {
+    if (!open)
+        return;
+    static int tab = -1; // -1 all
+    static char search[48] = "";
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const ImVec2 size(std::min(760.0f, vp->Size.x - 40.0f), std::min(560.0f, vp->Size.y - 140.0f));
+    ImGui::SetNextWindowPos(ImVec2(vp->GetCenter().x, vp->GetCenter().y - 30.0f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(size, ImGuiCond_Always);
+    ImGui::Begin("Blocks", &open, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
+
+    const auto tabButton = [&](const char* label, int id) {
+        const bool on = tab == id;
+        if (on)
+            ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        if (ImGui::Button(label))
+            tab = id;
+        if (on)
+            ImGui::PopStyleColor();
+        ImGui::SameLine();
+    };
+    tabButton("All", -1);
+    for (int t = 0; t < int(blocks::Tab::Count); ++t)
+        tabButton(blocks::tabName(blocks::Tab(t)), t);
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##search", "search", search, sizeof(search));
+
+    std::string needle(search);
+    for (char& c : needle)
+        c = char(std::tolower(static_cast<unsigned char>(c)));
+    ImGui::BeginChild("grid", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
+    const float cell = 52.0f;
+    const int perRow = std::max(1, int(ImGui::GetContentRegionAvail().x / (cell + ImGui::GetStyle().ItemSpacing.x)));
+    int shown = 0;
+    for (int b = 1; b < blocks::kBlockCount; ++b) {
+        const BlockId id = BlockId(b);
+        if (!blocks::inPicker(id) || (tab >= 0 && int(blocks::tabOf(id)) != tab))
+            continue;
+        if (id == blocks::WoodZ || id == blocks::SpruceWoodZ || id == blocks::BirchWoodZ)
+            continue; // one entry per lying log; placing turns it to face the way you look
+        std::string name = blocks::blockName(id);
+        if (!needle.empty()) {
+            std::string low = name;
+            for (char& c : low)
+                c = char(std::tolower(static_cast<unsigned char>(c)));
+            if (low.find(needle) == std::string::npos)
+                continue;
+        }
+        if (shown % perRow != 0)
+            ImGui::SameLine();
+        ++shown;
+        ImGui::PushID(b);
+        bool clicked;
+        if (blocks::isWater(id)) {
+            clicked = ImGui::ColorButton("##w", ImVec4(0.20f, 0.45f, 0.75f, 1.0f), ImGuiColorEditFlags_NoTooltip, ImVec2(cell, cell));
+        } else {
+            float u0, v0, u1, v1;
+            iconUv(b, u0, v0, u1, v1);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2.0f, 2.0f));
+            clicked = ImGui::ImageButton("##b", ImTextureRef(ImTextureID(iconAtlas)), ImVec2(cell - 4.0f, cell - 4.0f), ImVec2(u0, v0),
+                                         ImVec2(u1, v1), ImVec4(0.12f, 0.13f, 0.15f, 1.0f));
+            ImGui::PopStyleVar();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s", name.c_str());
+            for (int k = 0; k < 9; ++k)
+                if (ImGui::IsKeyPressed(ImGuiKey(int(ImGuiKey_1) + k), false))
+                    hotbar[k] = b;
+        }
+        if (clicked)
+            hotbar[selected] = b;
+        ImGui::PopID();
+    }
+    if (shown == 0)
+        ImGui::TextDisabled("nothing called that");
+    ImGui::EndChild();
+    ImGui::End();
 }
 
 void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, float& fovDeg,
@@ -370,7 +455,7 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
             ImGui::SetNextItemWidth(-125.0f);
             ImGui::SliderInt("quality", &fx.quality, 0, 3, "%d");
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("sample and step counts for ssao, ssgi, god rays, clouds,\n"
+                ImGui::SetTooltip("sample and step counts for ssao, god rays, clouds,\n"
                                   "contact shadows and water reflections. baked into the\n"
                                   "programs, so changing it rebuilds them.");
             int shadowIdx = fx.shadowRes <= 1024   ? 0
@@ -388,7 +473,6 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
             ImGui::SameLine();
             ImGui::Checkbox("ssao", &fx.ssao);
             ImGui::SameLine();
-            ImGui::Checkbox("ssgi", &fx.ssgi);
             ImGui::SameLine();
             ImGui::Checkbox("god rays", &fx.volumetric);
             ImGui::Checkbox("clouds", &fx.clouds);
@@ -400,7 +484,7 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
             ImGui::Checkbox("motion blur", &fx.motionBlur);
             ImGui::Checkbox("far horizon", &fx.farTerrain);
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("a coarse copy of the terrain out to ~5 km past the loaded\n"
+                ImGui::SetTooltip("a coarse copy of the terrain out to ~7 km past the loaded\n"
                                   "chunks, so mountains far away are visible instead of the\n"
                                   "world ending in haze. costs almost nothing.");
             ImGui::SameLine();
@@ -475,7 +559,7 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
             ImGui::EndDisabled();
 
             ImGui::SeparatorText("exposure & bloom");
-            ImGui::Checkbox("auto exposure", &fx.autoExposure);
+            ImGui::Checkbox("eye adaptation", &fx.autoExposure);
             ImGui::SetNextItemWidth(-125.0f);
             ImGui::SliderFloat("exposure", &fx.exposure, 0.4f, 2.5f, "%.2f");
             ImGui::Checkbox("bloom", &fx.bloom);
@@ -522,6 +606,8 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
             ImGui::SliderFloat("interface", &fx.volUi, 0.0f, 1.0f, "%.2f");
             ImGui::SetNextItemWidth(-125.0f);
             ImGui::SliderFloat("ambience", &fx.volAmbient, 0.0f, 1.0f, "%.2f");
+            ImGui::SetNextItemWidth(-125.0f);
+            ImGui::SliderFloat("music", &fx.volMusic, 0.0f, 1.0f, "%.2f");
             ImGui::SeparatorText("world");
             ImGui::SetNextItemWidth(-125.0f);
             ImGui::SliderFloat("occlusion", &fx.audioOcclusion, 0.0f, 1.0f, "%.2f");
@@ -615,13 +701,15 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
             // would be worse than none.
             static constexpr const char* kKeys[][2] = {
                 {"W A S D", "move"},
-                {"space / ctrl", "up / down flying, jump when walking"},
-                {"shift", "sprint"},
+                {"space / ctrl", "up / down flying; jump / sprint walking"},
+                {"shift", "fly fast"},
                 {"LMB (hold)", "break (blocks have hardness)"},
-                {"MMB", "place"},
-                {"MMB on a lamp", "recolour it"},
-                {"scroll", "fly speed, or hotbar when F4 is open"},
-                {"1-8", "pick a block (F4)"},
+                {"RMB", "place"},
+                {"MMB", "pick the block you are looking at"},
+                {"shift + MMB on a lamp", "recolour it"},
+                {"E", "every block, to fill the hotbar from"},
+                {"scroll", "hotbar slot, or fly speed with the hotbar hidden"},
+                {"1-9", "hotbar slot (in the block list: put the hovered block there)"},
                 {"F2", "save edited chunks"},
                 {"F3", "diagnostics overlay"},
                 {"F4", "hotbar"},
@@ -661,6 +749,16 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
     ImGui::End();
     if (titleMode)
         ImGui::PopStyleVar();
+}
+
+DebugHud::UiSounds DebugHud::uiSounds() {
+    // One place for every widget in every menu, rather than a call at each button.
+    UiSounds out;
+    const ImGuiID hovered = ImGui::GetHoveredID();
+    out.hover = hovered != 0 && hovered != m_lastHovered;
+    out.click = hovered != 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+    m_lastHovered = hovered;
+    return out;
 }
 
 void DebugHud::render() {

@@ -22,6 +22,14 @@ unsigned int createBlockTextureArray(const std::filesystem::path& textureDir);
 // face; keep the two in step.
 int blockTopLayer(int blockId);
 
+// The layer that best shows a block on its own (a log's bark, a grass block's side), for icons.
+// -1 for water, which has no tile.
+int blockIconLayer(int blockId);
+// Every tile copied into one 2D texture, for the block picker's icons, and where a block's icon
+// sits in it.
+unsigned int createIconAtlas(unsigned int blockTexArray);
+void iconUv(int blockId, float& u0, float& v0, float& u1, float& v1);
+
 int crackStages();
 int crackLayer(int stage);
 

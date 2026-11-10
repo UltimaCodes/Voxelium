@@ -38,7 +38,7 @@ void Player::step(const ChunkManager& world, const PlayerInput& input) {
     glm::dvec3 wish = fwd * double(input.forward) + right * double(input.strafe);
     if (glm::dot(wish, wish) > 1.0)
         wish = glm::normalize(wish);
-    wish *= kWalkSpeed;
+    wish *= kWalkSpeed * (input.sprint && input.forward > 0.0f ? 1.45 : 1.0);
 
     inWater = submergedAt(world);
     if (inWater) {

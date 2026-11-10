@@ -19,7 +19,6 @@ out vec2 vUv;
 out vec2 vGap;
 flat out uint vLayer;
 
-const int kTri[6] = int[6](0, 1, 2, 0, 2, 3);
 const vec2 kCorner[6][4] = vec2[6][4](
     vec2[4](vec2(0, 0), vec2(0, 1), vec2(1, 1), vec2(1, 0)),
     vec2[4](vec2(1, 0), vec2(1, 1), vec2(0, 1), vec2(0, 0)),
@@ -33,8 +32,9 @@ const vec2 kCorner[6][4] = vec2[6][4](
 const float kBloat = 0.001;
 
 void main() {
-    uvec4 q = quads[gl_VertexID / 6];
-    int corner = kTri[gl_VertexID % 6];
+    // indexed: four vertices a quad, its two triangles share a diagonal (see Renderer's index buffer)
+    uvec4 q = quads[gl_VertexID >> 2];
+    int corner = gl_VertexID & 3;
     vec3 origin = vec3(uvec3(q.x & 31u, (q.x >> 5) & 31u, (q.x >> 10) & 31u));
     float w = float(((q.x >> 15) & 31u) + 1u);
     float h = float(((q.x >> 20) & 31u) + 1u);
@@ -62,6 +62,8 @@ void main() {
 
     vec3 world = pos + uOffsets[gl_DrawID].xyz;
     vUv = uv;
+    if (dir != 2u && dir != 3u)
+        vUv.y = h - uv.y; // as chunk.vert: side faces count v down from the top
     vGap = vec2(dot(world, uLightX), dot(world, uLightY)) + uCamLightXY;
     vLayer = texLayer(q.y & 255u, dir);
     gl_Position = uViewProj * vec4(world, 1.0);

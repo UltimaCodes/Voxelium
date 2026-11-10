@@ -32,7 +32,9 @@ float gapNoise(vec2 p) {
 void main() {
     if (!isCutoutLayer(vLayer))
         return;
-    if (texture(uBlockTex, vec3(vUv, float(vLayer))).a < 0.5)
+    // The full tile, not a mip: a far cascade's derivatives are huge, and a sparse canopy averaged
+    // down to under half coverage vanished from the shadow map whole.
+    if (textureLod(uBlockTex, vec3(vUv, float(vLayer)), 0.0).a < 0.5)
         discard;
     // The tile's own holes are hashed per block, so the odds of one lining up through a thick
     // canopy fall off geometrically and the ground under a tree is a solid slab of shade.

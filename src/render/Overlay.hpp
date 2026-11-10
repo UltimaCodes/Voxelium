@@ -34,7 +34,14 @@ public:
     void drawHotbar(int fbWidth, int fbHeight, const int* blockIds, int count, int selected,
                     unsigned int blockTexArray) const;
 
+    // The block in your hand, bottom right, over the finished frame. swing 0..1 through an arm
+    // swing, equip 0..1 how far it has come back up after switching, bob the walk's sway in
+    // view units, light the brightness where you stand.
+    void drawHeld(int fbWidth, int fbHeight, int blockId, unsigned int blockTexArray, float swing, float equip,
+                  const glm::vec2& bob, const glm::vec3& light) const;
+
 private:
+    unsigned int m_heldProg = 0;
     unsigned int m_boxProg = 0;
     unsigned int m_crackProg = 0;
     unsigned int m_crossProg = 0;

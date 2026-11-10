@@ -55,7 +55,7 @@ public:
     void setListener(const glm::dvec3& pos, const glm::vec3& forward);
 
     // Mixer buses. World is spatialised, ui and ambient are not.
-    enum class Bus { World, Ui, Ambient };
+    enum class Bus { World, Ui, Ambient, Music };
     void setMasterVolume(float v);
     void setBusVolume(Bus bus, float v);
     // Camera eye submerged: muffles the world bus. Crossfaded, so surfacing does not click.
@@ -75,6 +75,9 @@ public:
     bool playIfPresent(const std::string& name, const glm::dvec3& worldPos,
                        float volume = 1.0f, float pitch = 1.0f);
     bool has(const std::string& name) const { return m_bank.has(name); }
+    // An animal or bird call out in the world: placed like any world sound, but carrying much
+    // further, and on the ambience bus so it rides that slider. False if there is no such clip.
+    bool playCall(const std::string& name, const glm::dvec3& worldPos, float volume = 1.0f, float pitch = 1.0f);
 
     // How occluded a source is, 0 = clear line of sight, 1 = fully blocked. Supplied by the
     // caller because only the world knows: AudioEngine must not depend on ChunkManager.
@@ -90,13 +93,22 @@ public:
     // Beds live in their own voice pool. Sharing the one-shot pool would let a burst of
     // block breaks steal the bed the player is standing in, and a bed cut mid-loop is the
     // most obvious artefact in the mix.
-    void setBed(const std::string& name, float gain);
+    void setBed(const std::string& name, float gain, Bus bus = Bus::Ambient);
     // Every bed not named since the last call fades out. Saves the caller tracking which
     // beds it stopped asking for.
     void endUnsetBeds();
     int liveBeds() const;
     // Current (faded, not target) gain of a bed, 0 if it is not running. For --smoke.
     float bedGain(const std::string& name) const;
+
+    // Long sounds are streamed from disk rather than held decoded: every amb_, music_ and menu_ file
+    // in sounds/. A streamed bed's variants (amb_forest1, amb_forest2, ...) take turns, each one
+    // fading into the next over its last seconds, so a bed never loops on a seam.
+    bool streams(const std::string& name) const { return findStream(name) != nullptr; }
+    // One music track at a time from the music_<name> files, faded in and played once through.
+    bool playMusic(const std::string& name, float volume, float fadeSec);
+    void stopMusic(float fadeSec);
+    bool musicPlaying() const;
 
     bool available() const { return m_ready; }
     const SoundBank& bank() const { return m_bank; }
@@ -142,7 +154,30 @@ private:
         float gain = 0.0f;
         float target = 0.0f;
         bool named = false; // set by setBed, cleared by endUnsetBeds
+        // streamed beds play on two players, so the next file can fade in over the last one's end
+        bool streamed = false;
+        Bus bus = Bus::Ambient;
+        int live = 0;          // which of the two is playing
+        bool handing = false;  // the other is fading in
+        float hand = 0.0f;     // 0..1 through the handover
+        float handSec = 1.0f;
+        int variant[2] = {-1, -1};
+        float trim[2] = {1.0f, 1.0f};
+        float lengthSec[2] = {0.0f, 0.0f};
     };
+    struct Stream {
+        std::string name;
+        std::vector<std::filesystem::path> files;
+        std::vector<float> trim; // per file, evens out how loud each recording is
+    };
+    struct Track {
+        bool live = false;
+        float gain = 0.0f, target = 0.0f, rate = 1.0f, trim = 1.0f;
+    };
+    const Stream* findStream(const std::string& name) const;
+    bool openStream(void* sound, const Stream& st, int variant, Bus bus);
+    int pickVariant(const Stream& st, int avoid);
+    void updateMusic(float dt);
 
     int acquireVoice();
     void startVoice(int idx, const SoundBank::Sample& s, float volume, float pitch,
@@ -181,7 +216,11 @@ private:
     void* m_sounds = nullptr;   // ma_sound[kVoices]
     void* m_refs = nullptr;     // ma_audio_buffer_ref[kVoices], one cursor per voice
     void* m_groups = nullptr;   // ma_sound_group[3], indexed by Bus
-    void* m_bedSounds = nullptr; // ma_sound[kBeds]
+    void* m_bedSounds = nullptr; // ma_sound[kBeds * 2], two players a bed
+    std::vector<Stream> m_streams;
+    Track m_track[2];
+    int m_lastTrack = -1;
+    void* m_musicSounds = nullptr; // ma_sound[2]
     void* m_bedRefs = nullptr;   // ma_audio_buffer_ref[kBeds]
     void* m_lowpass = nullptr;   // ma_lpf_node, world + ambient -> endpoint
 };

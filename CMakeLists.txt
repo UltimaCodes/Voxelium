@@ -22,6 +22,7 @@ add_executable(voxelium
     src/audio/AudioEngine.cpp
     src/audio/PlayerSounds.cpp
     src/audio/SoundBank.cpp
+    src/gen/Terrain3.cpp
     src/gfx/BlockTextures.cpp
     src/gfx/GlDebug.cpp
     src/gfx/GpuTimer.cpp

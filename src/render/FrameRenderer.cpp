@@ -34,10 +34,14 @@ CameraFrame buildCameraFrame(const FlyCamera& camera, int fbWidth, int fbHeight,
 
 SkyLight computeSky(float timeOfDay) {
     const float theta = (timeOfDay - 0.25f) * 6.2831853f;
-    const glm::vec3 dir = glm::normalize(glm::vec3(std::cos(theta), std::sin(theta), 0.30f));
+    // Tilted so it never stands overhead: side faces catch light and shadows stay long all day.
+    const glm::vec3 dir = glm::normalize(glm::vec3(std::cos(theta), std::sin(theta), 0.70f));
     const float alt = dir.y; // -1..1
     const float day = glm::clamp(alt * 3.0f + 0.12f, 0.0f, 1.0f); // 0 below the horizon
-    const float high = glm::clamp(alt * 1.8f, 0.0f, 1.0f);
+    const float high = glm::clamp(alt * 1.5f, 0.0f, 1.0f);
+    // The land keeps its sun until the sun is nearly down, so evening and morning are lit gold
+    // rather than dimmed to grey. Still 0 just below the horizon, before the moon comes in.
+    const float sunUp = glm::clamp(alt * 5.0f + 0.12f, 0.0f, 1.0f);
     const glm::vec3 sunColor = glm::mix(glm::vec3(2.7f, 1.25f, 0.5f),   // horizon warm
                                         glm::vec3(2.05f, 1.85f, 1.5f),  // overhead white
                                         high) *
@@ -56,7 +60,9 @@ SkyLight computeSky(float timeOfDay) {
     const float moon = glm::clamp((-alt - 0.04f) * 3.0f, 0.0f, 1.0f);
     // Dim and cool, and deliberately not physical, real moonlight is ~1/400000 of sunlight
     // and would be black here. It only has to be strong enough that a hill has a lit side.
-    const glm::vec3 moonColor = glm::vec3(0.115f, 0.145f, 0.235f) * moon;
+    // What the clouds, water and sky take from the moon. Kept low so night clouds are dark
+    // shapes against the stars with a lit edge, not white heaps.
+    const glm::vec3 moonColor = glm::vec3(0.068f, 0.080f, 0.118f) * moon;
 
     const bool moonLit = day <= 0.0f;
     // Night ambient can come back down now that the moon carries the shape. These are the
@@ -70,6 +76,15 @@ SkyLight computeSky(float timeOfDay) {
     s.color = moonLit ? moonColor : sunColor;
     s.sunColor = sunColor;
     s.ambient = ambient;
+    // Strong warm sun against a sky fill, about 3:1 between lit and shade. The fill is only a
+    // little cool, so a shadow on grass stays a darker green rather than turning teal, and the
+    // moon is a grey-blue that leaves the night land olive-grey (final.frag's rod vision does
+    // the rest).
+    const glm::vec3 landDay = glm::mix(glm::vec3(2.90f, 1.40f, 0.58f), glm::vec3(2.75f, 2.12f, 1.30f), high);
+    s.landSun = moonLit ? glm::vec3(0.24f, 0.27f, 0.36f) * moon : landDay * sunUp;
+    s.landAmbient = glm::mix(glm::vec3(0.050f, 0.058f, 0.084f),
+                             glm::mix(glm::vec3(0.38f, 0.36f, 0.48f), glm::vec3(0.60f, 0.68f, 0.86f), high), day);
+    s.waterLevel = glm::mix(glm::vec3(1.0f), glm::vec3(0.42f, 0.50f, 0.58f), day * day);
     s.daylight = day;
     return s;
 }
@@ -109,11 +124,17 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     // A flash of lightning lights the ground from the whole sky, not from the sun: it lifts the
     // ambient (which the chunks, the far terrain and the water all read), not the direct light.
     sky.ambient += glm::vec3(0.60f, 0.68f, 0.95f) * (0.4f * fx.flash);
+    sky.landAmbient += glm::vec3(0.60f, 0.68f, 0.95f) * (0.8f * fx.flash);
+    // rain takes the sun and greys what is left
+    sky.landSun *= 1.0f - 0.65f * fx.precip * (1.0f - fx.snow);
+    sky.landAmbient = glm::mix(sky.landAmbient, glm::vec3(glm::dot(sky.landAmbient, glm::vec3(0.33f))),
+                               0.45f * fx.precip);
     // and the light itself takes on the colour of the air it came through: warm and dusty over
     // sand, a touch cool over the sea
     const glm::vec3 biome(fx.biomeTint[0], fx.biomeTint[1], fx.biomeTint[2]);
     sky.color *= glm::mix(glm::vec3(1.0f), biome, 0.7f);
     sky.sunColor *= glm::mix(glm::vec3(1.0f), biome, 0.7f);
+    sky.landSun *= glm::mix(glm::vec3(1.0f), biome, 0.7f);
     // Everything that SHADES takes the celestial direction, so the cascades, NdotL and every
     // specular lobe follow the moon after dusk. The sky pass is handed the true sun
     // separately, see SkyLight.
@@ -134,20 +155,27 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
         rc.shadows.update(camera.position, sunL);
         rc.shadows.render(rc.renderer, cam.cameraChunk, cam.cameraFrac);
     }
+    // the sunlight thrown back off the ground: needs this frame's cascades and light volume
+    const bool bounce = rc.lightVolume && rc.lightVolume->haveBounce();
+    if (bounce)
+        rc.lightVolume->computeBounce(fx.shadows, rc.shadows.texture(), &rc.shadows.cascadeVp()[0],
+                                      rc.shadows.splits(), rc.shadows.cascadeTexelWorld(), sunL);
     if (timers) timers->shadow.end();
 
     if (timers) timers->scene.begin();
     const bool cloudShadows = fx.clouds && fx.cloudShadow > 0.0f;
     if (cloudShadows)
-        rc.postfx.updateCloudMap(camera.position, time, fx.cloudBias);
+        rc.postfx.updateCloudMap(camera.position, time, fx.cloudCover());
+    rc.postfx.updateCaustics(time);
     rc.postfx.beginScene();
     glClearColor(0.42f, 0.68f, 1.05f, 1.0f); // HDR sky
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glProgramUniform3fv(rc.drawProgram, 4, 1, &sunL.x);
-    glProgramUniform3fv(rc.drawProgram, 21, 1, &sky.color.x);
-    glProgramUniform3fv(rc.drawProgram, 22, 1, &sky.ambient.x);
+    glProgramUniform3fv(rc.drawProgram, 21, 1, &sky.landSun.x);
+    glProgramUniform3fv(rc.drawProgram, 22, 1, &sky.landAmbient.x);
     glProgramUniform1f(rc.drawProgram, 23, fx.emissive);
+    glProgramUniform3fv(rc.drawProgram, 43, 1, &fx.handLight.x);
     // Camera world position as float. World coords are kept off the GPU for GEOMETRY, where
     // sub-block precision matters; the cloud field is low frequency and a float is exact
     // enough for it well past any distance the terrain generator covers.
@@ -157,7 +185,37 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     const glm::vec3 cloudXf = rc.postfx.cloudMapXf();
     glProgramUniform3fv(rc.drawProgram, 31, 1, &cloudXf.x);
     glBindTextureUnit(6, rc.postfx.cloudMapTex());
-    glProgramUniform1f(rc.drawProgram, 26, time);
+    const glm::vec3 climateXf = rc.farTerrain ? rc.farTerrain->climateXf() : glm::vec3(0.0f);
+    glProgramUniform3fv(rc.drawProgram, 35, 1, &climateXf.x);
+    // wrapped on a multiple of the sine's period, so it stays precise over a long session
+    glProgramUniform1f(rc.drawProgram, 36, std::fmod(time, 6.2831853f / 1.19f * 256.0f));
+    if (rc.farTerrain)
+        glBindTextureUnit(7, rc.farTerrain->climateTexture());
+    // The voxel light around the camera, read per pixel so light has no steps in it.
+    const bool lightVol = rc.lightVolume != nullptr;
+    glProgramUniform1f(rc.drawProgram, 41, lightVol ? 1.0f : 0.0f);
+    if (lightVol) {
+        const glm::vec3 volCam = rc.lightVolume->cameraTexel(), volMin = rc.lightVolume->regionMinRel();
+        glProgramUniform3fv(rc.drawProgram, 39, 1, &volCam.x);
+        glProgramUniform3fv(rc.drawProgram, 40, 1, &volMin.x);
+        glBindTextureUnit(10, rc.lightVolume->texture());
+    }
+    glProgramUniform1f(rc.drawProgram, 44, bounce ? 1.0f : 0.0f);
+    glBindTextureUnit(12, rc.postfx.causticsTex());
+    if (bounce)
+        glBindTextureUnit(11, rc.lightVolume->bounceTexture());
+    const glm::vec3 coastXf = rc.farTerrain ? rc.farTerrain->coastXf(camera.position) : glm::vec3(0.0f);
+    glProgramUniform3fv(rc.drawProgram, 38, 1, &coastXf.x);
+    glProgramUniform3fv(rc.waterProgram, 38, 1, &coastXf.x);
+    {
+        // the wash on the beach keeps time with the breakers
+        const WaterWaves::Frame wf = WaterWaves::frame(double(time), camera.position, fx.waveStorm, fx.waves);
+        glProgramUniform4fv(rc.drawProgram, 42, 1, &wf.group.x);
+        glProgramUniform1f(rc.drawProgram, 37, wf.breakClock);
+    }
+    if (rc.farTerrain)
+        glBindTextureUnit(9, rc.farTerrain->coastTexture());
+    glProgramUniform1f(rc.drawProgram, 26, useTaa ? float(taa->frame % 64) : 0.0f);
     glProgramUniform1f(rc.drawProgram, 27, fx.leafSss);
     glProgramUniform1f(rc.drawProgram, 28, fx.relief);
     // Was derived in-shader from uSunL.y, which stops meaning "how light is it" the moment
@@ -186,8 +244,12 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     // The horizon: the coarse world past the streamed chunks. Opaque, drawn after the chunks so
     // depth keeps the real terrain in front of it.
     if (rc.farTerrain && fx.farTerrain && farEnd > fogEnd && fogEnd < 1e8f)
-        rc.farTerrain->draw(cam.viewProj, camera.position, sunL, sky.color, sky.ambient,
-                            fx.farInner >= 0.0f ? fx.farInner : fogEnd);
+        rc.farTerrain->draw(cam.viewProj, camera.position, sunL, sky.color, sky.ambient, sky.landSun,
+                            sky.landAmbient, sky.waterLevel, cloudShadows ? fx.cloudShadow : 0.0f, cloudXf,
+                            // past the height the chunks reach the ground from, there is no ground to leave room for
+                            camera.position.y > double((kHighestLookDown + 1) * kChunkSize)
+                                ? 0.0f
+                                : (fx.farInner >= 0.0f ? fx.farInner : fogEnd));
 
     // Creatures go in with the opaque scene, not after the water: a fish under a lake has to be
     // seen THROUGH it, refracted and absorbed like the seabed, and the snapshot the water pass
@@ -198,13 +260,14 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
         const glm::vec3 fwd = camera.forward();
         const glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0.0f, 1.0f, 0.0f)));
         const glm::vec3 upv = glm::cross(right, fwd);
+        rc.wildlife->setHandLight(fx.handLight);
         rc.wildlife->draw(cam.viewProj, camera.position, right, upv, underwater);
     }
 
     // transparent water over the opaque scene: alpha blend, depth test but no write.
     // snapshot the opaque colour first so the water shader can reflect it (SSR).
     rc.postfx.captureOpaqueForWater();
-    const float wf = 1.0f / std::tan(glm::radians(camera.fovYDeg) * 0.5f);
+    const float wf = 1.0f / std::tan(glm::radians(camera.fovYDeg + camera.fovKick) * 0.5f);
     const glm::vec2 projScale{aspect / wf, 1.0f / wf};
     // AO applied HERE, to the opaque scene only, before water exists in the colour buffer,
     // see PostFx::applyOpaqueSsao and apply_ao.frag. Water never writes depth (see the
@@ -226,6 +289,8 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     glProgramUniform3fv(rc.waterProgram, 23, 1, &splits.x);
     glProgramUniform3fv(rc.waterProgram, 24, 1, &texel.x);
     glProgramUniform1f(rc.waterProgram, 25, sky.daylight);
+    glProgramUniform3fv(rc.waterProgram, 43, 1, &fx.handLight.x);
+    glProgramUniform3fv(rc.waterProgram, 40, 1, &sky.waterLevel.x);
     // The swell: its phase is worked out at the camera in double so it stays fixed to the world.
     // Half-block tessellation on High and Ultra, a block on Low and Medium.
     WaterWaves::apply(rc.waterProgram,
@@ -281,7 +346,7 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     if (timers) timers->scene.end();
 
     if (timers) timers->post.begin();
-    const float f = 1.0f / std::tan(glm::radians(camera.fovYDeg) * 0.5f);
+    const float f = 1.0f / std::tan(glm::radians(camera.fovYDeg + camera.fovKick) * 0.5f);
     PostFx::RunParams rp;
     rp.projScale = {aspect / f, 1.0f / f};
     rp.nearPlane = camera.nearPlane;
@@ -292,6 +357,7 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     rp.lightL = sunL;
     rp.lightColor = sky.color;
     rp.sunColor = sky.sunColor;
+    rp.skyAmbient = sky.ambient;
     rp.daylight = sky.daylight;
     // mist pulls the fog in; the shadow reach above uses fogEnd untouched so the cascades do
     // not redraw every time the mist moves
@@ -303,17 +369,15 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     rp.fog = {fogEnd * 0.55f * mistScale, hazeEnd * mistScale};
     rp.shadows = &rc.shadows;
     rp.toggles = fx;
+    // Fixed for a lit scene: turning your head never changes it. See FxToggles::eyeGain. The eye
+    // opens up a little while the sun is low, so a golden hour reads golden, not dim.
+    if (fx.autoExposure) {
+        const float golden = 1.0f + 0.25f * glm::smoothstep(0.0f, 0.35f, sky.daylight) *
+                                        (1.0f - glm::smoothstep(0.6f, 1.0f, sky.daylight));
+        rp.toggles.exposure *= fx.eyeGain * glm::mix(1.25f, 1.0f, sky.daylight) * golden;
+    }
     rp.time = time;
     rp.camPos = glm::vec3(camera.position);
-    // Eye adaptation runs off wall-clock delta so its speed does not depend on framerate.
-    // Derived here rather than threaded through every caller, because the offscreen
-    // harnesses render as fast as they can and would otherwise adapt at a different rate
-    // than the game does.
-    {
-        static float sPrevTime = time;
-        rp.dt = std::clamp(time - sPrevTime, 0.0f, 0.25f);
-        sPrevTime = time;
-    }
     // only let PostFx run these when we actually have the reprojection history for them
     rp.toggles.taa = useTaa;
     rp.toggles.motionBlur = useMotion;

@@ -29,7 +29,6 @@ struct PresetValues {
     int quality;    // VX_QUALITY tier handed to the shaders
     int shadowRes;  // shadow cascade texture size
     bool ssao;
-    bool ssgi;
     bool volumetric;
     bool clouds;
     bool taa;

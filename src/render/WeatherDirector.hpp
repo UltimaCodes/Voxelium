@@ -28,7 +28,8 @@ public:
     };
 
     // desert and coast are 0..1 biome weights at the camera; timeOfDay is the sky's 0..1 clock.
-    Out update(float dt, float camY, float desert, float coast, float timeOfDay);
+    // cold: 0..1, how much of the land around is tundra, snowy taiga or snowcap
+    Out update(float dt, float camY, float desert, float coast, float timeOfDay, float cold = 0.0f);
     // Puts it back to a clear sky, e.g. on switching worlds.
     void reset();
 

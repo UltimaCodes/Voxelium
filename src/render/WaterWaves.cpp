@@ -10,6 +10,8 @@ namespace {
 
 constexpr double kTwoPi = 6.283185307179586;
 constexpr float kSharp = 1.2f;
+// wave groups, radians a block: waves.glsl waveGroup
+constexpr double kGroupK0 = 0.0419, kGroupK1 = 0.0648;
 
 // The swell runs with the same wind the sand and the leaves blow in (Particles.cpp kWindDir).
 // Four waves within a few tens of degrees of it, none sharing a period, so the sum never settles
@@ -56,7 +58,16 @@ WaterWaves::Frame WaterWaves::frame(double time, const glm::dvec3& cam, float st
     const double s = kSharp;
     const double e0 = std::exp(-2.0 * s);
     f.shape = {float(s), float(e0), float(std::exp(-s) * besselI0(s)), float(2.0 / (1.0 - e0))};
-    f.scale = on ? kCalm * (1.0f + std::clamp(storm, 0.0f, 1.0f)) : 0.0f;
+    // the sea breathes over a minute or two, on top of what the weather is doing
+    const float breath = 1.0f + 0.30f * float(std::sin(time * 0.037)) + 0.20f * float(std::sin(time * 0.083 + 1.0));
+    f.scale = on ? kCalm * (1.0f + std::clamp(storm, 0.0f, 1.0f)) * breath : 0.0f;
+    // Everything phased at the camera in double, so the pattern is fixed to the world at any distance.
+    const double wa = wind, wb = wind - 21.0 * kTwoPi / 360.0;
+    f.group = {float(std::fmod(kGroupK0 * (std::cos(wa) * cam.x + std::sin(wa) * cam.z) - kGroupK0 * 7.0 * time, kTwoPi)),
+               float(std::fmod(kGroupK1 * (std::cos(wb) * cam.x + std::sin(wb) * cam.z) - kGroupK1 * 5.0 * time, kTwoPi)),
+               float(std::fmod(0.031 * cam.x + 0.017 * cam.z + time * 0.05, kTwoPi)),
+               float(std::fmod(-0.023 * cam.x + 0.041 * cam.z - time * 0.07, kTwoPi))};
+    f.breakClock = float(std::fmod(time * 0.19, 1024.0));
     f.camWrap = {float(cam.x - std::floor(cam.x / kWrap) * kWrap),
                  float(cam.z - std::floor(cam.z / kWrap) * kWrap)};
     return f;
@@ -70,7 +81,9 @@ float WaterWaves::unitHeight(const Frame& f, float relX, float relZ) {
         const float e = std::exp(f.shape.x * (std::sin(th) - 1.0f));
         h += w.w * f.shape.w * (e - f.shape.z);
     }
-    return h;
+    const float a = std::sin(float(kGroupK0) * (f.wave[0].x * relX + f.wave[0].y * relZ) + f.group.x);
+    const float b = std::sin(float(kGroupK1) * (f.wave[2].x * relX + f.wave[2].y * relZ) + f.group.y);
+    return h * (0.70f + 0.32f * a + 0.20f * b);
 }
 
 float WaterWaves::fade(float d) {
@@ -86,6 +99,8 @@ void WaterWaves::apply(unsigned int program, const Frame& f, float tessDensity) 
     glProgramUniform4fv(program, 33, 1, &f.shape.x);
     glProgramUniform2fv(program, 34, 1, &f.camWrap.x);
     glProgramUniform1f(program, 35, tessDensity);
+    glProgramUniform4fv(program, 36, 1, &f.group.x);
+    glProgramUniform1f(program, 37, f.breakClock);
 }
 
 } // namespace vx

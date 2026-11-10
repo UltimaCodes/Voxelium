@@ -125,21 +125,32 @@ private:
     bool m_pending[kCascades] = {};
     std::chrono::steady_clock::time_point m_lastRedraw[kCascades] = {};
 
-    // --- the far cascade, drawn in slices ----------------------------------------------
+    // --- the mid and far cascades, drawn in slices ---------------------------------------
     // Redrawing the far cascade draws every sunlit chunk within ~1100 blocks: at Ultra's
     // detail reach that is ~22M quads and ~30 ms of GPU in one frame, which happened every
     // time streaming or drift asked for it, a hitch every 0.7 s while flying (SPEC #141). So a
-    // routine redraw goes to a spare layer (index kCascades) an eighth of the chunks a frame,
-    // and only when the last eighth lands is it copied over the far cascade's own layer and its
-    // anchor swapped in; until then the old one keeps shading, still inside its slack.
-    // A forced redraw (settings, resize, first frame) is still drawn whole, at once.
-    static constexpr int kFarSlices = 8; // cull.comp's 2x2x2 checkerboard
-    int m_farSlice = -1;                 // next slice to draw, -1 when none is under way
-    glm::dvec3 m_farAnchor{0.0};
-    glm::vec3 m_farSun{0.0f};
-    glm::vec3 m_farUp{0.0f, 1.0f, 0.0f};
-    float m_farRadius = 0.0f;
-    glm::mat4 m_farVp{1.0f};
+    // routine redraw goes to a spare layer a slice of the chunks a frame, and only when the
+    // last slice lands is it copied over the cascade's own layer and its anchor swapped in;
+    // until then the old one keeps shading, still inside its slack. The mid cascade works the
+    // same way since a day cycle moves the sun under it: drawn whole, it was a 4-6 ms frame
+    // every 0.4 s. A forced redraw (settings, resize, first frame) is still drawn whole, at once.
+    // In eighths a far slice was still a 3-5 ms bump once a second, and a mid one over 1 ms in a
+    // forest, so they are thinner than that. A redraw is done inside kRedrawSec whatever the
+    // frame rate, with more slices a frame if need be: the old contents only cover the camera
+    // for so far (see the early re-anchor in update()).
+    static constexpr int kSlices[kCascades] = {1, 16, 32}; // of cull.comp's checkerboard
+    static constexpr float kRedrawSec[kCascades] = {0.0f, 0.27f, 0.8f};
+    std::chrono::steady_clock::time_point m_lastRender{};
+    struct Spare {
+        int slice = -1; // next slice to draw, -1 when none is under way
+        glm::dvec3 anchor{0.0};
+        glm::vec3 sun{0.0f};
+        glm::vec3 up{0.0f, 1.0f, 0.0f};
+        float radius = 0.0f;
+        glm::mat4 vp{1.0f};
+    };
+    Spare m_spare[kCascades]; // [0] unused: the near cascade is redrawn whole every frame
+    static int spareLayer(int c) { return kCascades + c - 1; }
 
     // A cascade's light view-projection for this frame's camera, from where it was anchored.
     static glm::mat4 cascadeMatrix(const glm::dvec3& anchor, const glm::vec3& sun,

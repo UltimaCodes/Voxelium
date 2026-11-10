@@ -8,7 +8,9 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+#include <algorithm>
 #include <array>
+#include <vector>
 #include <cmath>
 #include <cstdint>
 
@@ -33,7 +35,28 @@ constexpr int kCrackLayer0 = kLampLayerEnd + kCrossLayers;
 // shaders already hard-code (leaves 7, lamps 15..39, cross 40/41) stays where it was.
 constexpr int kBiomeLayer0 = kCrackLayer0 + kCrackStages;
 constexpr int kBiomeLayers = 28;
-constexpr int kLayers = kBiomeLayer0 + kBiomeLayers;
+// Ground cover, the newer biomes' ground and trees, and building blocks, all loaded from files.
+constexpr int kDecorLayer0 = kBiomeLayer0 + kBiomeLayers;
+constexpr int kDecorLayers = 67;
+constexpr int kTurnedBark0 = kDecorLayer0 + 54; // oak, spruce, birch bark turned on its side
+constexpr int kLayers = kDecorLayer0 + kDecorLayers;
+constexpr const char* kDecorNames[kDecorLayers] = {
+    "tall_grass_a", "tall_grass_b", "fern_1", "fern_2", "fern_3", "dry_grass_2", "dry_grass_3",
+    "dry_grass_4", "dune_grass_1", "dune_grass_2", "dune_grass_3", "jungle_grass", "flower_red",
+    "flower_blue", "flower_purple", "flower_white", "flower_orange", "mushroom_brown", "mushroom_red",
+    "reed", "firefly_bush", "cactus_flower", "leaf_litter", "pebbles", "lily_pad", "moss",
+    "forest_floor_top", "forest_floor_side", "jungle_floor_top", "jungle_floor_side",
+    "savanna_grass_top", "savanna_grass_side", "snowy_grass_side", "dry_dirt", "permafrost", "mud",
+    "red_sand", "clay", "ice", "terracotta", "terracotta_red", "terracotta_yellow", "terracotta_brown",
+    "terracotta_white", "granite", "andesite", "slate", "acacia_log", "acacia_log_top",
+    "acacia_leaves", "jungle_log", "jungle_log_top", "jungle_leaves", "berry_bush", nullptr, nullptr,
+    nullptr, "cobblestone", "mossy_cobble", "stone_bricks", "glass", "spruce_planks", "birch_planks",
+    "acacia_planks", "jungle_planks", "grass_tuft_b", "grass_tuft_c"};
+// Generated tiles a file may replace.
+constexpr struct {
+    int layer;
+    const char* name;
+} kOverrides[] = {{kCrossLayer0, "grass_tuft"}, {kCrossLayer0 + 1, "flower"}, {kBiomeLayer0 + 5, "dead_bush"}};
 
 // filename (without extension) per layer, looked up in assets/textures/
 constexpr const char* kNames[kNamedLayers] = {"stone",    "dirt",     "grass_top", "grass_side",
@@ -67,6 +90,24 @@ Rgba shade(float r, float g, float b, float m) {
 
 // each generator returns the colour for texel (x,y) of its 16x16 tile
 using Gen = Rgba (*)(int, int);
+
+constexpr float kGrassR = 0.38f, kGrassG = 0.54f, kGrassB = 0.27f;
+
+// Moves a tile's average to this colour, keeping its light and dark pattern at the given strength.
+void retint(Rgba* tile, float r, float g, float b, float contrast) {
+    float mean = 0.0f;
+    const auto lum = [](const Rgba& t) { return 0.2126f * t.r + 0.7152f * t.g + 0.0722f * t.b; };
+    for (int i = 0; i < kTile * kTile; ++i)
+        mean += lum(tile[i]);
+    mean /= float(kTile * kTile);
+    for (int i = 0; i < kTile * kTile; ++i) {
+        const float m = 1.0f + (lum(tile[i]) / mean - 1.0f) * contrast;
+        const Rgba c = shade(r, g, b, m);
+        tile[i].r = c.r;
+        tile[i].g = c.g;
+        tile[i].b = c.b;
+    }
+}
 
 Rgba genStone(int x, int y) {
     float n = 0.86f + 0.14f * h01(x, y, 1);
@@ -125,10 +166,8 @@ Rgba genWoodTop(int x, int y) {
 Rgba genLeaves(int x, int y) {
     // clustered blobs of lighter/darker green
     float cluster = h01(x / 3, y / 3, 12);
-    float n = 0.76f + 0.5f * cluster + 0.12f * h01(x, y, 13);
-    // Lit tops read as near-black next to the grass at 0.22/0.44/0.18. Lifted a little so a
-    // sunlit canopy is visibly lit; the darker clusters still carry the depth.
-    Rgba c = shade(0.25f, 0.49f, 0.19f, n);
+    float n = 0.88f + 0.26f * cluster + 0.07f * h01(x, y, 13);
+    Rgba c = shade(0.24f, 0.37f, 0.17f, n);
     // Punch gaps. Leaves are a cutout block: the holes are what you see through, what light
     // comes through, and what makes the shadow dappled instead of a solid slab. Driven off a
     // different hash than the colour so the holes do not line up with the shading, and
@@ -260,8 +299,8 @@ void fillCross(int which, Rgba* slot) {
             if (x < 0 || x >= kTile || y < 0)
                 continue;
             // darker at the root, brighter at the tip
-            const float m = 0.55f + 0.45f * float(t) / float(h);
-            slot[y * kTile + x] = shade(0.30f, 0.58f, 0.22f, m);
+            const float m = 0.72f + 0.30f * float(t) / float(h);
+            slot[y * kTile + x] = shade(0.35f, 0.51f, 0.25f, m);
             slot[y * kTile + x].a = 255;
         }
         if (which == 1 && b < 3) { // flower heads on the first few blades
@@ -338,7 +377,7 @@ Rgba genBeachSand(int x, int y) {
         c = shade(0.93f, 0.88f, 0.80f, 1.0f);
     else if (f < 0.004f)
         c = shade(0.86f, 0.66f, 0.62f, 1.0f);
-    return c;
+    return shade(0.79f, 0.73f, 0.55f, n);
 }
 
 Rgba genSandstoneSide(int x, int y) {
@@ -432,9 +471,9 @@ Rgba genPalmLeaves(int x, int y) {
     const bool rib = dx < 0.9f;
     const int row = int(std::floor(float(y) + dx * 0.55f)); // leaflets sweep back toward the tip
     const bool leaflet = (row % 3) != 2 && dx < 7.5f;
-    Rgba c = shade(0.20f, 0.56f, 0.20f, 0.78f + 0.4f * h01(x / 2, y / 2, 141));
+    Rgba c = shade(0.22f, 0.46f, 0.18f, 0.88f + 0.22f * h01(x / 2, y / 2, 141));
     if (rib)
-        c = shade(0.34f, 0.66f, 0.28f, 1.0f);
+        c = shade(0.32f, 0.54f, 0.24f, 1.0f);
     c.a = (rib || (leaflet && h01(x, y, 142) > 0.16f)) ? 255 : 0;
     return c;
 }
@@ -633,7 +672,7 @@ Rgba genBirchTop(int x, int y) {
 Rgba genSpruceLeaves(int x, int y) {
     // needles: dark blue-green, with tighter gaps than oak
     const float stroke = h01((x + y) / 2, y / 2, 181);
-    Rgba c = shade(0.17f, 0.35f, 0.15f, 0.72f + 0.55f * stroke + 0.10f * h01(x, y, 182));
+    Rgba c = shade(0.17f, 0.33f, 0.17f, 0.86f + 0.28f * stroke + 0.07f * h01(x, y, 182));
     const float hole = h01(x, y, 183) * 0.7f + h01(x / 2, y / 2, 184) * 0.3f;
     if (hole > 0.78f)
         c.a = 0;
@@ -643,7 +682,7 @@ Rgba genSpruceLeaves(int x, int y) {
 Rgba genBirchLeaves(int x, int y) {
     // small bright leaves: light yellow-green in tight clusters
     const float cluster = h01(x / 2, y / 2, 191);
-    Rgba c = shade(0.44f, 0.60f, 0.22f, 0.78f + 0.45f * cluster + 0.10f * h01(x, y, 192));
+    Rgba c = shade(0.36f, 0.50f, 0.20f, 0.88f + 0.24f * cluster + 0.07f * h01(x, y, 192));
     const float hole = h01(x, y, 193) * 0.65f + h01(x / 2, y / 2, 194) * 0.35f;
     if (hole > 0.72f)
         c.a = 0;
@@ -708,10 +747,19 @@ bool loadLayerPng(const std::filesystem::path& path, Rgba* out) {
 }
 
 unsigned int createBlockTextureArray(const std::filesystem::path& textureDir) {
-    std::array<Rgba, kTile * kTile * kLayers> pixels{};
+    std::vector<Rgba> pixels(std::size_t(kTile) * kTile * kLayers);
     int loaded = 0;
     for (int layer = 0; layer < kLayers; ++layer) {
         Rgba* slot = pixels.data() + std::size_t(layer) * kTile * kTile;
+        if (layer >= kDecorLayer0) {
+            const char* name = kDecorNames[layer - kDecorLayer0];
+            if (name && loadLayerPng(textureDir / (std::string(name) + ".png"), slot))
+                ++loaded;
+            else if (name)
+                for (int i = 0; i < kTile * kTile; ++i)
+                    slot[i] = {200, 0, 200, 255}; // a missing file shows, rather than passing for a block
+            continue;
+        }
         if (layer >= kCrossLayer0 && layer < kCrackLayer0) { // foliage: generated, has alpha
             fillCross(layer - kCrossLayer0, slot);
             continue;
@@ -736,33 +784,29 @@ unsigned int createBlockTextureArray(const std::filesystem::path& textureDir) {
             // The bundled dirt and bark are rosy browns; under a blue sky ambient they read
             // as mauve and lavender. Pushed toward a yellower brown (red kept, green up, blue
             // down) so a lit dirt bank looks like earth.
-            // The bundled sand is speckled pink and brown at full contrast, which reads as noise
-            // across a whole desert. Pulled 35% toward its own average.
-            if (layer == 8) {
-                float mr = 0, mg = 0, mb = 0;
-                for (int i = 0; i < kTile * kTile; ++i) {
-                    mr += slot[i].r;
-                    mg += slot[i].g;
-                    mb += slot[i].b;
-                }
-                mr /= float(kTile * kTile);
-                mg /= float(kTile * kTile);
-                mb /= float(kTile * kTile);
-                for (int i = 0; i < kTile * kTile; ++i) {
-                    slot[i].r = std::uint8_t(mr + (float(slot[i].r) - mr) * 0.65f);
-                    slot[i].g = std::uint8_t(mg + (float(slot[i].g) - mg) * 0.65f);
-                    slot[i].b = std::uint8_t(mb + (float(slot[i].b) - mb) * 0.65f);
-                }
-            }
+            // Olive grass, orange sand, blue stone: each keeps its pattern and takes the right colour.
+            if (layer == 0)
+                retint(slot, 0.52f, 0.52f, 0.53f, 1.0f);
+            else if (layer == 2)
+                retint(slot, kGrassR, kGrassG, kGrassB, 1.0f);
+            else if (layer == 9)
+                retint(slot, 0.92f, 0.94f, 0.96f, 1.0f);
+            else if (layer == 8)
+                retint(slot, 0.79f, 0.73f, 0.55f, 0.65f);
             if (layer == 1 || layer == 3 || layer == 5 || layer == 6)
                 for (int i = 0; i < kTile * kTile; ++i) {
                     Rgba& t = slot[i];
                     const auto clampU = [](float v) {
                         return std::uint8_t(v < 0 ? 0 : (v > 255 ? 255 : v));
                     };
-                    // grass_side (3) carries green in its top: only the brown part is warmed
-                    if (t.g > t.r + 10 && t.g > t.b + 10)
+                    // grass_side (3) carries green in its top, the same green as the grass
+                    if (t.g > t.r + 10 && t.g > t.b + 10) {
+                        const float m = (0.2126f * t.r + 0.7152f * t.g + 0.0722f * t.b) / 255.0f / 0.50f;
+                        t.r = clampU(kGrassR * m * 255.0f);
+                        t.g = clampU(kGrassG * m * 255.0f);
+                        t.b = clampU(kGrassB * m * 255.0f);
                         continue;
+                    }
                     t.r = clampU(float(t.r) * 1.03f);
                     t.g = clampU(float(t.g) * 1.13f);
                     t.b = clampU(float(t.b) * 0.76f);
@@ -773,6 +817,20 @@ unsigned int createBlockTextureArray(const std::filesystem::path& textureDir) {
                     slot[y * kTile + x] = kGens[layer](x, y);
         }
     }
+    for (const auto& o : kOverrides)
+        loaded += loadLayerPng(textureDir / (std::string(o.name) + ".png"),
+                               pixels.data() + std::size_t(o.layer) * kTile * kTile)
+                      ? 1
+                      : 0;
+    // Bark for logs lying down: the grain turned to run across the tile.
+    constexpr int kBark[3] = {5, kBiomeLayer0 + 22, kBiomeLayer0 + 24};
+    for (int s = 0; s < 3; ++s) {
+        const Rgba* src = pixels.data() + std::size_t(kBark[s]) * kTile * kTile;
+        Rgba* dst = pixels.data() + std::size_t(kTurnedBark0 + s) * kTile * kTile;
+        for (int y = 0; y < kTile; ++y)
+            for (int x = 0; x < kTile; ++x)
+                dst[y * kTile + x] = src[x * kTile + y];
+    }
     if (loaded > 0)
         VX_INFO("block textures: loaded %d/%d from %s (rest procedural)", loaded, kLayers,
                 textureDir.string().c_str());
@@ -780,7 +838,9 @@ unsigned int createBlockTextureArray(const std::filesystem::path& textureDir) {
     GLuint tex = 0;
     glCreateTextures(GL_TEXTURE_2D_ARRAY, 1, &tex);
     const int mips = 5; // 16 -> 1
-    glTextureStorage3D(tex, mips, GL_RGBA8, kTile, kTile, kLayers);
+    // Tiles are authored as display colours. sRGB storage reads them back linear, which is what the
+    // lighting multiplies, and makes the mip chain average correctly.
+    glTextureStorage3D(tex, mips, GL_SRGB8_ALPHA8, kTile, kTile, kLayers);
     glTextureSubImage3D(tex, 0, 0, 0, 0, kTile, kTile, kLayers, GL_RGBA, GL_UNSIGNED_BYTE,
                         pixels.data());
     glGenerateTextureMipmap(tex);
@@ -830,11 +890,90 @@ int blockTopLayer(int b) {
         case blocks::BirchWood: return kBiomeLayer0 + 25;
         case blocks::SpruceLeaves: return kBiomeLayer0 + 26;
         case blocks::BirchLeaves: return kBiomeLayer0 + 27;
+        case blocks::TallGrass: return kDecorLayer0;
+        case blocks::Fern: return kDecorLayer0 + 2;
+        case blocks::DryGrass: return kDecorLayer0 + 5;
+        case blocks::DuneGrass: return kDecorLayer0 + 8;
+        case blocks::ForestFloor: return kDecorLayer0 + 26;
+        case blocks::JungleFloor: return kDecorLayer0 + 28;
+        case blocks::SavannaGrass: return kDecorLayer0 + 30;
+        case blocks::SnowyGrass: return 9;
+        case blocks::AcaciaWood: return kDecorLayer0 + 47;
+        case blocks::AcaciaLeaves: return kDecorLayer0 + 49;
+        case blocks::JungleWood: return kDecorLayer0 + 50;
+        case blocks::JungleLeaves: return kDecorLayer0 + 52;
+        case blocks::BerryBush: return kDecorLayer0 + 53;
+        case blocks::WoodX:
+        case blocks::WoodZ: return 6;
+        case blocks::SpruceWoodX:
+        case blocks::SpruceWoodZ: return kBiomeLayer0 + 23;
+        case blocks::BirchWoodX:
+        case blocks::BirchWoodZ: return kBiomeLayer0 + 25;
         default: break;
     }
+    if (b >= blocks::JungleGrass && b <= blocks::Moss)
+        return kDecorLayer0 + 11 + (b - blocks::JungleGrass);
+    if (b >= blocks::DryDirt && b <= blocks::Slate)
+        return kDecorLayer0 + 33 + (b - blocks::DryDirt);
+    if (b >= blocks::Cobblestone && b <= blocks::JunglePlanks)
+        return kDecorLayer0 + 57 + (b - blocks::Cobblestone);
     if (b >= blocks::Seagrass && b <= blocks::GlowCoral)
         return kBiomeLayer0 + 10 + (b - blocks::Seagrass);
     return 0;
+}
+
+int blockIconLayer(int b) {
+    using namespace blocks;
+    if (isWater(BlockId(b)))
+        return -1;
+    switch (b) {
+        case Grass: return 3;
+        case Wood:
+        case WoodX:
+        case WoodZ: return 5;
+        case SpruceWood:
+        case SpruceWoodX:
+        case SpruceWoodZ: return kBiomeLayer0 + 22;
+        case BirchWood:
+        case BirchWoodX:
+        case BirchWoodZ: return kBiomeLayer0 + 24;
+        case PalmWood: return kBiomeLayer0 + 6;
+        case Sandstone: return kBiomeLayer0 + 1;
+        case Cactus: return kBiomeLayer0 + 3;
+        case ForestFloor: return kDecorLayer0 + 27;
+        case JungleFloor: return kDecorLayer0 + 29;
+        case SavannaGrass: return kDecorLayer0 + 31;
+        case SnowyGrass: return kDecorLayer0 + 32;
+        case AcaciaWood: return kDecorLayer0 + 47;
+        case JungleWood: return kDecorLayer0 + 50;
+        default: return blockTopLayer(b);
+    }
+}
+
+namespace {
+constexpr int kAtlasCols = 16;
+constexpr int kAtlasRows = (kLayers + kAtlasCols - 1) / kAtlasCols;
+} // namespace
+
+unsigned int createIconAtlas(unsigned int blockTexArray) {
+    GLuint tex = 0;
+    glCreateTextures(GL_TEXTURE_2D, 1, &tex);
+    // Plain RGBA rather than sRGB: the UI draws the stored colours as they are.
+    glTextureStorage2D(tex, 1, GL_RGBA8, kTile * kAtlasCols, kTile * kAtlasRows);
+    for (int layer = 0; layer < kLayers; ++layer)
+        glCopyImageSubData(blockTexArray, GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer, tex, GL_TEXTURE_2D, 0,
+                           (layer % kAtlasCols) * kTile, (layer / kAtlasCols) * kTile, 0, kTile, kTile, 1);
+    glTextureParameteri(tex, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTextureParameteri(tex, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    return tex;
+}
+
+void iconUv(int blockId, float& u0, float& v0, float& u1, float& v1) {
+    const int layer = std::max(0, blockIconLayer(blockId));
+    u0 = float(layer % kAtlasCols) / float(kAtlasCols);
+    v0 = float(layer / kAtlasCols) / float(kAtlasRows);
+    u1 = u0 + 1.0f / float(kAtlasCols);
+    v1 = v0 + 1.0f / float(kAtlasRows);
 }
 
 int crackStages() { return kCrackStages; }

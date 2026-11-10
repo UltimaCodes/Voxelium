@@ -1,0 +1,63 @@
+#version 460 core
+
+// Sunlight off the ground, where it starts. Each 2-block cell of the light volume that holds open air
+// against rock (a floor or a wall: the light volume reads rock as no light at all) and that the sun
+// reaches is a source, as strong as how much of the cell is open. Writes the source and whether light
+// can pass the cell at all; bounce_spread.comp carries it out from there.
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(binding = 0) uniform sampler3D uLightVol;             // RGBA8, axes x, z, y, wrapped (LightVolume)
+layout(binding = 1) uniform sampler2DArrayShadow uShadowMap;
+layout(rg16f, binding = 0) uniform writeonly image3D uOut;  // 64^3, the same wrap at half the resolution
+
+layout(location = 0) uniform vec3 uBase;          // texel of the volume's low corner, axes x, z, y
+layout(location = 1) uniform vec3 uMinRel;        // that corner relative to the camera, world axes
+layout(location = 2) uniform mat4 uCascadeVp[3];  // 2..4
+layout(location = 5) uniform vec3 uSplits;
+layout(location = 6) uniform vec3 uSunL;
+layout(location = 7) uniform vec3 uCascadeTexel;
+layout(location = 8) uniform float uShadows;      // 0: no cascades this frame, go by the sky light
+
+bool rock(vec4 v) { return max(max(v.r, v.g), max(v.b, v.a)) < 0.02; }
+
+void main() {
+    ivec3 cell = ivec3(gl_GlobalInvocationID);
+    int open = 0, solid = 0;
+    vec3 sum = vec3(0.0);
+    float sky = 0.0;
+    for (int i = 0; i < 8; ++i) {
+        ivec3 t = cell * 2 + ivec3(i & 1, (i >> 1) & 1, i >> 2);
+        vec4 v = texelFetch(uLightVol, t & 127, 0);
+        if (v.a > 0.3) {
+            ++open;
+            sum += vec3(t);
+            sky += v.a;
+        } else if (rock(v)) {
+            ++solid;
+        }
+    }
+    // the ground just under a cell of open air counts as its floor
+    int floorBelow = 0;
+    for (int i = 0; i < 4; ++i) {
+        ivec3 t = cell * 2 + ivec3(i & 1, i >> 1, -1);
+        if (rock(texelFetch(uLightVol, t & 127, 0)))
+            ++floorBelow;
+    }
+    float seed = 0.0;
+    if (open > 0 && solid + floorBelow > 0 && uSunL.y > 0.02) {
+        // with shadows off the sun reaches whatever has the whole sky over it, as chunk.frag has it
+        float lit = smoothstep(0.8, 1.0, sky / float(open));
+        if (uShadows > 0.5) {
+            vec3 u = mod(sum / float(open) - uBase, 128.0);
+            vec3 rel = uMinRel + vec3(u.x, u.z, u.y) + 0.5;
+            float d = length(rel);
+            int c = d < uSplits.x ? 0 : (d < uSplits.y ? 1 : 2);
+            float texel = uCascadeTexel[c];
+            // pushed toward the sun a little, so the cell's own floor does not shadow it
+            vec4 sc = uCascadeVp[c] * vec4(rel + uSunL * (2.0 * texel + 0.5), 1.0);
+            lit = d < uSplits.z ? texture(uShadowMap, vec4(sc.xy * 0.5 + 0.5, float(c), sc.z)) : 1.0;
+        }
+        seed = lit * min(float(open) / 4.0, 1.0);
+    }
+    imageStore(uOut, cell, vec4(seed, open >= 2 ? 1.0 : 0.0, 0.0, 0.0));
+}

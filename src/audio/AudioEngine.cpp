@@ -2,13 +2,22 @@
 
 #include "core/Log.hpp"
 
+// Vorbis through stb_vorbis, the way miniaudio documents: its header before miniaudio's body, its
+// body after.
+#define STB_VORBIS_HEADER_ONLY
+#include <stb_vorbis.c>
 #define MINIAUDIO_IMPLEMENTATION
 #define MA_NO_ENCODING   // playback only
 #define MA_NO_GENERATION // no synthesised waveforms
 #include <miniaudio.h>
+#undef STB_VORBIS_HEADER_ONLY
+#include <stb_vorbis.c>
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <map>
+#include <sstream>
 #include <vector>
 
 namespace vx {
@@ -20,7 +29,7 @@ ma_sound* sounds(void* p) { return static_cast<ma_sound*>(p); }
 ma_audio_buffer_ref* refs(void* p) { return static_cast<ma_audio_buffer_ref*>(p); }
 ma_sound_group* groups(void* p) { return static_cast<ma_sound_group*>(p); }
 
-constexpr int kBusCount = 3;
+constexpr int kBusCount = 4;
 
 // Attenuation. miniaudio's defaults are inverse/rolloff 1/min-distance 1, which puts a
 // source ten blocks away at about a tenth volume, everything more than a few blocks off
@@ -45,6 +54,17 @@ constexpr float kWetLerpPerSec = 6.5f; // ~150 ms to cross over
 // instead of one per frame forever.
 constexpr int kWetSteps = 16;
 
+// Streamed beds hand over to the next file over this long, and every recording is brought to
+// about this loudness (sounds/levels.txt has each file's measured RMS). Beds sit well under the
+// music and the world's own sounds: they are the room, not the thing in it.
+constexpr float kBedCrossfadeSec = 6.0f;
+constexpr float kBedTargetDb = -29.0f;
+constexpr float kMusicTargetDb = -21.0f;
+
+bool streamedName(const std::string& stem) {
+    return stem.rfind("amb_", 0) == 0 || stem.rfind("music_", 0) == 0 || stem.rfind("menu_", 0) == 0;
+}
+
 } // namespace
 
 bool AudioEngine::init(const std::filesystem::path& soundsDir, JobSystem* jobs,
@@ -53,6 +73,42 @@ bool AudioEngine::init(const std::filesystem::path& soundsDir, JobSystem* jobs,
     // directory when there was no output device, which meant the decode path could not be
     // exercised headless, so --smoke could never assert anything about it.
     m_bank.load(soundsDir, jobs);
+
+    // the streamed files and how loud each one is
+    {
+        std::map<std::string, float> rms;
+        std::ifstream lv(soundsDir / "levels.txt");
+        for (std::string line; std::getline(lv, line);) {
+            std::istringstream ls(line);
+            std::string file;
+            float db = 0.0f;
+            if (ls >> file >> db)
+                rms[file] = db;
+        }
+        std::error_code ec;
+        std::vector<std::filesystem::path> found;
+        for (const auto& e : std::filesystem::directory_iterator(soundsDir, ec)) {
+            const std::string ext = e.path().extension().string();
+            if (e.is_regular_file() && (ext == ".mp3" || ext == ".ogg" || ext == ".flac" || ext == ".wav") &&
+                streamedName(e.path().stem().string()))
+                found.push_back(e.path());
+        }
+        std::sort(found.begin(), found.end());
+        for (const auto& f : found) {
+            const std::string name = SoundBank::baseName(f.stem().string());
+            auto it = std::find_if(m_streams.begin(), m_streams.end(), [&](const Stream& s) { return s.name == name; });
+            if (it == m_streams.end()) {
+                m_streams.push_back({name, {}, {}});
+                it = m_streams.end() - 1;
+            }
+            it->files.push_back(f);
+            const auto r = rms.find(f.filename().string());
+            const float target = name.rfind("amb_", 0) == 0 ? kBedTargetDb : kMusicTargetDb;
+            it->trim.push_back(r == rms.end() ? 1.0f : std::clamp(std::pow(10.0f, (target - r->second) / 20.0f), 0.1f, 16.0f));
+        }
+        if (!m_streams.empty())
+            VX_INFO("audio: %d streamed sound(s) from %d file(s)", int(m_streams.size()), int(found.size()));
+    }
 
     m_engine = new ma_engine{};
     ma_engine_config cfg = ma_engine_config_init();
@@ -103,6 +159,7 @@ bool AudioEngine::init(const std::filesystem::path& soundsDir, JobSystem* jobs,
     // otherwise pan with the listener's heading.
     ma_sound_group_set_spatialization_enabled(&groups(m_groups)[int(Bus::Ui)], MA_FALSE);
     ma_sound_group_set_spatialization_enabled(&groups(m_groups)[int(Bus::Ambient)], MA_FALSE);
+    ma_sound_group_set_spatialization_enabled(&groups(m_groups)[int(Bus::Music)], MA_FALSE);
 
     // The submerged filter, spliced between those two buses and the endpoint. UI deliberately
     // stays dry: a menu click is not in the water with you.
@@ -126,8 +183,9 @@ bool AudioEngine::init(const std::filesystem::path& soundsDir, JobSystem* jobs,
 
     m_sounds = new ma_sound[kVoices]{};
     m_refs = new ma_audio_buffer_ref[kVoices]{};
-    m_bedSounds = new ma_sound[kBeds]{};
+    m_bedSounds = new ma_sound[kBeds * 2]{};
     m_bedRefs = new ma_audio_buffer_ref[kBeds]{};
+    m_musicSounds = new ma_sound[2]{};
     m_ready = true;
     return true;
 }
@@ -143,12 +201,24 @@ void AudioEngine::shutdown() {
         }
     }
     for (int i = 0; i < kBeds; ++i) {
-        if (!m_bed[i].name.empty()) {
-            ma_sound_uninit(&sounds(m_bedSounds)[i]);
+        Bed& b = m_bed[i];
+        if (b.name.empty())
+            continue;
+        if (b.streamed) {
+            ma_sound_uninit(&sounds(m_bedSounds)[2 * i + b.live]);
+            if (b.handing)
+                ma_sound_uninit(&sounds(m_bedSounds)[2 * i + (b.live ^ 1)]);
+        } else {
+            ma_sound_uninit(&sounds(m_bedSounds)[2 * i]);
             ma_audio_buffer_ref_uninit(&refs(m_bedRefs)[i]);
-            m_bed[i] = {};
         }
+        b = {};
     }
+    for (int k = 0; k < 2; ++k)
+        if (m_track[k].live) {
+            ma_sound_uninit(&sounds(m_musicSounds)[k]);
+            m_track[k] = {};
+        }
     for (int i = 0; i < kBusCount; ++i)
         ma_sound_group_uninit(&groups(m_groups)[i]);
     if (m_lowpass != nullptr) {
@@ -161,6 +231,8 @@ void AudioEngine::shutdown() {
     delete[] refs(m_refs);
     delete[] sounds(m_bedSounds);
     delete[] refs(m_bedRefs);
+    delete[] sounds(m_musicSounds);
+    m_musicSounds = nullptr;
     delete[] groups(m_groups);
     delete eng(m_engine);
     m_sounds = nullptr;
@@ -230,7 +302,7 @@ int AudioEngine::retiringVoices() const {
     return n;
 }
 
-void AudioEngine::setBed(const std::string& name, float gain) {
+void AudioEngine::setBed(const std::string& name, float gain, Bus bus) {
     if (!m_ready)
         return;
     gain = std::clamp(gain, 0.0f, 1.0f);
@@ -245,6 +317,26 @@ void AudioEngine::setBed(const std::string& name, float gain) {
     // every frame for every bed the player is nowhere near.
     if (gain <= 0.0f)
         return;
+    if (const Stream* st = findStream(name)) {
+        for (int i = 0; i < kBeds; ++i) {
+            if (!m_bed[i].name.empty())
+                continue;
+            const int v = pickVariant(*st, -1);
+            if (!openStream(&sounds(m_bedSounds)[2 * i], *st, v, bus))
+                return;
+            Bed& b = m_bed[i];
+            b = {};
+            b.name = name;
+            b.target = gain;
+            b.named = true;
+            b.streamed = true;
+            b.bus = bus;
+            b.variant[0] = v;
+            b.trim[0] = st->trim[std::size_t(v)];
+            return;
+        }
+        return;
+    }
     const SoundBank::Sample* s = pick(name);
     if (s == nullptr)
         return; // the user has not supplied this bed; silence is the documented behaviour
@@ -255,10 +347,10 @@ void AudioEngine::setBed(const std::string& name, float gain) {
         if (ma_audio_buffer_ref_init(ma_format_f32, s->channels, s->pcm.data(), s->frames,
                                      ref) != MA_SUCCESS)
             return;
-        ma_sound* snd = &sounds(m_bedSounds)[i];
+        ma_sound* snd = &sounds(m_bedSounds)[2 * i];
         if (ma_sound_init_from_data_source(eng(m_engine), ref,
                                            ma_uint32(MA_SOUND_FLAG_NO_SPATIALIZATION),
-                                           &groups(m_groups)[int(Bus::Ambient)],
+                                           &groups(m_groups)[int(bus)],
                                            snd) != MA_SUCCESS) {
             ma_audio_buffer_ref_uninit(ref);
             return;
@@ -301,6 +393,99 @@ float AudioEngine::bedGain(const std::string& name) const {
     return 0.0f;
 }
 
+const AudioEngine::Stream* AudioEngine::findStream(const std::string& name) const {
+    for (const Stream& s : m_streams)
+        if (s.name == name)
+            return &s;
+    return nullptr;
+}
+
+int AudioEngine::pickVariant(const Stream& st, int avoid) {
+    const int n = int(st.files.size());
+    if (n <= 1)
+        return 0;
+    m_rng = m_rng * 1664525u + 1013904223u;
+    int v = int((m_rng >> 8) % std::uint32_t(n - 1));
+    if (avoid >= 0 && v >= avoid)
+        ++v;
+    return std::min(v, n - 1);
+}
+
+bool AudioEngine::openStream(void* sound, const Stream& st, int variant, Bus bus) {
+    if (variant < 0 || variant >= int(st.files.size()))
+        return false;
+    ma_sound* snd = static_cast<ma_sound*>(sound);
+    // streamed from disk and opened on miniaudio's own thread, so starting one never stalls a frame
+    const ma_uint32 flags = MA_SOUND_FLAG_STREAM | MA_SOUND_FLAG_NO_SPATIALIZATION | MA_SOUND_FLAG_ASYNC;
+#ifdef _WIN32
+    const ma_result r = ma_sound_init_from_file_w(eng(m_engine), st.files[std::size_t(variant)].c_str(), flags,
+                                                  &groups(m_groups)[int(bus)], nullptr, snd);
+#else
+    const ma_result r = ma_sound_init_from_file(eng(m_engine), st.files[std::size_t(variant)].c_str(), flags,
+                                                &groups(m_groups)[int(bus)], nullptr, snd);
+#endif
+    if (r != MA_SUCCESS) {
+        VX_ERROR("audio: could not stream %s", st.files[std::size_t(variant)].string().c_str());
+        return false;
+    }
+    ma_sound_set_volume(snd, 0.0f);
+    ma_sound_start(snd);
+    return true;
+}
+
+bool AudioEngine::playMusic(const std::string& name, float volume, float fadeSec) {
+    if (!m_ready)
+        return false;
+    const Stream* st = findStream(name);
+    if (st == nullptr)
+        return false;
+    stopMusic(fadeSec);
+    const int k = m_track[0].live ? 1 : 0;
+    if (m_track[k].live) {
+        ma_sound_uninit(&sounds(m_musicSounds)[k]);
+        m_track[k] = {};
+    }
+    const int v = pickVariant(*st, st->files.size() > 1 ? m_lastTrack : -1);
+    if (!openStream(&sounds(m_musicSounds)[k], *st, v, Bus::Music))
+        return false;
+    m_lastTrack = v;
+    m_track[k] = {true, 0.0f, std::clamp(volume, 0.0f, 1.0f), 1.0f / std::max(fadeSec, 0.05f),
+                  st->trim[std::size_t(v)]};
+    return true;
+}
+
+void AudioEngine::stopMusic(float fadeSec) {
+    for (Track& t : m_track)
+        if (t.live) {
+            t.target = 0.0f;
+            t.rate = 1.0f / std::max(fadeSec, 0.05f);
+        }
+}
+
+bool AudioEngine::musicPlaying() const {
+    for (int k = 0; k < 2; ++k)
+        if (m_track[k].live && m_track[k].target > 0.0f)
+            return true;
+    return false;
+}
+
+void AudioEngine::updateMusic(float dt) {
+    for (int k = 0; k < 2; ++k) {
+        Track& t = m_track[k];
+        if (!t.live)
+            continue;
+        ma_sound* s = &sounds(m_musicSounds)[k];
+        const float d = t.rate * dt;
+        t.gain = t.gain < t.target ? std::min(t.target, t.gain + d) : std::max(t.target, t.gain - d);
+        if ((t.target <= 0.0f && t.gain <= 0.0f) || ma_sound_at_end(s)) {
+            ma_sound_uninit(s);
+            t = {};
+            continue;
+        }
+        ma_sound_set_volume(s, t.gain * t.trim * (1.0f - 0.55f * m_wet));
+    }
+}
+
 void AudioEngine::updateBeds(float dt) {
     const float step = std::clamp(kBedFadePerSec * dt, 0.0f, 1.0f);
     for (int i = 0; i < kBeds; ++i) {
@@ -311,14 +496,62 @@ void AudioEngine::updateBeds(float dt) {
         // A bed the player has left keeps its slot until it is genuinely inaudible, so
         // stepping back through a cave mouth resumes the fade rather than restarting the loop.
         if (b.target <= 0.0f && b.gain < 0.002f) {
-            ma_sound_uninit(&sounds(m_bedSounds)[i]);
-            ma_audio_buffer_ref_uninit(&refs(m_bedRefs)[i]);
+            if (b.streamed) {
+                ma_sound_uninit(&sounds(m_bedSounds)[2 * i + b.live]);
+                if (b.handing)
+                    ma_sound_uninit(&sounds(m_bedSounds)[2 * i + (b.live ^ 1)]);
+            } else {
+                ma_sound_uninit(&sounds(m_bedSounds)[2 * i]);
+                ma_audio_buffer_ref_uninit(&refs(m_bedRefs)[i]);
+            }
             b = {};
             continue;
         }
         // Submerging muffles the beds too, an above-water bird bed heard from under the
         // surface at full brightness is the thing that gives away a fake underwater.
-        ma_sound_set_volume(&sounds(m_bedSounds)[i], b.gain * (1.0f - 0.55f * m_wet));
+        const float wet = 1.0f - 0.55f * m_wet;
+        if (!b.streamed) {
+            ma_sound_set_volume(&sounds(m_bedSounds)[2 * i], b.gain * wet);
+            continue;
+        }
+        ma_sound* cur = &sounds(m_bedSounds)[2 * i + b.live];
+        if (b.lengthSec[b.live] <= 0.0f) {
+            float len = 0.0f;
+            if (ma_sound_get_length_in_seconds(cur, &len) == MA_SUCCESS && len > 0.0f)
+                b.lengthSec[b.live] = len;
+        }
+        if (!b.handing) {
+            const float len = b.lengthSec[b.live];
+            const float xf = std::min(kBedCrossfadeSec, len * 0.3f);
+            float at = 0.0f;
+            ma_sound_get_cursor_in_seconds(cur, &at);
+            if ((len > 0.0f && at >= len - xf) || ma_sound_at_end(cur)) {
+                const Stream* st = findStream(b.name);
+                const int next = b.live ^ 1;
+                const int v = st ? pickVariant(*st, b.variant[b.live]) : -1;
+                if (st && openStream(&sounds(m_bedSounds)[2 * i + next], *st, v, b.bus)) {
+                    b.handing = true;
+                    b.hand = 0.0f;
+                    b.handSec = std::max(xf, 0.25f);
+                    b.variant[next] = v;
+                    b.trim[next] = st->trim[std::size_t(v)];
+                    b.lengthSec[next] = 0.0f;
+                }
+            }
+        } else {
+            b.hand += dt / b.handSec;
+            if (b.hand >= 1.0f) {
+                ma_sound_uninit(cur);
+                b.live ^= 1;
+                b.handing = false;
+            }
+        }
+        // equal power, so the handover neither dips nor swells
+        const float out = b.handing ? std::cos(b.hand * 1.5707963f) : 1.0f;
+        ma_sound_set_volume(&sounds(m_bedSounds)[2 * i + b.live], b.gain * wet * out * b.trim[b.live]);
+        if (b.handing)
+            ma_sound_set_volume(&sounds(m_bedSounds)[2 * i + (b.live ^ 1)],
+                                b.gain * wet * std::sin(b.hand * 1.5707963f) * b.trim[b.live ^ 1]);
     }
 }
 
@@ -347,6 +580,7 @@ void AudioEngine::update(float dt) {
         }
     }
     updateBeds(dt);
+    updateMusic(dt);
 
     for (int i = 0; i < kVoices; ++i) {
         Voice& v = m_voice[i];
@@ -501,6 +735,25 @@ void AudioEngine::playOccluded(const std::string& name, const glm::dvec3& worldP
     startVoice(idx, *s, volume, pitch, Bus::World, /*spatialised=*/true, muffle);
     const glm::vec3 rel(worldPos - m_listener);
     ma_sound_set_position(&sounds(m_sounds)[idx], rel.x, rel.y, rel.z);
+}
+
+bool AudioEngine::playCall(const std::string& name, const glm::dvec3& worldPos, float volume, float pitch) {
+    if (!m_ready || !m_bank.has(name) || throttled(name))
+        return false;
+    const SoundBank::Sample* s = pick(name);
+    const int idx = s ? acquireVoice() : -1;
+    if (idx < 0)
+        return false;
+    m_voice[idx].worldPos = worldPos;
+    startVoice(idx, *s, volume, pitch, Bus::Ambient, /*spatialised=*/true, m_wet);
+    ma_sound* snd = &sounds(m_sounds)[idx];
+    // a call carries: a bird forty blocks off is still clearly a bird
+    ma_sound_set_min_distance(snd, 10.0f);
+    ma_sound_set_max_distance(snd, 110.0f);
+    ma_sound_set_rolloff(snd, 0.8f);
+    const glm::vec3 rel(worldPos - m_listener);
+    ma_sound_set_position(snd, rel.x, rel.y, rel.z);
+    return true;
 }
 
 bool AudioEngine::playIfPresent(const std::string& name, const glm::dvec3& worldPos,

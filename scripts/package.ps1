@@ -41,12 +41,12 @@ foreach ($dll in @("libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll
     Copy-Item $src $stage
 }
 Copy-Item (Join-Path $root "assets") (Join-Path $stage "assets") -Recurse
-# Only the CC0 clips (credited in README.md), which is exactly what .gitignore already lets
-# through, so mirroring that filter here keeps this script from quietly shipping something
-# that was never meant to be redistributed.
+# Only the sounds credited in README.md: the flac and wav clips, the streamed mp3 ambience and
+# music, and the loudness table they are played at. Anything else dropped in sounds/ stays out.
 New-Item -ItemType Directory -Path (Join-Path $stage "sounds") -Force | Out-Null
-Copy-Item (Join-Path $root "sounds\*.flac") (Join-Path $stage "sounds") -ErrorAction SilentlyContinue
-Copy-Item (Join-Path $root "sounds\*.wav") (Join-Path $stage "sounds") -ErrorAction SilentlyContinue
+foreach ($pattern in @("*.flac", "*.wav", "*.mp3", "levels.txt")) {
+    Copy-Item (Join-Path $root "sounds\$pattern") (Join-Path $stage "sounds") -ErrorAction SilentlyContinue
+}
 Copy-Item (Join-Path $root "README.md") $stage
 Copy-Item (Join-Path $root "LICENSE") $stage
 

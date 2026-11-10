@@ -38,7 +38,11 @@ struct Bound {
 };
 
 // Every setting the engine persists. Adding one is a row here and nothing else.
-constexpr std::size_t kSettingCount = 51;
+constexpr std::size_t kSettingCount = 60;
+
+// Bumped when the look changes enough that exposure and grade tuned against the old one are wrong.
+// A file from before it gets those four back at their defaults, once, and keeps everything else.
+constexpr int kLookVersion = 1;
 
 // Binds the schema to a live set of values. Non-const because load writes through it; save
 // binds a local copy for the same reason, which is cheaper than a second const walk and
@@ -52,7 +56,6 @@ std::array<Bound, kSettingCount> bind(FxToggles& fx, bool& vsync, bool& caveCull
         {"volumetric", T::Bool, &fx.volumetric, 0, 0},
         {"bloom", T::Bool, &fx.bloom, 0, 0},
         {"clouds", T::Bool, &fx.clouds, 0, 0},
-        {"ssgi", T::Bool, &fx.ssgi, 0, 0},
         {"taa", T::Bool, &fx.taa, 0, 0},
         {"motionBlur", T::Bool, &fx.motionBlur, 0, 0},
         {"fog", T::Bool, &fx.fog, 0, 0},
@@ -79,10 +82,20 @@ std::array<Bound, kSettingCount> bind(FxToggles& fx, bool& vsync, bool& caveCull
         {"crosshairB", T::Float, &fx.crosshair[2], 0.0f, 1.0f},
         {"crosshairA", T::Float, &fx.crosshair[3], 0.0f, 1.0f},
         {"lampSwatch", T::Int, &fx.lampSwatch, 0.0f, float(blocks::kLampCount - 1)},
+        {"hot1", T::Int, &fx.hotbar[0], 1.0f, float(blocks::kBlockCount - 1)},
+        {"hot2", T::Int, &fx.hotbar[1], 1.0f, float(blocks::kBlockCount - 1)},
+        {"hot3", T::Int, &fx.hotbar[2], 1.0f, float(blocks::kBlockCount - 1)},
+        {"hot4", T::Int, &fx.hotbar[3], 1.0f, float(blocks::kBlockCount - 1)},
+        {"hot5", T::Int, &fx.hotbar[4], 1.0f, float(blocks::kBlockCount - 1)},
+        {"hot6", T::Int, &fx.hotbar[5], 1.0f, float(blocks::kBlockCount - 1)},
+        {"hot7", T::Int, &fx.hotbar[6], 1.0f, float(blocks::kBlockCount - 1)},
+        {"hot8", T::Int, &fx.hotbar[7], 1.0f, float(blocks::kBlockCount - 1)},
+        {"hot9", T::Int, &fx.hotbar[8], 1.0f, float(blocks::kBlockCount - 1)},
         {"volume", T::Float, &fx.volume, 0.0f, 1.0f},
         {"volWorld", T::Float, &fx.volWorld, 0.0f, 1.0f},
         {"volUi", T::Float, &fx.volUi, 0.0f, 1.0f},
         {"volAmbient", T::Float, &fx.volAmbient, 0.0f, 1.0f},
+        {"volMusic", T::Float, &fx.volMusic, 0.0f, 1.0f},
         {"audioOcclusion", T::Float, &fx.audioOcclusion, 0.0f, 1.0f},
         {"dither", T::Float, &fx.dither, 0.0f, 2.0f},
         {"autoWeather", T::Bool, &fx.autoWeather, 0, 0},
@@ -177,6 +190,7 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
 
     std::string line;
     int applied = 0;
+    int lookVersion = 0;
     bool sawDetail = false;
     while (std::getline(in, line)) {
         const std::string_view raw = trim(line);
@@ -188,6 +202,10 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
         const std::string_view key = trim(raw.substr(0, eq));
         const std::string_view val = trim(raw.substr(eq + 1));
 
+        if (key == "lookVersion") {
+            std::from_chars(val.data(), val.data() + val.size(), lookVersion);
+            continue;
+        }
         const auto it = std::find_if(schema.begin(), schema.end(),
                                      [&](const Bound& b) { return key == b.key; });
         if (it == schema.end())
@@ -199,6 +217,13 @@ bool load(const std::filesystem::path& file, FxToggles& fx, bool& vsync, bool& c
 
     for (const Bound& b : schema)
         clampTo(b);
+    if (lookVersion < kLookVersion) {
+        const FxToggles defaults;
+        fx.exposure = defaults.exposure;
+        fx.saturation = defaults.saturation;
+        fx.contrast = defaults.contrast;
+        fx.temperature = defaults.temperature;
+    }
     // The detail distance was saved as "lodDetail" before the presets owned it, and every file
     // from then holds 1.25: the default of the day written back, not anybody's choice. That key
     // is ignored now. A file without this one takes the reach of the preset its other values
@@ -239,6 +264,7 @@ bool save(const std::filesystem::path& file, const FxToggles& fx, bool vsync, bo
         const auto schema = bind(copy, v, cc, r, f);
 
         out << "# Voxelium settings. Delete this file to go back to defaults.\n";
+        out << "lookVersion=" << kLookVersion << '\n';
         for (const Bound& b : schema)
             writeFrom(out, b);
         if (!out) {

@@ -32,12 +32,12 @@ std::uint32_t GreedyMesher::cornerShade(int ax, int ay, int az, int dir,
     // skirt faces sit against a coarser neighbour, mostly buried in it, and where they
     // do show they're plugging a hole. shading them per-corner would only cost quads
     // (a varying corner blocks merging), so report them fully lit and let them merge.
-    // The pad behind them is left air with no light, so a real average would read them
-    // as pitch black anyway.
     if ((m_coarseNeighbors >> dir) & 1) {
         const int outer = (dir >> 1) == 0 ? ax : ((dir >> 1) == 1 ? ay : az);
-        if (outer == ((dir & 1) ? -1 : kChunkSize))
+        if (outer == ((dir & 1) ? -1 : kChunkSize)) {
+            outLight = light::kFullSky;
             return kQuadShadeFull;
+        }
     }
     const auto opaque = [&](int gx, int gy, int gz) {
         return blocks::occludes(m_grid[gi(gx, gy, gz)]) ? 1 : 0;
@@ -172,11 +172,11 @@ std::uint32_t GreedyMesher::waveCorners(int x, int y, int z) const {
 }
 
 void GreedyMesher::addFace(int dir, int slice, int u, int v, BlockId block,
-                           std::uint32_t light) {
+                           std::uint32_t light, bool wet) {
     std::int16_t idx = m_heads[dir][slice];
     while (idx >= 0) {
         Plane& p = m_planes[std::size_t(idx)];
-        if (p.block == block && p.light == light) {
+        if (p.block == block && p.light == light && p.wet == std::uint8_t(wet)) {
             p.rows[v] |= 1u << u;
             return;
         }
@@ -185,6 +185,7 @@ void GreedyMesher::addFace(int dir, int slice, int u, int v, BlockId block,
     Plane p{};
     p.block = block;
     p.light = light;
+    p.wet = std::uint8_t(wet);
     p.dir = std::uint8_t(dir);
     p.slice = std::uint8_t(slice);
     p.next = m_heads[dir][slice];
@@ -231,6 +232,12 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
             if ((m_coarseNeighbors >> face) & 1) {
                 if (blocks::isWater(nb))
                     m_grid[gi(px, py, pz)] = nb;
+                // The block stays air but its light is real, corners beside this border average it.
+                // Rock has none of its own, so it counts as the cell on this side.
+                m_gridLight[gi(px, py, pz)] =
+                    blocks::occludes(nb) ? chunk.lightAt(std::clamp(px, 0, kChunkSize - 1), std::clamp(py, 0, kChunkSize - 1),
+                                                         std::clamp(pz, 0, kChunkSize - 1))
+                                         : n->lightAt(nx, ny, nz);
                 return;
             }
             m_grid[gi(px, py, pz)] = nb;
@@ -245,6 +252,32 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
                 pad(4, a, b, kChunkSize, a, b, 0);               // +Z
                 pad(5, a, b, -1, a, b, kChunkSize - 1);          // -Z
             }
+        // The pad's edges and corners touch two or three chunks and belong to no plane above, but
+        // a face's corners do average them. Left at the fill value every cave wall on a chunk edge
+        // thought it was in open sky. They take the brighter of the cells they sit between.
+        {
+            const auto brighter = [&](int ax, int ay, int az, int bx, int by, int bz) {
+                const std::uint32_t a = m_gridLight[gi(ax, ay, az)], b = m_gridLight[gi(bx, by, bz)];
+                return light::pack(std::max(light::red(a), light::red(b)), std::max(light::green(a), light::green(b)),
+                                   std::max(light::blue(a), light::blue(b)), std::max(light::sky(a), light::sky(b)));
+            };
+            constexpr int kOut[2] = {-1, kChunkSize};
+            constexpr int kIn[2] = {0, kChunkSize - 1};
+            for (int i = 0; i < 2; ++i)
+                for (int j = 0; j < 2; ++j) {
+                    const int oi = kOut[i], oj = kOut[j], ii = kIn[i], ij = kIn[j];
+                    for (int a = 0; a < kChunkSize; ++a) {
+                        m_gridLight[gi(oi, oj, a)] = brighter(oi, ij, a, ii, oj, a);
+                        m_gridLight[gi(oi, a, oj)] = brighter(oi, a, ij, ii, a, oj);
+                        m_gridLight[gi(a, oi, oj)] = brighter(a, oi, ij, a, ii, oj);
+                    }
+                }
+            for (int i = 0; i < 2; ++i)
+                for (int j = 0; j < 2; ++j)
+                    for (int k = 0; k < 2; ++k)
+                        m_gridLight[gi(kOut[i], kOut[j], kOut[k])] =
+                            brighter(kOut[i], kOut[j], kIn[k], kOut[i], kIn[j], kOut[k]);
+        }
         // the four edge columns, from the diagonal neighbours: only the wave corners read them
         if (neighbors)
             for (int d = 0; d < 4; ++d)
@@ -310,6 +343,7 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
                 int counts[blocks::kBlockCount] = {0};
                 int votes[blocks::kBlockCount] = {0};
                 int maxSky = 0, maxBlk = 0;
+                int waterTop = -1;
                 for (int dy = f - 1; dy >= 0; --dy)
                     for (int dz = 0; dz < f; ++dz)
                         for (int dx = 0; dx < f; ++dx) {
@@ -318,6 +352,8 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
                             const std::uint32_t l = chunk.lightAt(x, y, z);
                             const bool surface = b != blocks::Air && open[z][x];
                             open[z][x] = b == blocks::Air && l != 0;
+                            if (blocks::isWater(b))
+                                waterTop = std::max(waterTop, y);
                             if (b == blocks::Air && l == 0)
                                 continue; // sealed: counts as solid below
                             if (b < blocks::kBlockCount) {
@@ -344,10 +380,14 @@ void GreedyMesher::fillGrid(const Chunk& chunk, const Chunk* const* neighbors, i
                 if (blocks::isWater(dom))
                     m_hasWater = true;
                 const std::uint32_t lv = light::pack(maxBlk, maxBlk, maxBlk, maxSky);
+                // A water cube stops at its real surface. Filled to the cube's top it stood a block
+                // above the near water, and the sea floor showed through the slit between them.
+                const int top = blocks::isWater(dom) ? waterTop : kChunkSize;
                 for (int dz = 0; dz < f; ++dz)
                     for (int dy = 0; dy < f; ++dy)
                         for (int dx = 0; dx < f; ++dx) {
-                            m_grid[gi(sx * f + dx, sy * f + dy, sz * f + dz)] = dom;
+                            m_grid[gi(sx * f + dx, sy * f + dy, sz * f + dz)] =
+                                sy * f + dy <= top ? dom : blocks::Air;
                             m_gridLight[gi(sx * f + dx, sy * f + dy, sz * f + dz)] = lv;
                         }
             }
@@ -398,6 +438,9 @@ void GreedyMesher::buildColumns() {
     std::memset(m_waterX, 0, sizeof(m_waterX));
     std::memset(m_waterY, 0, sizeof(m_waterY));
     std::memset(m_waterZ, 0, sizeof(m_waterZ));
+    std::memset(m_leafX, 0, sizeof(m_leafX));
+    std::memset(m_leafY, 0, sizeof(m_leafY));
+    std::memset(m_leafZ, 0, sizeof(m_leafZ));
 
     // bit (i+1) = voxel i; bits 0 and 33 are the neighbour pad. read the padded range.
     for (int a = 0; a < kChunkSize; ++a)
@@ -408,18 +451,21 @@ void GreedyMesher::buildColumns() {
                 if (blocks::opaque(bx)) m_solidX[a][b] |= bit;
                 if (blocks::occludes(bx)) m_opaqueX[a][b] |= bit;
                 else if (blocks::isWater(bx)) m_waterX[a][b] |= bit;
+                if (blocks::isLeafBlock(bx)) m_leafX[a][b] |= bit;
             }
             for (int b = 0; b < kChunkSize; ++b) {
                 const BlockId by = m_grid[gi(b, i, a)]; // along y, (z=a,x=b)
                 if (blocks::opaque(by)) m_solidY[a][b] |= bit;
                 if (blocks::occludes(by)) m_opaqueY[a][b] |= bit;
                 else if (blocks::isWater(by)) m_waterY[a][b] |= bit;
+                if (blocks::isLeafBlock(by)) m_leafY[a][b] |= bit;
             }
             for (int b = 0; b < kChunkSize; ++b) {
                 const BlockId bz = m_grid[gi(b, a, i)]; // along z, (y=a,x=b)
                 if (blocks::opaque(bz)) m_solidZ[a][b] |= bit;
                 if (blocks::occludes(bz)) m_opaqueZ[a][b] |= bit;
                 else if (blocks::isWater(bz)) m_waterZ[a][b] |= bit;
+                if (blocks::isLeafBlock(bz)) m_leafZ[a][b] |= bit;
             }
         }
 }
@@ -445,6 +491,7 @@ void GreedyMesher::emitCross(std::vector<PackedQuad>& out, GreedyStats& stats) {
                     stats.sunlit = true;
                 for (int d = 6; d <= 7; ++d) {
                     out.push_back(packQuad(x, y, z, 1, 1, d, b, kQuadShadeFull, lv));
+                    out.back().w3 = blocks::isWaterlogged(b) ? kQuadWet : 0u;
                     ++stats.quads;
                 }
             }
@@ -467,9 +514,10 @@ void GreedyMesher::meshLayer(bool water, std::vector<PackedQuad>& out, GreedySta
             // What HIDES a face, which is not the same as what has one. Solid faces are
             // hidden only by occluders, so a leaf face against another leaf still gets
             // emitted and the canopy has an inside; water faces by occluders or water.
-            const std::uint64_t blkX = water ? (colX | m_opaqueX[a][b]) : m_opaqueX[a][b];
-            const std::uint64_t blkY = water ? (colY | m_opaqueY[a][b]) : m_opaqueY[a][b];
-            const std::uint64_t blkZ = water ? (colZ | m_opaqueZ[a][b]) : m_opaqueZ[a][b];
+            // A shell (see mesh) counts leaves as hiding too.
+            const std::uint64_t blkX = water ? (colX | m_opaqueX[a][b]) : m_opaqueX[a][b] | (m_shell ? m_leafX[a][b] : 0u);
+            const std::uint64_t blkY = water ? (colY | m_opaqueY[a][b]) : m_opaqueY[a][b] | (m_shell ? m_leafY[a][b] : 0u);
+            const std::uint64_t blkZ = water ? (colZ | m_opaqueZ[a][b]) : m_opaqueZ[a][b] | (m_shell ? m_leafZ[a][b] : 0u);
 
             const auto scatter = [&](int dir, std::uint64_t faceBits) {
                 std::uint32_t m = std::uint32_t(faceBits >> 1);
@@ -487,6 +535,9 @@ void GreedyMesher::meshLayer(bool water, std::vector<PackedQuad>& out, GreedySta
                     const int az = z + kStep[dir][2];
                     const BlockId block = m_grid[gi(x, y, z)];
                     std::uint32_t lv = m_gridLight[gi(ax, ay, az)];
+                    // a seabed or a lake bed: chunk.frag lights it through the water above
+                    const BlockId outside = m_grid[gi(ax, ay, az)];
+                    const bool wet = !water && (blocks::isWater(outside) || blocks::isWaterlogged(outside));
                     if (!water && light::sky(lv) != 0)
                         stats.sunlit = true; // some sky reaches this face
                     // A face whose corners differ, in occlusion or in light, carries
@@ -511,6 +562,7 @@ void GreedyMesher::meshLayer(bool water, std::vector<PackedQuad>& out, GreedySta
                             lv = wc | (std::uint32_t(light::sky(lv)) << 24);
                         if (shade != kQuadShadeFull) {
                             out.push_back(packQuad(x, y, z, 1, 1, dir, block, shade, lv));
+                            out.back().w3 = wet ? kQuadWet : 0u;
                             if (water)
                                 ++stats.waterQuads;
                             else {
@@ -525,7 +577,7 @@ void GreedyMesher::meshLayer(bool water, std::vector<PackedQuad>& out, GreedySta
                     if (water && !m_smoothAO)
                         lv = wc | (std::uint32_t(light::sky(lv)) << 24);
                     // merge on the light the quad will actually store
-                    addFace(dir, s, b, a, block, lv);
+                    addFace(dir, s, b, a, block, lv, wet);
                 }
             };
             scatter(0, colX & ~(blkX >> 1));
@@ -559,6 +611,7 @@ void GreedyMesher::meshLayer(bool water, std::vector<PackedQuad>& out, GreedySta
                 }
                 out.push_back(
                     packQuad(x, y, z, w, h, p.dir, p.block, kQuadShadeFull, p.light));
+                out.back().w3 = p.wet ? kQuadWet : 0u;
                 if (water) {
                     ++stats.waterQuads;
                 } else {
@@ -573,7 +626,7 @@ void GreedyMesher::meshLayer(bool water, std::vector<PackedQuad>& out, GreedySta
 GreedyStats GreedyMesher::mesh(const Chunk& chunk, const Chunk* const* neighbors,
                                std::vector<PackedQuad>& outOpaque,
                                std::vector<PackedQuad>& outWater, int lod,
-                               std::uint8_t coarseNeighbors) {
+                               std::uint8_t coarseNeighbors, bool shell) {
     outOpaque.clear();
     outWater.clear();
     GreedyStats stats;
@@ -583,14 +636,31 @@ GreedyStats GreedyMesher::mesh(const Chunk& chunk, const Chunk* const* neighbors
     // only the LOD 0 path pads from neighbours at all, so a skirt is only ever needed there
     m_coarseNeighbors = lod == 0 ? coarseNeighbors : 0;
     m_smoothAO = (lod == 0); // near chunks only; far LOD pads with air so AO would be wrong
+    m_shell = shell && lod == 0;
     fillGrid(chunk, neighbors, lod);
     buildColumns();
     meshLayer(/*water=*/false, outOpaque, stats);
-    if (m_hasCross)
+    if (m_hasCross && !m_shell)
         emitCross(outOpaque, stats);
     if (m_hasWater)
         meshLayer(/*water=*/true, outWater, stats);
     stats.triangles = (stats.quads + stats.waterQuads) * 2;
+
+    // Grouped by direction so the cull pass can drop whole groups that face away from the camera,
+    // before the vertex shader ever sees them.
+    const auto bucketOf = [](const PackedQuad& q) { return std::min(int(q.w0 >> kQuadDirShift & 7u), 6); };
+    for (const PackedQuad& q : outOpaque)
+        ++stats.buckets[bucketOf(q)];
+    std::uint32_t start[7];
+    std::uint32_t sum = 0;
+    for (int b = 0; b < 7; ++b) {
+        start[b] = sum;
+        sum += stats.buckets[b];
+    }
+    m_sorted.resize(outOpaque.size());
+    for (const PackedQuad& q : outOpaque)
+        m_sorted[start[bucketOf(q)]++] = q;
+    std::copy(m_sorted.begin(), m_sorted.end(), outOpaque.begin());
     return stats;
 }
 

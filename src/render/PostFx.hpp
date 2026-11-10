@@ -15,7 +15,6 @@ struct FxToggles {
     bool volumetric = true;
     bool bloom = true;
     bool clouds = true;
-    bool ssgi = true;      // screen-space one-bounce indirect
     bool taa = false;      // enabled by the live app; off keeps offscreen/smoke renders exact
     bool motionBlur = false; // camera motion blur (uses TAA reprojection data)
     bool fog = true;         // distance fog into the sky at the render edge
@@ -29,24 +28,22 @@ struct FxToggles {
     // them clearly over the bloom threshold (1.15) while the pale ones still bloom softly
     // rather than blowing out. 0 turns emitters back into ordinary lit blocks.
     float emissive = 2.0f;
-    // Grade. Was fully neutral on purpose, to keep the harnesses' reference images stable
-    // against nobody having opinions about a "fashionable" default. That's still the reason
-    // saturation stays untouched, but the owner's own reference images (shader-pack style:
-    // warm highlights, a touch more contrast) are now an explicit ask, not a drive-by
-    // preference (#78), a SUBTLE lift, not a stylised grade, and --smoke/--bench/--tour all
-    // inherit it same as a fresh player would, which is the point: the default look, not a
-    // slider someone has to find first.
+    // Grade, neutral by default: the look is the tone curve's.
     float saturation = 1.0f;   // 0 = greyscale, 1 = untouched
-    float contrast = 1.06f;    // 1 = untouched
-    float temperature = 0.05f; // -1 cool .. +1 warm
+    float contrast = 1.0f;     // 1 = untouched
+    float temperature = 0.0f;  // -1 cool .. +1 warm
     float vignette = 0.22f;    // 0 = off; subtle by default, it frames the shot
     // Animated, so it is the one effect that makes consecutive frames differ. Off by
     // default and left off by --smoke/--bench/--tour, for the same reason TAA is.
     float grain = 0.0f;
-    // Eye adaptation. Its state is one texel carried across frames, so the image depends on
-    // how many frames were rendered before it, the offscreen harnesses turn it off so
-    // their reference images stay comparable, exactly as they do for TAA.
+    // Eye adaptation: a cave brightens when you walk in, a lit scene never changes because you
+    // turned your head. eyeGain is runtime, eased by the caller from the sky level at the eye.
     bool autoExposure = true;
+    float eyeGain = 1.0f;
+    // Runtime, eased: how much sky the camera has over it. Sun shafts need some.
+    float eyeSky = 1.0f;
+    // Runtime: the light of a lamp or glow block in the hand, 0..1 per channel like block light.
+    glm::vec3 handLight{0.0f};
     // Lens flare strength. Screen-space, gated on the sun actually being visible.
     float lensFlare = 0.5f;
     // Night rod-vision shift: desaturate and cool the darkest parts of the frame after dusk.
@@ -73,12 +70,15 @@ struct FxToggles {
     // the picker that opens on middle-clicking a lamp, and reused for everything placed
     // after that.
     int lampSwatch = 1;
+    // The builder's hotbar: what each of the nine slots holds, as block ids.
+    int hotbar[9] = {1, 3, 2, 120, 10, 6, 123, 122, 4};
     float volume = 0.7f; // master audio volume, same reason as crosshair: one struct
     // Mixer buses. One flat volume also turned down the menu clicks and the wind bed along
     // with the world, which is why there are three.
     float volWorld = 1.0f;
     float volUi = 0.8f;
     float volAmbient = 0.6f;
+    float volMusic = 0.7f;
     // Muffle a sound whose path to the listener is blocked by solid voxels. Costs one
     // raycast per sound EVENT (not per frame), against the same DDA the crosshair runs.
     float audioOcclusion = 0.75f;
@@ -107,12 +107,15 @@ struct FxToggles {
     float lodDetail = 1.5f;
     // Runtime only, never saved: filled in each frame by whatever is directing the sky.
     float cloudBias = 0.0f; // extra cloud cover, 0..~0.22
+    // What the clouds actually get: rain means cloud overhead, however it was started.
+    float cloudCover() const { return cloudBias > precip * 0.24f ? cloudBias : precip * 0.24f; }
     float flash = 0.0f;     // lightning, 0..1, decays in a fraction of a second
     // The air of wherever the camera is, from the surrounding biomes (runtime, smoothed by the
     // caller): a colour the haze and the sunlight are multiplied by, and extra haze on top of the
     // ordinary distance fog. Dust over the desert, cool blue over the sea, a green damp in forest.
     float biomeTint[3] = {1.0f, 1.0f, 1.0f};
     float biomeHaze = 0.0f;
+    float aurora = 0.0f; // 0..1, northern lights over cold country at night
     float snowCover = 0.0f; // runtime, 0..1: how much of the sky-facing ground has snow on it
     float mist = 0.0f;      // 0..1, pulls the fog in (dawn, over water)
     float farInner = -1.0f; // runtime: radius the far horizon skips; < 0 means "the fog end", as in the game
@@ -124,15 +127,15 @@ struct FxToggles {
     // and is also injected, since the shaders divide by it to size their tap offsets.
     int shadowRes = 1536;
     // Internal render resolution as a fraction of the window. The whole HDR chain (scene,
-    // ssao, ssgi, volumetrics, bloom, taa) runs at this size and only the final tonemap
+    // ssao, volumetrics, bloom, taa) runs at this size and only the final tonemap
     // pass runs at native, so it scales nearly everything that costs fill rate. 1.0 = off.
     float renderScale = 1.0f;
 };
 
 // The HDR post stack: scene renders into an RGBA16F target with a depth texture, then
 // SSAO (half res) -> AO applied to the opaque scene (applyOpaqueSsao, before water exists in
-// the buffer) -> water -> composite (volumetric scattering, SSGI) -> bloom
-// downsample/upsample chain -> ACES + sRGB into whatever framebuffer is bound.
+// the buffer) -> water -> composite (volumetric scattering) -> bloom
+// downsample/upsample chain -> tone curve + sRGB into whatever framebuffer is bound.
 class PostFx {
 public:
     bool init(const std::filesystem::path& shaderDir, std::string_view defines = {});
@@ -169,6 +172,9 @@ public:
     // the sample grid never shimmers as the camera moves.
     void updateCloudMap(const glm::dvec3& camPos, float time, float cloudBias);
     unsigned int cloudMapTex() const { return m_cloudTex; }
+    // The caustic web for this moment, a tile 64 blocks across that repeats (caustics_tex.comp).
+    void updateCaustics(float time);
+    unsigned int causticsTex() const { return m_causticsTex; }
     // xy = world XZ of the map's corner, z = 1 / span
     glm::vec3 cloudMapXf() const { return {m_cloudOrigin.x, m_cloudOrigin.y, 1.0f / kCloudMapSpan}; }
 
@@ -189,13 +195,13 @@ public:
         glm::vec3 lightL{0.0f, 1.0f, 0.0f};
         glm::vec3 lightColor{1.0f};
         glm::vec3 sunColor{1.0f}; // the SUN's own radiance; exactly 0 at night
+        glm::vec3 skyAmbient{0.3f}; // sky fill: what lights the shaded side of a cloud
         float daylight = 1.0f;    // 1 full day, 0 after dusk
         glm::vec2 fog{1e9f, 1e9f}; // distance fog (start, end); huge = off
         const ShadowMap* shadows;
         FxToggles toggles;
         glm::vec3 camPos{0.0f}; // camera world position; clouds are world-anchored
         float time = 0.0f;       // drives cloud drift and grain
-        float dt = 0.0f;         // seconds since the last frame; drives eye adaptation
         bool underwater = false; // camera eye submerged -> composite adds depth fog + tint
         // Lamp light in the air: the LightVolume texture, 0 for none, and where the camera is in it.
         unsigned int lightVolume = 0;
@@ -219,8 +225,8 @@ private:
 
     unsigned int m_progSsao = 0, m_progBlur = 0, m_progComposite = 0, m_progApplyAo = 0;
     unsigned int m_progBloomDown = 0, m_progBloomUp = 0, m_progFinal = 0;
-    unsigned int m_progTaa = 0, m_progSsgi = 0, m_progMotion = 0;
-    unsigned int m_progLumDown = 0, m_progExpose = 0, m_progCloudMap = 0, m_progScatter = 0;
+    unsigned int m_progTaa = 0, m_progMotion = 0;
+    unsigned int m_progCloudMap = 0, m_progScatter = 0, m_progClouds3d = 0;
     unsigned int m_vao = 0;
 
     // 6 blocks a texel: the field's finest surviving octave is ~150 blocks across, so
@@ -229,6 +235,15 @@ private:
     static constexpr float kCloudMapSpan = 3072.0f;
     unsigned int m_cloudTex = 0, m_cloudFbo = 0;
     glm::vec2 m_cloudOrigin{0.0f};
+    void bakeCloudNoise();
+    // The clouds' noise, baked once, and the march's two half-res frames.
+    unsigned int m_cloudShape = 0, m_cloudDetail = 0, m_cloudWeather = 0;
+    unsigned int m_causticsTex = 0, m_progCaustics = 0;
+    unsigned int m_clouds[2] = {0, 0}, m_cloudsFbo[2] = {0, 0};
+    int m_cloudsIndex = 0, m_cloudsFrame = 0;
+    bool m_cloudsValid = false;
+    glm::mat3 m_cloudsPrevRot{1.0f};
+    glm::vec3 m_cloudsPrevCam{0.0f};
 
     unsigned int m_hdrFbo = 0, m_hdrColor = 0, m_depth = 0;
     unsigned int m_sceneCopy = 0; // opaque snapshot for water SSR
@@ -242,17 +257,7 @@ private:
     bool m_taaValid = false;
     unsigned int m_ssaoFbo = 0, m_ssaoTex = 0;
     unsigned int m_ssaoBlurFbo = 0, m_ssaoBlurTex = 0;
-    unsigned int m_ssgiFbo = 0, m_ssgiTex = 0; // half-res RGBA16F bounce
     unsigned int m_scatterFbo = 0, m_scatterTex = 0; // half-res light in the air, a = distance
-
-    // Auto-exposure. kLumSize must be a power of two: the average is the last mip, so the
-    // chain has to bottom out at exactly 1x1.
-    static constexpr int kLumSize = 64;
-    static constexpr int kLumMips = 7; // log2(64) + 1
-    unsigned int m_lumTex = 0, m_lumFbo = 0;
-    unsigned int m_adapt[2] = {0, 0}, m_adaptFbo[2] = {0, 0};
-    int m_adaptIndex = 0;
-    bool m_adaptValid = false;
 
     static constexpr int kBloomMips = 5;
     unsigned int m_bloomFbo[kBloomMips] = {};

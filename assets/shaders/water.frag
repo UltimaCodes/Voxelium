@@ -42,7 +42,9 @@ layout(location = 10) uniform float uShadowsOn;
 layout(location = 11) uniform mat4 uCascadeVp[3];  // consumes 11..22
 layout(location = 23) uniform vec3 uCascadeSplit;  // radial split distances
 layout(location = 24) uniform vec3 uCascadeTexel;  // world units per shadow texel
+layout(location = 40) uniform vec3 uWaterLevel; // keeps its brightness under the land's curve
 layout(location = 25) uniform float uDaylight;     // 1 full day, 0 after dusk
+layout(location = 43) uniform vec3 uHandLight;     // a lamp in the player's hand, levels 0..15 (chunk.frag)
 
 layout(binding = 1) uniform sampler2DArrayShadow uShadowMap;
 
@@ -59,6 +61,7 @@ float hash21(vec2 p);
 float vnoiseW(vec2 p, float n);
 
 #include "waves.glsl"
+#include "sky.glsl"
 // The camera's xz modulo 512 (render/WaterWaves.hpp kWrap). The chop and the foam are value noise
 // whose lattice repeats every 512 blocks, so camera-relative position plus this is world position
 // to that noise: the pattern stays put as the camera moves (it used to travel along with it, the
@@ -141,15 +144,11 @@ float fbm2(vec2 p) { return 0.6 * vnoiseW(p, 672.0) + 0.4 * vnoiseW(p * 2.0 + 3.
 vec3 skyColor(vec3 d) {
     // uDaylight, not uSunL.y: uSunL points at the MOON after dusk, so deriving the day
     // factor from it would make a midnight lake reflect a bright blue noon sky.
-    float day = uDaylight;
-    float up = clamp(d.y, 0.0, 1.0);
-    vec3 col = mix(vec3(0.66, 0.78, 0.92), vec3(0.14, 0.34, 0.80), pow(up, 0.5)) * day +
-               vec3(0.008, 0.012, 0.024) * (1.0 - day); // dim to a night sky, matched to composite
+    vec3 col = skyGradient(d, uDaylight > 0.0 ? uSunL : -uSunL, uDaylight, 0.0);
     float sd = max(dot(d, uSunL), 0.0);
     // "is the thing lighting us above the horizon", true for the moon too, which is what
     // puts a moon glint on the water instead of nothing.
     float above = smoothstep(-0.03, 0.06, uSunL.y);
-    col += vec3(1.0, 0.55, 0.28) * pow(sd, 8.0) * 0.6 * above * day; // warm: sunrise only
     col += uSunColor * smoothstep(0.9985, 0.9995, sd) * 3.0 * above; // disc, dim for the moon
     return col;
 }
@@ -188,6 +187,10 @@ float waterShadow(vec3 pos, vec3 N) {
                        texture(uShadowMap, vec4(uv + rot * vec2(-t, -t), float(c), z)));
     return mix(sh, 1.0, smoothstep(uCascadeSplit.z * 0.9, uCascadeSplit.z, d));
 }
+
+// How much sky this water can see. A reflection that finds nothing falls back to the sky, which in a
+// sealed cave turned every pool bright blue.
+float gSkyVis = 1.0;
 
 // march R from world-rel point P, return reflected colour (scene hit or sky)
 vec3 reflection(vec3 P, vec3 R, float jitter) {
@@ -249,14 +252,14 @@ vec3 reflection(vec3 P, vec3 R, float jitter) {
                 // fade near screen edges to hide the SSR cutoff
                 vec2 e = smoothstep(0.0, 0.12, uv) * smoothstep(0.0, 0.12, 1.0 - uv);
                 float edge = e.x * e.y;
-                return mix(skyColor(R), texture(uSceneColor, uv).rgb, edge);
+                return mix(skyColor(R) * gSkyVis, texture(uSceneColor, uv).rgb, edge);
             }
         } else {
             wasFront = true; // sky here: nothing to be behind
         }
         stepLen *= 1.18; // grow steps: dense near the surface, coarse far away
     }
-    return skyColor(R);
+    return skyColor(R) * gSkyVis;
 }
 
 void main() {
@@ -274,11 +277,25 @@ void main() {
     // to the reflection ray specifically, not the shading normal, keeps neighbouring rays
     // coherent enough to agree on hit/miss while leaving the actual water surface look alone.
     vec3 Nrefl = kNormal[vDir];
+    vec2 breakNow = vec2(0.0);
     if (vDir == 2u) { // organic ripple on the top surface
         // Chop detail falls off with distance; see waterSlope. Squared so it holds up close
         // and then drops away quickly rather than lingering as a shimmer band.
         float fade = exp(-length(vWorldRel) * 0.016);
         g = waterSlope(vWorldRel.xz, vStrength, fade * fade, length(fwidth(vWorldRel.xz)));
+        // A breaker tilts the water toward the shore, the way its distance map says.
+        float seaD = seaDistance(vWorldRel.xz);
+        breakNow = breaker(vWorldRel.xz, seaD);
+        if (uWaveScale > 0.0 && seaD < 80.0 && seaD > -6.0) {
+            const float kE = 3.0;
+            vec2 cuv = (vWorldRel.xz - uCoastXf.xy) * uCoastXf.z;
+            vec2 ts = vec2(1.0) / vec2(textureSize(uCoast, 0));
+            vec2 dirD = -vec2(textureLod(uCoast, cuv + vec2(ts.x, 0.0), 0.0).r - textureLod(uCoast, cuv - vec2(ts.x, 0.0), 0.0).r,
+                              textureLod(uCoast, cuv + vec2(0.0, ts.y), 0.0).r - textureLod(uCoast, cuv - vec2(0.0, ts.y), 0.0).r);
+            dirD /= max(length(dirD), 1e-3);
+            float slope = (breaker(vWorldRel.xz, seaD + kE).x - breaker(vWorldRel.xz, seaD - kE).x) / (2.0 * kE);
+            g += clamp(dirD * slope * uWaveScale * vStrength * 0.8, vec2(-0.3), vec2(0.3));
+        }
         N = normalize(vec3(-g.x, 1.0, -g.y));
         Nrefl = normalize(vec3(-g.x * 0.25, 1.0, -g.y * 0.25));
     }
@@ -332,15 +349,20 @@ void main() {
     float shadow = waterShadow(vWorldRel, N);
     float ndl = max(dot(N, uSunL), 0.0);
     float occl = 0.35 + 0.65 * vSky;            // gentle: 4-bit voxel light, so keep it soft
-    vec3 sunLit = uSunColor * (ndl * shadow);
-    vec3 ambLit = uSkyAmbient * occl;
+    gSkyVis = smoothstep(0.02, 0.45, vSky);
+    vec3 sunLit = uSunColor * (ndl * shadow * gSkyVis);
+    vec3 ambLit = uSkyAmbient * occl * mix(0.04, 1.0, gSkyVis);
     // Daylight scalar for anything that must go dark at night. Supplied by the CPU now:
     // uSunL points at the moon after dusk, so it can no longer answer "how light is it".
     float daylight = uDaylight;
 
     // Beer-Lambert absorption: shallow shows the bed, deep goes blue-green.
-    float absorb = 1.0 - exp(-thickness * 0.18);
-    vec3 tint = mix(vec3(0.12, 0.30, 0.36), vec3(0.02, 0.09, 0.16), absorb);
+    // Over the far terrain's own sea (alpha 0) this is deep water, whatever the depth buffer says.
+    float overFar = 1.0 - texture(uSceneColor, suv).a;
+    // Each colour lost at its own rate, the same as looking through it from below (composite.frag).
+    vec3 keep = exp(-vec3(0.20, 0.09, 0.05) * thickness) * (1.0 - overFar);
+    float absorb = 1.0 - dot(keep, vec3(0.3333));
+    vec3 tint = mix(vec3(0.10, 0.26, 0.40), vec3(0.015, 0.06, 0.18), absorb);
     // The tint was a CONSTANT colour scaled only by vSky, and vSky is geometric, it does
     // not drop when the sun sets. So deep water kept full daylight brightness after dark and
     // the lake read as luminous. It is a body colour: light it like one. (The foam had the
@@ -349,12 +371,17 @@ void main() {
     // negligible against a daylight ambient and roughly half the night one, so it quietly
     // held the lake off the floor after dark. Faded with daylight for the same reason.
     vec3 waterLight = ambLit + sunLit * 0.35 + vec3(0.015, 0.02, 0.028) * mix(0.25, 1.0, daylight);
-    refr = mix(refr * occl, tint * waterLight, absorb);
+    // A lamp in the hand lights the water like the blocks around it, and shows in it as a soft glint.
+    float handLevel = max(uHandLight.r, max(uHandLight.g, uHandLight.b));
+    float hand = max(handLevel - length(vWorldRel), 0.0) / 15.0;
+    vec3 handLit = vec3(1.12, 1.0, 0.88) * (uHandLight / max(handLevel, 1.0)) * hand * hand * 1.2;
+    waterLight += handLit;
+    refr = refr * occl * keep + tint * waterLight * uWaterLevel * (1.0 - keep);
 
     float jitter = hash21(gl_FragCoord.xy + fract(uTime) * 17.0);
     // The reflection carries its own light (it is a picture of the lit world / the sky), so
     // it only wants the occlusion term, not a second helping of daylight.
-    vec3 refl = reflection(vWorldRel, reflect(-V, Nrefl), jitter) * occl;
+    vec3 refl = reflection(vWorldRel, reflect(-V, Nrefl), jitter) * occl * uWaterLevel;
 
     // two-lobe glint: a tight hot core plus a broad sheen, which is what separates a wet
     // mirror from a plastic-looking one under a single narrow highlight
@@ -362,9 +389,11 @@ void main() {
     float ndh = max(dot(N, H), 0.0);
     // Shadowed by the cascade rather than gated on voxel sky light: a glint that survives
     // into a tree's shadow is the giveaway that the sun term was never really shadowed.
-    float spec = (pow(ndh, 340.0) * 2.6 + pow(ndh, 34.0) * 0.28) * shadow * occl;
+    float spec = (pow(ndh, 340.0) * 2.6 + pow(ndh, 34.0) * 0.28) * shadow * occl * gSkyVis;
 
     vec3 col = mix(refr, refl, fres) + uSunColor * spec; // glint fades at night
+    // the lamp's reflection: the light is at the eye, so it sits where the surface faces straight back
+    col += handLit * (pow(max(dot(N, V), 0.0), 60.0) * 0.6);
 
     // Shoreline foam: thin water gets an animated fringe. It has to be LIT like everything
     // else, as a constant white it stayed full brightness after dark, so every shoreline
@@ -375,8 +404,11 @@ void main() {
     float bedZ0 = -uNear / max(texture(uTerrainDepth, suv).r, 1e-7);
     float shore = 1.0 - smoothstep(0.0, 1.6, max(surfZ - bedZ0, 0.0));
     float fn = fbm2((vWorldRel.xz + uCamWrap) * 1.3125 + vec2(uTime * 0.3, -uTime * 0.2));
-    float foam = smoothstep(0.55, 0.95, shore * (0.55 + 0.6 * fn));
-    vec3 foamCol = vec3(0.92, 0.96, 1.0) * occl * (0.10 + 0.90 * daylight);
+    float foam = smoothstep(0.55, 0.95, shore * (0.55 + 0.6 * fn)) * (1.0 - overFar);
+    // The white of a wave going over, broken into lace by the same noise.
+    float lace = fbm2((vWorldRel.xz + uCamWrap) * 0.66 + vec2(uTime * 0.11, uTime * 0.07));
+    foam = max(foam, smoothstep(0.26, 0.66, breakNow.y * (0.45 + 0.9 * lace)) * min(uWaveScale / 0.2, 1.0));
+    vec3 foamCol = vec3(0.92, 0.96, 1.0) * occl * (0.10 + 0.90 * daylight) * max(gSkyVis, 0.03);
     col = mix(col, foamCol, foam);
 
     outColor = vec4(col, 1.0); // fully composited here (refraction sampled directly)

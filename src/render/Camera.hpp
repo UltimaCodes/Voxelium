@@ -16,6 +16,7 @@ public:
     float yawDeg = 0.0f;   // 0 looks down -Z, positive turns right
     float pitchDeg = 0.0f; // clamped to +/-89
     float fovYDeg = 70.0f;
+    float fovKick = 0.0f; // added on top while sprinting or flying fast; never saved
     float nearPlane = 0.1f;
     float baseSpeed = 8.0f;      // units/sec
     float sensitivity = 0.12f;   // degrees per pixel of mouse travel

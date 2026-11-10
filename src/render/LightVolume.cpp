@@ -1,5 +1,6 @@
 #include "render/LightVolume.hpp"
 
+#include "gfx/Shader.hpp"
 #include "world/Chunk.hpp"
 #include "world/ChunkManager.hpp"
 
@@ -32,6 +33,63 @@ LightVolume::LightVolume() {
 
 LightVolume::~LightVolume() {
     glDeleteTextures(1, &m_tex);
+    glDeleteTextures(2, m_bounce);
+    glDeleteTextures(1, &m_seed);
+    glDeleteProgram(m_seedProg);
+    glDeleteProgram(m_spreadProg);
+}
+
+bool LightVolume::initBounce(const std::filesystem::path& shaderDir) {
+    m_seedProg = loadComputeProgram(shaderDir / "bounce_seed.comp");
+    m_spreadProg = loadComputeProgram(shaderDir / "bounce_spread.comp");
+    constexpr int n = kSize / 2;
+    glCreateTextures(GL_TEXTURE_3D, 1, &m_seed);
+    glTextureStorage3D(m_seed, 1, GL_RG16F, n, n, n);
+    glCreateTextures(GL_TEXTURE_3D, 2, m_bounce);
+    for (const unsigned int t : m_bounce) {
+        glTextureStorage3D(t, 1, GL_R16F, n, n, n);
+        glTextureParameteri(t, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTextureParameteri(t, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTextureParameteri(t, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTextureParameteri(t, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTextureParameteri(t, GL_TEXTURE_WRAP_R, GL_REPEAT);
+        glClearTexImage(t, 0, GL_RED, GL_FLOAT, nullptr);
+    }
+    return haveBounce();
+}
+
+void LightVolume::computeBounce(bool shadows, unsigned int shadowTex, const glm::mat4* cascadeVp,
+                                const glm::vec3& splits, const glm::vec3& cascadeTexel, const glm::vec3& sunL) {
+    if (!haveBounce())
+        return;
+    constexpr int groups = kSize / 2 / 4;
+    const auto wrapF = [](float v) { return v - std::floor(v / float(kSize)) * float(kSize); };
+    const glm::vec3 base{wrapF(m_camTexel.x + m_minRel.x), wrapF(m_camTexel.y + m_minRel.z),
+                         wrapF(m_camTexel.z + m_minRel.y)};
+    glUseProgram(m_seedProg);
+    glProgramUniform3fv(m_seedProg, 0, 1, &base.x);
+    glProgramUniform3fv(m_seedProg, 1, 1, &m_minRel.x);
+    glProgramUniformMatrix4fv(m_seedProg, 2, 3, GL_FALSE, &cascadeVp[0][0][0]);
+    glProgramUniform3fv(m_seedProg, 5, 1, &splits.x);
+    glProgramUniform3fv(m_seedProg, 6, 1, &sunL.x);
+    glProgramUniform3fv(m_seedProg, 7, 1, &cascadeTexel.x);
+    glProgramUniform1f(m_seedProg, 8, shadows ? 1.0f : 0.0f);
+    glBindTextureUnit(0, m_tex);
+    glBindTextureUnit(1, shadowTex);
+    glBindImageTexture(0, m_seed, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RG16F);
+    glDispatchCompute(groups, groups, groups);
+    // it spreads a cell a pass: seed -> 0 -> 1 -> 0 ... ending in 1
+    glUseProgram(m_spreadProg);
+    glBindTextureUnit(0, m_seed);
+    constexpr int kSteps = 6;
+    for (int i = 0; i < kSteps; ++i) {
+        glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        glBindTextureUnit(1, i == 0 ? m_seed : m_bounce[(i - 1) % 2]);
+        glBindImageTexture(0, m_bounce[i % 2], 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R16F);
+        glDispatchCompute(groups, groups, groups);
+    }
+    static_assert(kSteps % 2 == 0, "the result has to end up in m_bounce[1]");
+    glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
 }
 
 void LightVolume::upload(const ChunkManager& world, ChunkPos pos) {

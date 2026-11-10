@@ -23,6 +23,7 @@ flat in uint vLayer;
 flat in uint vDir;
 flat in vec4 vLight;
 in float vShade; // interpolated per-corner brightness: AO x this corner's share of vLight
+flat in uint vWet; // the face looks out into water
 
 layout(location = 0) out vec4 outColor; // HDR
 
@@ -34,12 +35,12 @@ layout(location = 5) uniform float uShadowsOn;
 layout(location = 6) uniform mat4 uCascadeVp[3]; // consumes 6..17
 layout(location = 18) uniform vec3 uCascadeSplit; // radial split distances
 layout(location = 19) uniform vec3 uCascadeTexel; // world units per shadow texel
-layout(location = 21) uniform vec3 uSunColor;     // day/night direct radiance
-layout(location = 22) uniform vec3 uSkyAmbient;   // day/night sky fill
+layout(location = 21) uniform vec3 uLandSun;      // direct light on land, sun or moon
+layout(location = 22) uniform vec3 uLandAmb;      // sky fill on land
 layout(location = 23) uniform float uEmissive;    // emitter self-illumination, 0 = off
 layout(location = 24) uniform vec3 uCamPos;       // camera world position
 layout(location = 25) uniform float uCloudShadow; // cloud shadow strength, 0 = off
-layout(location = 26) uniform float uTimeSky;     // same clock the cloud field drifts on
+layout(location = 26) uniform float uFrame;       // moves the shadow noise for TAA, 0 without it
 layout(location = 27) uniform float uLeafSss;    // leaf translucency strength, 0 = off
 layout(location = 28) uniform float uRelief;     // derived surface relief, 0 = off
 layout(location = 29) uniform float uDaylight;   // 1 full day, 0 after dusk
@@ -47,11 +48,29 @@ layout(location = 30) uniform float uWetness;    // 0 dry .. 1 soaked (#29)
 layout(location = 34) uniform float uSnowCover;  // how much of the sky-facing ground has snow on it (33 is uCloudBias)
 layout(location = 31) uniform vec3 uCloudMapXf;  // cloud map: world XZ of its corner, 1 / span
 
+layout(binding = 0) uniform sampler2DArray uBlockTex; // sRGB storage: reads back linear
+layout(binding = 6) uniform sampler2D uCloudMap; // coverage field, see cloudmap.frag
+layout(binding = 7) uniform sampler2D uClimate;  // moisture, temperature (FarTerrain)
+layout(location = 35) uniform vec3 uClimateXf;   // x, z of its corner, 1 / span; z = 0 for none
+layout(location = 36) uniform float uWashTime;   // seconds, wrapped: the wash on the beach
+layout(binding = 9) uniform sampler2D uCoast;    // blocks inland, see FarTerrain
+layout(location = 38) uniform vec3 uCoastXf;     // its corner relative to the camera, 1 / span; z = 0 for none
+layout(location = 37) uniform float uBreakClock; // breakers come ashore one a unit of this
+layout(location = 42) uniform vec4 uGroup;       // zw: the shoreline's wander, phased at the camera
+layout(binding = 10) uniform sampler3D uLightVol; // voxel light around the camera (LightVolume), axes x, z, y
+layout(location = 39) uniform vec3 uVolCam;      // camera in its texels
+layout(location = 40) uniform vec3 uVolMin;      // its low corner relative to the camera
+layout(location = 41) uniform float uVolOn;
+layout(location = 43) uniform vec3 uHandLight;   // a lamp in the hand: its light levels, 0..15 a channel
+layout(binding = 11) uniform sampler3D uBounce;  // sunlight off the ground nearby, LightVolume::computeBounce
+layout(location = 44) uniform float uBounceOn;
 #include "clouds.glsl"
 #include "texlayer.glsl"
+#include "lighting.glsl"
+layout(binding = 12) uniform sampler2D uCaustics; // the caustic web, a 64-block tile (caustics_tex.comp)
 
-layout(binding = 0) uniform sampler2DArray uBlockTex;
-layout(binding = 6) uniform sampler2D uCloudMap; // coverage field, see cloudmap.frag
+// What a block of water takes from each colour: red goes within a few blocks, blue lasts.
+const vec3 kWaterSigma = vec3(0.22, 0.075, 0.03);
 layout(binding = 1) uniform sampler2DArrayShadow uShadowMap;
 layout(binding = 5) uniform sampler2DArray uShadowDepth; // raw depth, for the PCSS blocker search
 
@@ -62,11 +81,8 @@ layout(binding = 5) uniform sampler2DArray uShadowDepth; // raw depth, for the P
 const vec3 kNormal[8] = vec3[8](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0),
                                 vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1),
                                 vec3(0, 1, 0), vec3(0, 1, 0));
-// Per-face shading. The spread used to be 0.50..1.00, which reads fine on a wall but turns
-// terraced ground into corduroy: looking down a slope you see a lit top, then the side of
-// the block above, alternating every block, and a 2x brightness step between them makes
-// every stair a hard band. Compressed to 0.66..1.00, still clearly directional, no stripes.
-const float kShade[8] = float[8](0.86, 0.86, 1.00, 0.66, 0.76, 0.76, 1.0, 1.0);
+// Softened vanilla face shade: X sides, top, bottom, Z sides, then the two cross planes.
+const float kFace[8] = float[8](0.72, 0.72, 1.0, 0.5, 0.84, 0.84, 1.0, 1.0);
 
 // Tangent frames for the six axis-aligned faces, matching the (u,v) the vertex stage builds.
 // Axis-aligned geometry means these are constants rather than anything that has to be
@@ -74,114 +90,68 @@ const float kShade[8] = float[8](0.86, 0.86, 1.00, 0.66, 0.76, 0.76, 1.0, 1.0);
 const vec3 kTangent[8] = vec3[8](vec3(0, 0, 1), vec3(0, 0, -1), vec3(1, 0, 0),
                                  vec3(1, 0, 0), vec3(1, 0, 0), vec3(-1, 0, 0),
                                  vec3(1, 0, 0), vec3(1, 0, 0));
-const vec3 kBitangent[8] = vec3[8](vec3(0, 1, 0), vec3(0, 1, 0), vec3(0, 0, 1),
-                                   vec3(0, 0, 1), vec3(0, 1, 0), vec3(0, 1, 0),
+const vec3 kBitangent[8] = vec3[8](vec3(0, -1, 0), vec3(0, -1, 0), vec3(0, 0, 1),
+                                   vec3(0, 0, 1), vec3(0, -1, 0), vec3(0, -1, 0),
                                    vec3(0, 0, 1), vec3(0, 0, 1));
 
-// fixed 16-tap Poisson disk, a soft penumbra without per-pixel rotation, so shadow
-// edges don't crawl/shimmer when the camera moves (rotated PCF looks softer but needs
-// TAA to be stable; fixed taps stay put).
 const vec2 kPoisson[16] = vec2[16](
     vec2(-0.942, -0.399), vec2(0.946, -0.769), vec2(-0.094, -0.929), vec2(0.345, 0.294),
     vec2(-0.916, 0.458), vec2(-0.815, -0.879), vec2(-0.383, 0.277), vec2(0.975, 0.756),
     vec2(0.443, -0.975), vec2(0.537, -0.474), vec2(-0.265, -0.419), vec2(0.792, 0.191),
     vec2(-0.242, 0.997), vec2(-0.814, 0.914), vec2(0.200, 0.786), vec2(0.144, -0.141));
 
-// PCSS: search for blockers to size the penumbra (sharp at contact, soft when the caster
-// is far above the receiver), then PCF with that radius. shadow map is conventional depth
-// (near light = smaller), so a blocker is a stored depth in front of the receiver.
-float sampleCascade(vec3 pos, vec3 N, int c) {
-    // Both bias terms below fight the same problem from two angles, and both need to grow
-    // as the surface turns edge-on to the light (ndl -> 0). A shadow texel's world-space
-    // footprint stays roughly constant, but the RECEIVER's depth changes faster and faster
-    // across that footprint as the face goes grazing, so a fixed offset/bias tuned for a
-    // face pointed at the sun stops covering a steep slope under a low sun, that exact
-    // combination is what showed up as fine, regular self-shadow striping distinct from the
-    // cloud-shadow bands (owner report, tour stop 0 at VX_TOUR_TIME 0.28). N is always one
-    // of the six axis-aligned face directions here, so this is exact, not interpolated.
-    // Floored at 0.2 rather than letting it blow up toward ndl=0, sunShadow() already
-    // zeroes this whole term below that via its own ndl>0 gate on the caller side, so a
-    // shadow this function still gets asked to sample is never more than moderately
-    // grazing, and the floor only needs to hold the worst case sane.
-    float ndl = max(dot(N, uSunL), 0.0);
-    float slope = 1.0 / max(ndl, 0.2);
-
-    // Owner report: hard black patches on terrain, water AND foliage, present only in the
-    // day, i.e. it scales with the direct-light shadow term specifically, not ambient (that
-    // was #58, a different bug, already fixed). Root cause: every one of kPoisson's 16 offsets
-    // is IDENTICAL for every pixel on screen, both here and in the PCF loop below. Wherever
-    // that fixed pattern straddles a voxel-scale edge in the shadow depth map, a whole patch
-    // of neighbouring pixels gets the same wrong blocker-found/not-found answer together,
-    // that reads as a hard, blocky dark shape, not the soft penumbra PCSS is supposed to
-    // produce, and it is worst exactly where this session's tour capture found it: complex
-    // close-range self-shadowing (terraces, foliage interiors). Rotating the disk per pixel
-    // breaks the spatial correlation, neighbouring pixels now sample different actual
-    // offsets for "the same" Poisson index, so the same misalignment cannot land on a whole
-    // patch at once, only scattered individual texels. That turns it into fine dither instead
-    // of a coherent shape, exactly the trick `ssgi.frag`'s kernel already uses (its own
-    // comment: "the kernel rotates per frame so TAA integrates the noise into a smooth
-    // result"), this engine already has TAA (`taa.frag`, ~10 frames of accumulation), which
-    // is precisely the infrastructure that resolves per-pixel noise like this into something
-    // smooth over a couple of frames of real gameplay, even though a single static capture
-    // (as used to verify this) still shows it as fine dither rather than fully resolved.
-    float rotA = fract(sin(dot(gl_FragCoord.xy, vec2(35.17, 91.73))) * 27321.58) * 6.2831853;
-    mat2 rot = mat2(cos(rotA), sin(rotA), -sin(rotA), cos(rotA));
-
-    // normal-offset bias, in cascade-texel units so it means the same thing at every
-    // distance, now ALSO scaled by slope so a grazing face is pushed further along its own
-    // normal. Clamped (3x, not unbounded) so this cannot peter-pan a shadow off a thin
-    // object the way an unclamped slope scale would.
-    vec4 sc = uCascadeVp[c] * vec4(pos + N * uCascadeTexel[c] * 1.5 * min(slope, 3.0), 1.0);
-    vec2 uv = sc.xy * 0.5 + 0.5;
-    float receiver = sc.z;
-
-    // depth-compare bias: fixed at 0.0016 this was tuned for a face pointed at the sun.
-    // Scaled by the same slope, clamped tighter (2.5x) since this one trades directly
-    // against contact-shadow precision rather than just nudging the sample position.
-    float depthBias = 0.0016 * min(slope, 2.5);
-
-    float searchR = 3.0 / VX_SHADOW_RES;
-    float blockerSum = 0.0;
-    int blockerN = 0;
-    // Taps per cascade. The far two cover texels that are already blocks wide, so extra taps
-    // there resolve nothing the eye can see; the near one is where the penumbra is looked at.
-    // Shadow sampling was ~40% of the scene pass at 16+16 taps everywhere.
-#if   VX_QUALITY <= 1
-    const int kBlk[3] = int[3](5, 3, 3);
-    const int kPcf[3] = int[3](8, 5, 4);
-#elif VX_QUALITY == 3
-    const int kBlk[3] = int[3](16, 10, 6);
-    const int kPcf[3] = int[3](16, 12, 8);
+// Far cascade texels are already blocks wide: no blocker search there.
+#if VX_QUALITY <= 1
+const int kBlockerTaps[3] = int[3](5, 3, 0);
+const int kPcfTaps[3] = int[3](8, 5, 3);
 #else
-    const int kBlk[3] = int[3](8, 5, 4);
-    const int kPcf[3] = int[3](12, 8, 6);
+const int kBlockerTaps[3] = int[3](8, 5, 0);
+const int kPcfTaps[3] = int[3](12, 8, 4);
 #endif
-    const int kBlockerTaps = kBlk[c];
-    for (int i = 0; i < kBlockerTaps; ++i) {
-        float d = texture(uShadowDepth, vec3(uv + rot * kPoisson[i] * searchR, float(c))).r;
-        if (d < receiver - depthBias) {
-            blockerSum += d;
-            ++blockerN;
+
+const float kPenumbra = 0.016; // blocks of blur per block between blocker and receiver
+
+float screenNoise() {
+    vec2 p = gl_FragCoord.xy + 5.588238 * uFrame;
+    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+
+// Everything here is sized in blocks, so softness and bias mean the same in every cascade.
+float sampleCascade(vec3 pos, vec3 N, int c, float noise) {
+    float slope = min(1.0 / max(max(dot(N, uSunL), 0.0), 0.2), 2.5);
+    float texel = uCascadeTexel[c];
+    float span = texel * VX_SHADOW_RES;
+    float range = span + 160.0; // depth range of the cascade, see ShadowMap::cascadeMatrix
+
+    vec4 sc = uCascadeVp[c] * vec4(pos + N * texel * 1.5 * slope, 1.0);
+    vec2 uv = sc.xy * 0.5 + 0.5;
+    float depth = sc.z - (0.35 + 0.6 * texel) * slope / range;
+
+    float a = noise * 6.2831853;
+    mat2 rot = mat2(cos(a), sin(a), -sin(a), cos(a));
+
+    float blur = texel * 0.9;
+    if (kBlockerTaps[c] > 0) {
+        float search = max(3.0 * texel, 0.6) / span;
+        float sum = 0.0;
+        int hits = 0;
+        for (int i = 0; i < kBlockerTaps[c]; ++i) {
+            float d = texture(uShadowDepth, vec3(uv + rot * kPoisson[i] * search, float(c))).r;
+            if (d < depth) {
+                sum += d;
+                ++hits;
+            }
         }
+        if (hits == 0)
+            return 1.0;
+        blur = clamp((depth - sum / float(hits)) * range * kPenumbra, 0.75 * texel, 1.5);
     }
-    if (blockerN == 0)
-        return 1.0; // nothing between us and the sun
+    blur /= span;
 
-    float avgBlocker = blockerSum / float(blockerN);
-    float penumbra = (receiver - avgBlocker) / max(avgBlocker, 1e-4);
-    // Upper bound raised from 7.0 (#77): reference shadows read as very soft, almost diffuse
-    // at distance from the caster, and 7 texels capped softness well short of that even for
-    // a caster far above the receiver. Contact shadows are unaffected, a small penumbra
-    // value still maps to a small radius, this only raises the ceiling for genuinely distant
-    // casters.
-    float radius = clamp(penumbra * 45.0, 1.0, 11.0) / VX_SHADOW_RES;
-
-    float depth = receiver - depthBias;
-    float sum = 0.0;
-    const int kPcfTaps = kPcf[c];
-    for (int i = 0; i < kPcfTaps; ++i)
-        sum += texture(uShadowMap, vec4(uv + rot * kPoisson[i] * radius, float(c), depth));
-    return sum / float(kPcfTaps);
+    float lit = 0.0;
+    for (int i = 0; i < kPcfTaps[c]; ++i)
+        lit += texture(uShadowMap, vec4(uv + rot * kPoisson[i] * blur, float(c), depth));
+    return lit / float(kPcfTaps[c]);
 }
 
 float sunShadow(vec3 pos, vec3 N) {
@@ -190,46 +160,12 @@ float sunShadow(vec3 pos, vec3 N) {
     float d = length(pos);
     if (d >= uCascadeSplit.z)
         return 1.0;
+    float noise = screenNoise();
     int c = d < uCascadeSplit.x ? 0 : (d < uCascadeSplit.y ? 1 : 2);
-    float sh = sampleCascade(pos, N, c);
-    // cross-fade into the next cascade near the split so there's no lighting seam
-    float splitEnd = c == 0 ? uCascadeSplit.x : (c == 1 ? uCascadeSplit.y : uCascadeSplit.z);
-    float blendStart = splitEnd * 0.9;
-    if (c < 2 && d > blendStart)
-        sh = mix(sh, sampleCascade(pos, N, c + 1), (d - blendStart) / (splitEnd - blendStart));
-    // and fade shadows out at the very edge of the last cascade instead of a hard cut
-    sh = mix(sh, 1.0, smoothstep(uCascadeSplit.z * 0.9, uCascadeSplit.z, d));
-    return sh;
-}
-
-// How much sunlight gets through the cloud layer to worldPos, 1 = clear. The coverage field
-// is rendered once a frame into uCloudMap (cloudmap.frag), so this is three filtered fetches
-// along the sun ray instead of the per-fragment fbm it used to be.
-const float kCloudMaxBlock = 0.5;
-
-float cloudSunlight(vec3 worldPos, vec3 sunDir) {
-    if (sunDir.y <= 0.05 || worldPos.y >= kCloudBase)
-        return 1.0;
-    // A run of terrace steps shares one lateral sample instead of jittering block to block:
-    // 1/sunDir.y turns a single block of height into a big sideways jump at a low sun.
-    float shadowY = round(worldPos.y / 24.0) * 24.0;
-    float shade = 0.0;
-    float weight = 0.0;
-    float edge = 1.0;
-    for (int i = 0; i < 3; ++i) {
-        float f = 0.15 + 0.35 * float(i); // spread through the slab, away from its feathered ends
-        float t = (mix(kCloudBase, kCloudTop, f) - shadowY) / sunDir.y;
-        vec2 uv = (worldPos.xz + sunDir.xz * t - uCloudMapXf.xy) * uCloudMapXf.z;
-        // the layer's own density profile as the tap weight, so its thin base and top do not
-        // count as much as the solid middle
-        float w = smoothstep(0.0, 0.22, f) * (1.0 - smoothstep(0.55, 1.0, f)) + 0.08;
-        shade += w * textureLod(uCloudMap, uv, 1.5).r;
-        weight += w;
-        edge = min(edge, min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y)));
-    }
-    float lit = 1.0 - 0.6 * (shade / weight);
-    // a very low sun throws the ray off the map; fade to clear instead of smearing the border
-    return mix(1.0, lit, smoothstep(0.0, 0.08, edge));
+    // near a split some pixels take the next cascade and TAA blends them, one lookup instead of two
+    if (c < 2 && fract(noise * 7.0) < (d - uCascadeSplit[c] * 0.9) / (uCascadeSplit[c] * 0.1))
+        ++c;
+    return mix(sampleCascade(pos, N, c, noise), 1.0, smoothstep(uCascadeSplit.z * 0.9, uCascadeSplit.z, d));
 }
 
 // ---- natural variation -------------------------------------------------------------------
@@ -242,7 +178,8 @@ float cloudSunlight(vec3 worldPos, vec3 sunDir) {
 // so the holes still match the shadow pass, which cannot see any of this.
 bool naturalLayer(uint l) {
     return l == 0u || l == 1u || l == 2u || l == 8u || l == 9u || l == 12u || l == 13u ||
-           l == 14u || l == 47u || l == 49u;
+           l == 14u || l == 47u || l == 49u || l == 100u || l == 101u || l == 103u || l == 105u ||
+           (l >= 108u && l <= 113u) || (l >= 119u && l <= 121u);
 }
 
 uint cellHash(ivec3 c) {
@@ -314,60 +251,58 @@ void main() {
         float open = vLight.a * vLight.a;
         float drift = vnoise(sw.xz * 0.8 + sw.y * 0.3);
         float amt = smoothstep(0.30, 0.70, uSnowCover * up * open * 1.05 + (drift - 0.5) * 0.7 * up);
-        albedo = mix(albedo, vec3(0.90, 0.93, 0.98), amt);
+        albedo = mix(albedo, vec3(0.79, 0.85, 0.95), amt);
     }
 
     // Grass side faces (layer 3) get the grass colour blended over their top edge. Without
     // it a terraced hillside alternates green tops with brown risers every single block,
-    // which from altitude reads as corduroy. vUv.y is world Y on all four side faces and
-    // tiles once per block, so fract() puts the overlay on each block's top edge, and a
+    // which from altitude reads as corduroy. vUv.y counts down from the top on all four side
+    // faces and tiles once per block, so 1 - fract() puts the overlay on each block's top edge, and a
     // greedy quad only ever merges grass sideways, never into a vertical run.
+    float greenness = (vLayer == 2u || vLayer == 7u || isGrassLayer(vLayer)) ? 1.0 : (vLayer == 74u ? 0.7 : 0.0);
     if (vLayer == 3u) {
-        const float kOverlay = 0.34; // top third of the block
-        float g = smoothstep(1.0 - kOverlay, 1.0 - kOverlay * 0.45, fract(vUv.y));
+        const float kOverlay = 0.5; // top half of the block
+        float g = smoothstep(1.0 - kOverlay, 1.0 - kOverlay * 0.45, 1.0 - fract(vUv.y));
+        // the tile's own fringe counts too, so measured off how green the result is
         albedo = mix(albedo, texture(uBlockTex, vec3(vUv, 2.0)).rgb, g);
+        greenness = smoothstep(0.02, 0.08, albedo.g - max(albedo.r, albedo.b));
     }
-    // Surface relief WITHOUT an authored normal map. #38 was blocked on texture authoring
-    // and on the quad being full (no room for tangent data), and both go away if the height
-    // field is the albedo's own luminance: on pixel-art tiles the dark pixels ARE the mortar
-    // lines, cracks and gaps, and the light ones are the raised faces. That is what a height
-    // map encodes, so the gradient of it is the normal.
-    //
-    // Only the LIGHTING normal is perturbed. The geometric normal still drives the shadow
-    // bias and the face-shade table, because tilting those produces acne and makes flat
-    // faces read as different brightnesses.
-    // Distance gated, and that is most of what makes it affordable. Relief is per-TEXEL
-    // detail: past a couple of dozen blocks a whole tile is a few pixels and the four extra
-    // samples buy nothing you can see. Interleaved A/B measured the ungated version at
-    // +0.7 ms scene / +1.0 ms frame, and the overwhelming majority of fragments in any view
-    // are far ones.
+    if (greenness > 0.0 && uClimateXf.z > 0.0) {
+        vec2 climate = texture(uClimate, (uCamPos.xz + vWorldRel.xz - uClimateXf.xy) * uClimateXf.z).rg;
+        albedo = mix(albedo, albedo * climateTint(climate.r, climate.g), greenness);
+    }
+    // Beach at the waterline. Only a picture, the water itself stays put: a film running up the sand
+    // after each breaker, foam along its front, wet sand where it has been.
+    vec3 washSheen = vec3(0.0);
+    if (vLayer == 47u && vDir == 2u && uCoastXf.z > 0.0) {
+        float above = uCamPos.y + vWorldRel.y - 62.9;
+        if (above < 2.6) {
+            vec3 sw = uCamPos + vWorldRel;
+            vec2 rel = vWorldRel.xz;
+            float inland = textureLod(uCoast, (rel - uCoastXf.xy) * uCoastXf.z, 0.0).r;
+            float wander = 0.6 * sin(dot(vec2(0.031, 0.017), rel) + uGroup.z) + 0.4 * sin(dot(vec2(-0.023, 0.041), rel) + uGroup.w);
+            // a breaker reaches the shore at clock + wander * 0.26 = a whole number, the run up peaks after
+            float run = 0.5 + 0.5 * cos(6.2831853 * (uBreakClock + wander * 0.26 - 0.22));
+            float front = 2.0 + run * run * 11.0;
+            float lace = vnoise(sw.xz * 0.31 + uWashTime * 0.09) * 0.6 + vnoise(sw.xz * 0.83 - uWashTime * 0.13) * 0.4;
+            float reach = inland + (lace - 0.5) * 5.0;
+            float film = smoothstep(front + 1.0, front - 1.5, reach);
+            float edge = film * smoothstep(front - 3.2, front - 0.6, reach) * smoothstep(0.30, 0.55, lace);
+            float low = 1.0 - smoothstep(1.2, 2.6, above);
+            albedo = mix(albedo, albedo * vec3(0.58, 0.55, 0.52), max(film, smoothstep(17.0, 6.0, inland)));
+            albedo = mix(albedo, albedo * vec3(0.74, 0.84, 0.90), film * low);
+            albedo = mix(albedo, vec3(0.78, 0.82, 0.84), edge * low);
+            washSheen = uLandAmb * (0.16 * film * low * (1.0 - edge));
+        }
+    }
+
+    // Relief from the albedo's own luminance, on the lighting normal only and only close up.
     vec3 Nl = N;
     float reliefFade = 1.0 - smoothstep(14.0, 28.0, length(vWorldRel));
     if (uRelief > 0.0 && vDir < 6u && reliefFade > 0.01) {
         vec2 ts = 1.0 / vec2(textureSize(uBlockTex, 0).xy);
         const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
-        // Owner report: a hard dark line at every block border on stepped/terraced ground,
-        // with the interior of the same face reading normally lit, the opposite of what a
-        // real per-step cast shadow would look like. Cause: vUv tiles once per BLOCK, and
-        // uBlockTex is GL_REPEAT, so sampling past vUv's own [0,1] span here does not read
-        // the actual neighbouring quad, each greedy-meshed quad is its own texture lookup
-        // with no knowledge of what is drawn next to it, so a wrapped sample just re-reads
-        // THIS quad's own opposite edge. On a large flat run of one uniform texture that is
-        // invisible (every block repeats the same tile, so wrapping to "your own start" and
-        // wrapping to "the real neighbour" look identical), which is exactly why this went
-        // unnoticed generally. It becomes very visible on terraced/stepped ground, because
-        // AO forces a fresh, UNMERGED quad at nearly every step (greedy meshing cannot merge
-        // across differing per-corner AO), so almost every step edge IS a real quad boundary,
-        // and the wrapped sample there reads a fabricated gradient with no relation to the
-        // real neighbour's texture or shading, a fake dark line baked into the lighting
-        // normal at exactly the border chunk.frag's own geometric AO already shades
-        // correctly. Clamped to this quad's own UV span instead: at the very edge this falls
-        // back to a one-sided difference (re-reading the centre texel) rather than a
-        // fabricated wrap, which is far less wrong than reading an unrelated tile.
-        // Clamped to THIS texel's own block cell, not a flat [0,1], a merged quad spanning
-        // several blocks of the same material legitimately carries vUv past 1.0, tiling via
-        // the same GL_REPEAT, and a flat clamp would wrongly flatten relief across all of it
-        // past the first block.
+        // Stay inside this block's cell: past it the tile wraps and reads a made-up gradient.
         vec2 cellMin = floor(uv);
         vec2 cellMax = cellMin + 1.0;
         // One-sided differences off the texel already fetched above: two extra fetches
@@ -389,209 +324,127 @@ void main() {
         Nl = normalize(N + kTangent[vDir] * slope.x + kBitangent[vDir] * slope.y);
     }
 
-    // Owner report: light visibly steps as it falls off, in hard bands rather than a smooth
-    // gradient. Real cause is storage, not this shader, sky/block light is 4 bits per
-    // channel (16 levels) in Chunk's packed word, and BFS propagation drops exactly 1 level
-    // per block, so a falloff is a stack of 16 flat shells with a genuine value jump at each
-    // boundary, not a quantized-from-continuous signal. Widening that storage (and re-tuning
-    // the whole propagation/falloff to match) is a real, separate, much bigger change than a
-    // shader edit, this is the standard, immediate mitigation for visible banding from
-    // coarse source data: dither the value spatially before it is used, so a hard shell
-    // boundary becomes a noisy transition band instead of a crisp line. It does not create
-    // information the light data does not have, so it will not look truly continuous
-    // up close, it makes the existing steps read as texture instead of a contour.
-    float dither = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
-    vec3 blockRGB = clamp(vLight.rgb + dither * (1.0 / 15.0), 0.0, 1.0);
-    float skyL = clamp(vLight.a + dither * (1.0 / 15.0), 0.0, 1.0);
+    // Near the camera light comes from the voxels themselves, per pixel and filtered, so it runs
+    // smoothly across a face and round a corner. Past that, the quad's own.
+    vec4 lightNow = vLight;
+    float smoothLight = 0.0;
+    if (uVolOn > 0.5) {
+        vec3 volP = vWorldRel + N * 0.5;
+        vec3 volQ = volP - uVolMin;
+        float volEdge = min(min(min(volQ.x, volQ.y), volQ.z), min(min(128.0 - volQ.x, 128.0 - volQ.y), 128.0 - volQ.z));
+        if (volEdge > 0.0) {
+            smoothLight = smoothstep(0.0, 16.0, volEdge);
+            // Rock reads as dark in the filter, which would black out every corner. It never falls
+            // far below what the quad carries.
+            vec4 v = max(texture(uLightVol, (uVolCam + volP.xzy) / 128.0), vLight * 0.62);
+            lightNow = mix(vLight, v, smoothLight);
+        }
+    }
+    // Light is 16 levels per block: outside the volume, dither so a falloff reads as a gradient.
+    float dither = (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * (1.0 - smoothLight);
+    vec3 blockRGB = clamp(lightNow.rgb + dither * (1.0 / 15.0), 0.0, 1.0);
+    float skyL = clamp(lightNow.a + dither * (1.0 / 15.0), 0.0, 1.0);
 
-    // Far terrain is made of terraces a pixel or less deep, and a lit tread next to a shaded
-    // riser then alternates every pixel: moire that crawls under TAA's jitter. From a distance
-    // that alternation is not information, so it is faded toward the face-averaged look
-    // (normal tipped toward up, riser darkening and per-corner AO eased off).
-    float farK = smoothstep(80.0, 300.0, length(vWorldRel));
-    Nl = normalize(mix(Nl, vec3(0.0, 1.0, 0.0), 0.55 * farK));
-    float ndl = max(dot(Nl, uSunL), 0.0);
-    float skyAccess = skyL * skyL; // voxel sky light gates how much sun reaches here
-    // Nothing below ~1.4% reaches a sealed-in fragment anyway (direct is scaled by skyAccess),
-    // so caves and canopy interiors skip the whole PCSS lookup.
-    float shadow = (ndl > 0.0 && skyL > 0.12) ? sunShadow(vWorldRel, N) : 0.0;
-
-    // warm strong sun vs cool dim sky ambient, the contrast is what keeps the scene
-    // from going milky once tonemapped. the small floor stops fully-enclosed faces
-    // (interior leaf pockets, deep cave walls) from crushing to pure black.
-    // Cloud shadows sample the same field the sky raymarches, so a shadow always belongs
-    // to a cloud you can actually see overhead. Only the direct sun term is affected,
-    // ambient is sky light, which a cloud scatters rather than blocks.
-    float clouded = uCloudShadow > 0.0
-                        ? mix(1.0, cloudSunlight(uCamPos + vWorldRel, uSunL), uCloudShadow)
-                        : 1.0;
-    // A cloud is translucent: it takes at most about half the sun. Full strength made a cloud
-    // shadow as dark as the shadow of a solid block, so the two could not be told apart.
-    clouded = 1.0 - kCloudMaxBlock * (1.0 - clouded);
-    // Emitters: layer 4 is glow, 15..39 the 25 lamp swatches. Needed in several places below,
-    // so it is worked out once here rather than written out over and allowed to disagree.
     float emitMask = (uEmissive > 0.0 && isEmitterLayer(vLayer)) ? 1.0 : 0.0;
+    bool foliage = vDir >= 6u || isCutoutLayer(vLayer);
+    // A face under water is lit through it: how deep it is, from the sea level or, in a lake above it
+    // or a cave, from how far the sky light has fallen (a level a block through water). The sky light
+    // is spent on depth down there, so it no longer says whether the sun gets in; the cascades do.
+    bool underWater = vWet != 0u;
+    float depthW = underWater ? max(62.0 - (uCamPos.y + vWorldRel.y), (1.0 - lightNow.a) * 15.0) : 0.0;
+    vec3 waterDown = exp(-kWaterSigma * depthW);
+    float gate = underWater ? 1.0 : sunGate(skyL);
+    float ndl = max(dot(Nl, uSunL), 0.0);
+    float shadow = (gate > 0.0 && (ndl > 0.0 || foliage)) ? sunShadow(vWorldRel, N) : 0.0;
+    float sunFacing = ndl;
+    if (foliage) {
+        // Thin and many-sided: lit from any angle on the sun side, and a leaf in the way lets some through.
+        sunFacing = mix(ndl, 1.0, 0.4);
+        shadow = mix(shadow, 1.0, 0.18);
+    }
+    float cloud = uCloudShadow > 0.0 ? cloudCover(uCamPos + vWorldRel, uSunL) * uCloudShadow : 0.0;
 
-    // A light's own face does not take the cascade shadow. In daylight the sun is a large part
-    // of what a lamp face shows, so a neighbour's shadow cut a hard dark edge straight across
-    // the glow (INFO #12), which is not what a light in shade looks like. It keeps the sun's
-    // angle, and sky access still takes the sun away entirely underground.
-    vec3 direct = uSunColor * (ndl * mix(shadow, 1.0, emitMask) * skyAccess * clouded);
-    // A cloud does not delete the light it blocks, it scatters it. Under one the ground gets
-    // a wide, soft, shadowless source instead of a hole in the sun, which is why real cloud
-    // shadows are gentle and why ours read as harsh dark patches when they only subtracted.
-    vec3 cloudFill = uSunColor * ((1.0 - clouded) * 0.4 * skyAccess * mix(0.65, 1.0, ndl));
+    vec3 sun = uLandSun * (sunFacing * mix(shadow, 1.0, emitMask) * gate * (1.0 - kCloudMaxBlock * cloud));
+    // what a cloud takes from the sun it scatters into the sky
+    vec3 amb = skyFill(N, uLandAmb) * (1.0 + 0.2 * cloud) * skyLevel(skyL);
+    vec3 fill = sunFill(N, uSunL, uLandSun) * skyLevel(skyL);
+    if (underWater) {
+        // the sun's slanting path down through the water, and the waves focusing it into caustics,
+        // brightest on what faces up and fading as the light spreads with depth
+        vec3 wp = uCamPos + vWorldRel;
+        vec2 entry = wp.xz + uSunL.xz / max(uSunL.y, 0.25) * depthW; // where its light came through the surface
+        float caus = texture(uCaustics, entry / 64.0).r * exp(-depthW * 0.16);
+        sun *= exp(-kWaterSigma * depthW / max(uSunL.y, 0.25)) * (0.75 + 2.6 * caus * mix(0.3, 1.0, max(N.y, 0.0)));
+        // A cave under water has no sky above at all, open sea that deep has little; both read 0.
+        float open = mix(0.25, 1.0, smoothstep(0.0, 0.15, lightNow.a));
+        amb = skyFill(N, uLandAmb) * waterDown * open;
+        fill = sunFill(N, uSunL, uLandSun) * waterDown * (0.6 * open);
+    }
+    // Bounce: near the camera the flat fill gives way to the light the sunlit ground around actually
+    // throws back, read a little out from the face so it leans toward where that ground is. Shade
+    // beside a sunlit clearing or at a cave mouth warms up, shade with nothing lit near it goes
+    // darker. Kept to where some sky gets in, the field does not stop at walls.
+    if (uBounceOn > 0.5 && !underWater) {
+        vec3 bp = vWorldRel + N * 1.5;
+        vec3 bq = bp - uVolMin;
+        float edge = min(min(min(bq.x, bq.y), bq.z), min(min(128.0 - bq.x, 128.0 - bq.y), 128.0 - bq.z));
+        float w = smoothstep(0.0, 16.0, edge);
+        if (w > 0.0) {
+            float b = texture(uBounce, (uVolCam + bp.xzy) / 128.0).r;
+            // it comes up off the ground: an overhang's underside gets the most, a wall half, a floor little
+            float facing = 0.16 * (0.65 - 0.35 * N.y);
+            vec3 thrown = uLandSun * vec3(1.0, 0.93, 0.82) * (facing * b) * smoothstep(0.0, 0.3, skyL) *
+                          (1.0 - kCloudMaxBlock * cloud);
+            fill = mix(fill, fill * 0.55 + thrown, w);
+        }
+    }
+    amb += fill;
 
-    // How hard sky access gates the ambient fill. Was a tight 0.10 daytime floor, raised to
-    // 0.4 in response to repeated "hard black" reports, but that turned out to be
-    // misattributed: the actual causes were contact shadows at 3x their sane strength,
-    // cloud shadow's comb-filter aliasing, and SSAO reading through water, all separately
-    // root-caused and fixed since. With those gone, 0.4 is no longer buying real bug
-    // avoidance, only flattening legitimate shadow depth, and stacked with this session's
-    // SSGI increase (both inject fill light into the same shadowed areas), the owner's own
-    // report is exactly what that predicts: "everything is too bright, darks and lights
-    // don't work together." Settled roughly halfway between the two extremes rather than
-    // either raw failure mode.
-    float gateFloor = mix(0.20, 0.24, uDaylight);
-    // Owner report: caves are way too bright, AND visibly change with time of day, when
-    // nothing outside should reach them at all. Root cause: uSkyAmbient itself already
-    // carries the FULL day/night swing (bright blue at noon, near-black at midnight), and
-    // the old formula multiplied gateFloor straight against it, so a fully sky-occluded
-    // surface (skyL=0, a real cave, not a shallow notch) tracked the sky's OWN cycle no
-    // matter what constant gateFloor held, since it is a fraction of an already
-    // time-varying quantity. No floor VALUE could have fixed this; the multiplication
-    // itself was the bug. Damped the floor's own reference brightness specifically for
-    // daylight, night's uSkyAmbient is already dim and needs no damping, so a deep,
-    // fully-enclosed space now stays close to its NIGHT brightness through the day instead
-    // of visibly lighting up at noon. The skyL=1 (full sky exposure) case is untouched: it
-    // still resolves to the true, undamped uSkyAmbient, so open-air lighting does not move.
-    vec3 floorAmbient = uSkyAmbient * mix(1.0, 0.3, uDaylight);
-    // Owner report: underground looked nothing like the surface, with "no true darkness and
-    // light". Every floor in here (the sky floor, the flat term, the backstop below) was there
-    // for shade on the SURFACE, and all of them reached a sealed cave just the same: a cave wall
-    // no lamp could see sat at the same grey as the walls one could, so a light had nothing to
-    // fall off into. They fade out over the last few levels of sky now, which is shade nobody on
-    // the surface ever stands in, and leave a sealed cave dark except where something lights it.
-    float open = smoothstep(0.0, 0.35, skyL);
-    // Sky light reaching into a hole used to fill it linearly with its level, so five blocks
-    // inside a cave mouth still had two thirds of open-air ambient. Light that has turned
-    // corners dies faster than that: same as before from about level 9 up, gone near the end.
-    float skyFill = skyL * smoothstep(0.0, 0.6, skyL);
-    // The flat term used to be an ungated constant, which reads as harmless next to a
-    // daylight ambient of 0.26-0.55 but was 40-64% of the night ambient, a day-neutral
-    // number that was, in practice, a night-only brightener. Faded out with daylight so it
-    // still stops fully-enclosed faces (interior leaf pockets, a deep notch) crushing to
-    // pure black in daylight, without lifting the whole night off the floor.
-    vec3 ambient = mix(floorAmbient * gateFloor * open, uSkyAmbient, skyFill) +
-                   vec3(0.035, 0.04, 0.05) * mix(0.25, 1.0, uDaylight) * open;
-    // The emitter's own colour drives the tint now (M18), so the fixed warm multiplier
-    // that used to supply it would double-tint. Keep a slight warm bias for the ember
-    // feel and let the light itself carry the hue out to its falloff.
-    vec3 torch = vec3(1.12, 1.0, 0.88) * (blockRGB * blockRGB * 2.1);
+    // The mesher bakes 0.68 + 0.32 * ao / 3 times the corner's share of the quad's light. Above 0.6
+    // it is corner AO, below that a falloff into the neighbouring quad.
+    float ao = vShade > 0.6 ? mix(0.55, 1.0, (vShade - 0.6) / 0.4) : mix(mix(0.15, 0.55, smoothLight), 0.55, vShade / 0.6);
+    ao = mix(ao, 1.0, emitMask);
+    vec3 scene = sun * mix(1.0, ao, 0.35) + amb * ao;
 
-    // Per-corner brightness, interpolated across the face. It already carries the old AO
-    // term (mesher bakes 0.68 + 0.32 * ao into it, so concave corners darken exactly as
-    // much as they used to) multiplied by how much of the quad's light this corner
-    // actually sees, that second half is what ramps a merged quad into its neighbour
-    // instead of stepping. A quad with uniform corners is all 7s and shades flat, so open
-    // terrain looks and costs the same as before.
-    // An emitter's own face was only ever LIT by its own light, which made a lamp read as a
-    // brightly lit block rather than a light, and left it hovering around the bloom
-    // threshold, so the glow came and went with the face angle. Emission is added flat:
-    // not scaled by kShade, AO or vShade, because none of those mean anything for a surface
-    // that is producing the light rather than receiving it.
-    //
-    // The hue comes from the albedo, which for a lamp IS its swatch colour (the tiles are
-    // generated from blocks::kLampRGB), so this needs no second copy of that table to drift
-    // out of sync. Layer 4 is glow, 15..39 are the 25 lamp swatches, see texLayer() in
-    // chunk.vert, which owns that mapping.
-    // Leaf subsurface scattering. A leaf is thin and translucent: with the sun behind it,
-    // light comes THROUGH rather than bouncing off, which is why a canopy lit from behind
-    // glows instead of silhouetting flat black. The wrap term is the standard cheap stand-in
-    // for a real transmission lobe, a back-facing lobe around -L, tightened with a power so
-    // it only fires when you are actually looking toward the sun through the leaf.
-    //
-    // Layers 7 (leaves) and 40/41 (the cross-plane tuft and flower) are the thin geometry;
-    // everything else is opaque and gets nothing. Scaled by skyAccess so leaves buried deep
-    // inside a canopy, which no sunlight reaches, do not light up.
+    vec3 torch = vec3(1.12, 1.0, 0.88) * (blockRGB * blockRGB * 2.1) * mix(mix(vShade, ao, smoothLight), 1.0, emitMask);
+    // A lamp in the hand spreads like one placed, from just under the eye. Whatever the eye can see
+    // it can reach, so it needs no shadows, and only the corners darken it (vShade also carries the
+    // placed lights' falloff, which is nothing where none reach).
+    if (uHandLight.r + uHandLight.g + uHandLight.b > 0.0) {
+        // softer than a placed one: it is always a block or two from the nearest wall. Falls off by
+        // its brightest channel and keeps its tint all the way out (main.cpp tones the tint down).
+        float level = max(uHandLight.r, max(uHandLight.g, uHandLight.b));
+        float hand = max(level - length(vWorldRel + vec3(0.0, 0.3, 0.0)), 0.0) / 15.0;
+        torch = max(torch, vec3(1.12, 1.0, 0.88) * (uHandLight / level) * (hand * hand * 1.2) * max(ao, 0.55));
+    }
+    vec3 floorLight = mix(vec3(0.006, 0.0068, 0.0095), vec3(0.03, 0.034, 0.042), smoothstep(0.0, 0.35, skyL));
+
+    // Backlit leaves and grass glow, gold against a low sun.
     vec3 transmit = vec3(0.0);
-    if (uLeafSss > 0.0 && (isCutoutLayer(vLayer) || vDir >= 6u)) {
-        float back = pow(max(dot(-uSunL, normalize(vWorldRel)), 0.0), 3.0);
-        // wrap: some light gets through even side-on, which keeps it from popping in
-        float wrap = max(dot(N, -uSunL), 0.0) * 0.35 + 0.65 * back;
-        transmit = uSunColor * albedo * wrap * back * skyAccess * shadow * uLeafSss;
+    if (uLeafSss > 0.0 && foliage) {
+        float back = pow(max(dot(-uSunL, normalize(vWorldRel)), 0.0), 2.0);
+        float through = max(dot(N, -uSunL), 0.0) * 0.35 + 0.65 * back;
+        transmit = uLandSun * albedo * (1.5 * through * back * gate * shadow * uLeafSss);
     }
 
-    // Wet surfaces (#29). Three things happen to a surface in the rain, and all three are
-    // needed or it just looks darker: it darkens (a water film traps light in the
-    // microsurface), it gets a specular lobe (the film is smooth where the block is not),
-    // and it does neither where the rain cannot reach.
-    //
-    // skyL is that last test, already sitting in the quad: it is the voxel sky access the
-    // sun term uses, so a cave floor, an overhang and the underside of a ledge are dry for
-    // free. That is the whole reason this hooks in here rather than in a screen-space pass,
-    // which would have no idea what is under cover.
-    //
-    // Emitters stay dry-looking: a lamp's own light swamps a specular highlight anyway, and
-    // darkening the albedo of a light source is the #49 mistake again.
+    // Wet: darker albedo and a sheen, only where rain reaches. Two lobes, one alone reads as plastic.
     float wet = uWetness * skyL * skyL * (1.0 - emitMask);
     vec3 wetSpec = vec3(0.0);
     if (wet > 0.001) {
-        albedo *= mix(1.0, 0.62, wet);              // damp, not repainted
-        vec3 V = normalize(-vWorldRel);
-        vec3 H = normalize(uSunL + V);
-        // Two lobes for the same reason the water has two: one narrow highlight on its own
-        // reads as plastic. The broad one is what makes a wet road look wet.
+        albedo *= mix(1.0, 0.7, wet);
+        vec3 H = normalize(uSunL + normalize(-vWorldRel));
         float ndh = max(dot(N, H), 0.0);
-        float spec = pow(ndh, 90.0) * 1.5 + pow(ndh, 12.0) * 0.16;
-        // Shadowed by the cascade, so a wet surface under a tree does not glint.
-        wetSpec = uSunColor * spec * wet * shadow * skyAccess;
+        float gloss = foliage ? 0.0 : pow(ndh, 90.0) * 0.6;
+        wetSpec = uLandSun * ((gloss + pow(ndh, 12.0) * 0.10) * wet * shadow * gate);
     }
 
-    vec3 emission = albedo * uEmissive * emitMask + wetSpec;
-
-    // Light a surface RECEIVES is ambient-occluded. Light it PRODUCES is not: AO answers
-    // "how much ambient reaches this corner", which means nothing for the face that is the
-    // source. That distinction is the whole of #49, an emitter's own torch term is by far
-    // the largest thing in its shading, so AO on it puts a dark band along the bottom of
-    // every lamp sitting on the ground, exactly where the corners are most occluded. It
-    // reads as the block being shadowed at its base while it is lighting everything around
-    // it. kShade stays, so a lamp still reads as a cube rather than a flat sticker.
-    float ownShade = mix(vShade, 1.0, emitMask);
-    // Ambient is gated TWICE, and that is what crushes a shaded terrace face to black.
-    // Once by skyL above (the voxel sky access), and again by vShade, which is AO times
-    // that corner's share of the quad's light, and the light includes sky. So sky access
-    // is applied on top of itself, squared, on exactly the surfaces that have least of it:
-    // the inside faces of a notch, the risers of a terrace, anything under an overhang.
-    //
-    // AO genuinely does belong on ambient; the corner's light share does not, because
-    // skyL already answered that question. They are baked into one 3-bit value at mesh
-    // time and cannot be separated here, so the corner term is softened for the ambient
-    // path rather than removed: at worst it takes 45% instead of everything. `direct`
-    // keeps the full term, a face the sun does not reach should still go dark.
-    float vShadeF = mix(vShade, 1.0, 0.7 * farK);
-    float ambShade = mix(0.75, 1.0, vShadeF);
-    // direct's OWN occlusion question, is the sun blocked here, is already answered by
-    // `shadow` above, from the actual cascade, not a 4-voxel corner guess. Multiplying by
-    // the full vShade on top of that double-asks the same question with a much coarser
-    // answer: a terrace made of small steps has a real (correct) AO dip at every riser for
-    // AMBIENT purposes, but none of those steps actually block the sun, which comes from
-    // one direction high in the sky and does not care about a neighbour one block over. On
-    // a long, gently terraced slope that showed up as a fine, regular hatch of dark/light
-    // patches across ground the shadow map says is fully lit, confirmed by rendering with
-    // shadows forced off entirely and finding the same pattern still there, unrelated to any
-    // shadow-map behaviour. Softened the same shape as ambShade, just less aggressively,
-    // since `shadow` is already doing the real work here and this is only damping residual
-    // corner noise, not the thing that makes a genuine notch look recessed.
-    float directShade = mix(0.7, 1.0, vShadeF);
-    vec3 shading = direct * directShade + (ambient + cloudFill) * ambShade + torch * ownShade;
-    // Hard backstop, not another adjustment to one contributing term: owner report, several
-    // rounds running, is that ANY hard black reads as broken, regardless of which path
-    // produced it (AO, the sky-access gate, a genuinely enclosed notch with no sun and
-    // almost no sky). Rather than keep chasing individual cases, nothing lit at all is
-    // allowed to render darker than this, full stop, dim and blue-tinted like the existing
-    // flat ambient term above, so it reads as "in shadow" rather than as a flat grey floor.
-    // Not underground, though: there the floor is a trace you can just make out rock by.
-    shading = max(shading, mix(vec3(0.004, 0.0045, 0.006), vec3(0.05, 0.055, 0.065), open));
-    outColor = vec4(albedo * mix(kShade[vDir], 0.88, farK) * shading + emission + transmit, 1.0);
+    float face = foliage ? mix(kFace[vDir], 1.0, 0.5) : kFace[vDir];
+    // A distant riser is a pixel or less, and treads and risers alternating there is not shape, it is
+    // contour lines over every hill. They ease toward the tread's light.
+    float farOff = smoothstep(180.0, 520.0, length(vWorldRel));
+    if (farOff > 0.0 && vDir < 6u && N.y == 0.0)
+        scene = mix(scene, uLandSun * uSunL.y * gate * (1.0 - kCloudMaxBlock * cloud) + amb, farOff * 0.7);
+    face = mix(face, 1.0, farOff * 0.6);
+    vec3 emission = albedo * (uEmissive * 1.6 * emitMask);
+    outColor = vec4(albedo * face * addLight(scene, torch, floorLight) + emission + wetSpec + transmit + washSheen * skyLevel(skyL), 1.0);
 }

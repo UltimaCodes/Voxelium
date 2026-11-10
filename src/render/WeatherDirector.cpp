@@ -32,7 +32,7 @@ void WeatherDirector::reset() {
 }
 
 WeatherDirector::Out WeatherDirector::update(float dt, float camY, float desert, float coast,
-                                             float timeOfDay) {
+                                             float timeOfDay, float cold) {
     dt = std::min(dt, 0.25f);
     m_timer -= dt;
     float cloudTarget = 0.0f;
@@ -73,8 +73,8 @@ WeatherDirector::Out WeatherDirector::update(float dt, float camY, float desert,
 
     m_now.precip += (precipTarget - m_now.precip) * std::min(1.0f, kPrecipRate * dt * 4.0f);
     m_now.cloudBias += (cloudTarget - m_now.cloudBias) * std::min(1.0f, kCloudRate * dt * 4.0f);
-    // cold enough up a mountain to snow
-    m_now.snow = smoothstep(150.0f, 190.0f, camY);
+    // cold enough up a mountain or in cold country to snow
+    m_now.snow = std::max(smoothstep(150.0f, 190.0f, camY), smoothstep(0.3f, 0.7f, cold));
     if (m_now.precip < 0.002f)
         m_now.precip = 0.0f;
     // sunrise is at 0.25; the mist is up before it and burns off over the following hour

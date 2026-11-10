@@ -95,14 +95,14 @@ bool menuItem(const char* label, ImVec2 pos, bool active, ImFont* font, float si
 
 const char* const kTips[] = {
     "Hold the left mouse button to break a block. The crack shows how far along you are.",
-    "The middle mouse button places the selected block; F4 opens the hotbar.",
+    "Right click places the selected block. Press E for every block in the game.",
     "F5 switches between walking and flying.",
     "Sand and snow puff up when you walk on them, and more when you land.",
     "Esc opens settings, where you can save this world or start another.",
     "It rains and clears on its own. Turn auto weather off in settings to set the sky by hand.",
     "F3 shows diagnostics: frame times, chunks, memory.",
-    "Middle-click a lamp to pick its colour.",
-    "Look past the loaded chunks: the far horizon shows the terrain out to about five kilometres.",
+    "Middle-click a block to put it in your hand. Shift and middle-click a lamp to recolour it.",
+    "Look past the loaded chunks: the far horizon shows the terrain out to about seven kilometres.",
 };
 
 } // namespace

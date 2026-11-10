@@ -31,10 +31,9 @@ constexpr ma_uint32 kChannels = SoundBank::kChannels;
 // Monotonic for the process lifetime; see the header on why it is never reset.
 std::atomic<std::uint64_t> g_decodes{0};
 
-// miniaudio decodes these itself. ogg would need stb_vorbis wired in, so it is deliberately
-// not accepted rather than silently failing at load.
+// miniaudio decodes these itself; ogg goes through the stb_vorbis compiled into AudioEngine.cpp.
 bool decodable(const std::filesystem::path& ext) {
-    return ext == ".wav" || ext == ".WAV" || ext == ".mp3" || ext == ".MP3" ||
+    return ext == ".wav" || ext == ".WAV" || ext == ".mp3" || ext == ".MP3" || ext == ".ogg" ||
            ext == ".flac" || ext == ".FLAC";
 }
 
@@ -96,6 +95,9 @@ void SoundBank::load(const std::filesystem::path& dir, JobSystem* jobs) {
         }
         const std::string base = baseName(entry.path().stem().string());
         if (base.empty())
+            continue;
+        // beds and music are long; AudioEngine streams them from disk instead
+        if (base.rfind("amb_", 0) == 0 || base.rfind("music_", 0) == 0 || base.rfind("menu_", 0) == 0)
             continue;
         auto it = std::find_if(m_clips.begin(), m_clips.end(),
                                [&](const Clip& c) { return c.name == base; });

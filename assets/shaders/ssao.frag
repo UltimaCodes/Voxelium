@@ -41,7 +41,7 @@ float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.545
 
 void main() {
     vec3 P = viewPos(vUv);
-    if (P.z < -400.0) { // sky
+    if (P.z < -96.0) { // contact shading only: past this apply_ao has faded it out
         outAoDepth = vec2(1.0, P.z);
         return;
     }

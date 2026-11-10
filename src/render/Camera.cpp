@@ -89,7 +89,7 @@ glm::mat4 FlyCamera::viewAtOrigin() const {
 }
 
 glm::mat4 FlyCamera::projReversedZ(float aspect) const {
-    const float f = 1.0f / std::tan(glm::radians(fovYDeg) * 0.5f);
+    const float f = 1.0f / std::tan(glm::radians(fovYDeg + fovKick) * 0.5f);
     // Maps view z = -near to depth 1 and z = -inf to depth 0 (glm is column-major:
     // m[col][row]). Derivation: clip.z = near, clip.w = -view.z.
     glm::mat4 p(0.0f);

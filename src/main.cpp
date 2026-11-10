@@ -33,6 +33,7 @@
 #include "render/ShadowMap.hpp"
 #include "render/WaterWaves.hpp"
 #include "ui/DebugHud.hpp"
+#include "world/BlockInfo.hpp"
 #include "world/Chunk.hpp"
 #include "world/ChunkManager.hpp"
 #include "world/Player.hpp"
@@ -177,12 +178,14 @@ int main(int, char** argv) {
         return 1;
     if (!wildlife.init(shaders))
         return 1;
+    // Lamp light in the air, and the sunlight the ground throws back.
+    vx::LightVolume lightVolume;
+    if (!lightVolume.initBounce(shaders))
+        VX_ERROR("bounce light shaders did not build; the shade goes without it");
     vx::shutdownShaderCache(); // every program is built by here
     const GLuint blockTex = vx::createBlockTextureArray(assets / "textures");
     RenderContext rc{renderer,   shadowMap,    postfx,   overlay,  &particles,
                      &weather,   &wildlife,    &farTerrain, drawProgram, waterProgram, blockTex};
-    // Lamp light in the air.
-    vx::LightVolume lightVolume;
     rc.lightVolume = &lightVolume;
 
     // A quality change is the one setting that is not free: the sample counts are baked into the
@@ -227,6 +230,10 @@ int main(int, char** argv) {
     auto jobs = std::make_unique<vx::JobSystem>();
     VX_INFO("job system: %d workers", jobs->workerCount());
     vx::MenuBackdrop menuBackdrop;
+    vx::AudioEngine audio;
+    // Decoded up front on the workers. Every clip is held as PCM for the process lifetime,
+    // which is the point: a play used to open the file and decode it whole, on this thread.
+    audio.init(assets.parent_path() / "sounds", jobs.get());
 
     // Every launch is a new world unless the title screen below loads one. The live one is
     // scratch either way, keeping it means saving it under a name from the ESC menu, which
@@ -272,6 +279,23 @@ int main(int, char** argv) {
             lastFrame = nowT;
             hud.beginFrame();
             hud.titleScreen(title);
+            audio.setMasterVolume(fx.volume);
+            audio.setBusVolume(vx::AudioEngine::Bus::Ui, fx.volUi);
+            audio.setBusVolume(vx::AudioEngine::Bus::Ambient, fx.volAmbient);
+            audio.setBusVolume(vx::AudioEngine::Bus::Music, fx.volMusic);
+            // The theme, with the sea the menu looks out on faintly under it.
+            audio.setBed("menu_theme", 0.9f, vx::AudioEngine::Bus::Music);
+            audio.setBed("amb_surf", 0.22f);
+            audio.setBed("amb_wind", 0.10f);
+            audio.endUnsetBeds();
+            {
+                const auto ui = hud.uiSounds();
+                if (ui.hover)
+                    audio.play("ui_hover", 0.5f);
+                if (ui.click)
+                    audio.play("ui_click", 0.8f);
+            }
+            audio.update(dtT);
             if (title.page == 3) {
                 bool open = true, unusedQuit = false;
                 const int qualityBefore = fx.quality;
@@ -318,8 +342,9 @@ int main(int, char** argv) {
                     pendingSeed = wantSeed;
                     pendingSince = nowT;
                 }
-                if (!previewGen || nowT - pendingSince > 0.35) {
-                    farTerrain.reset(); // waits for a build that is still reading the old one
+                // Only once nothing is reading the old one: waiting for a build of it here froze the menu.
+                if (!previewGen || (nowT - pendingSince > 0.35 && !farTerrain.busy() && !menuBackdrop.busy())) {
+                    farTerrain.reset();
                     previewGen = std::make_unique<vx::TerrainGenerator>(wantSeed, wantGen);
                     previewSeed = wantSeed;
                 }
@@ -341,10 +366,13 @@ int main(int, char** argv) {
             hud.render();
             window->swapBuffers();
             if (title.quitRequested) {
+                menuBackdrop.quiesce();
                 farTerrain.quiesce();
                 hud.shutdown();
                 return 0;
             }
+            if (title.newWorldRequested || title.loadRequested)
+                audio.play("ui_start", 0.8f);
             if (title.newWorldRequested) {
                 if (settingsPage)
                     vx::Settings::save(settingsFile, fx, vsync, caveCull, savedRadius, savedFov);
@@ -360,8 +388,12 @@ int main(int, char** argv) {
         }
         // the preview generator is about to go; a build still reading it must finish first. The
         // mesh it made is kept: the world about to start has the same seed, so it is the same
-        // terrain and the loading screen and the game carry on from it.
+        // terrain and the loading screen and the game carry on from it, unless the preview had not
+        // caught up with a seed rolled a moment before.
+        menuBackdrop.quiesce();
         farTerrain.quiesce();
+        if (!previewGen || previewSeed != worldSeed || previewGen->version() != worldGen)
+            farTerrain.reset();
         previewGen.reset();
         if (window->shouldClose())
             return 0;
@@ -474,10 +506,39 @@ int main(int, char** argv) {
                 hud.beginFrame();
                 hud.loadingScreen(p, title, phase);
                 glViewport(0, 0, fbw, fbh);
-                menuBackdrop.draw(rc, *jobs, world->generator(), fbw, fbh, glfwGetTime());
+                menuBackdrop.draw(rc, *jobs, world->generator(), fbw, fbh, glfwGetTime(), &fx);
                 hud.render();
                 window->swapBuffers();
             }
+        }
+        // The spawn column can grow a tree, and the world then opened inside a trunk or against
+        // one. The chunks are here now: move to the nearest column with open air about the head.
+        {
+            const glm::ivec3 at(glm::floor(camera.position));
+            const auto clear = [&](int x, int eye, int z) {
+                for (int dz = -1; dz <= 1; ++dz)
+                    for (int dx = -1; dx <= 1; ++dx)
+                        for (int y = eye - 2; y <= eye + 1; ++y) {
+                            const vx::BlockId b = world->blockAtWorld({x + dx, y, z + dz});
+                            if (b != vx::blocks::Air && !vx::blocks::isCross(b))
+                                return false;
+                        }
+                return true;
+            };
+            bool placed = false;
+            for (int r = 0; r <= 8 && !placed; ++r)
+                for (int dz = -r; dz <= r && !placed; ++dz)
+                    for (int dx = -r; dx <= r && !placed; ++dx) {
+                        if (std::max(std::abs(dx), std::abs(dz)) != r)
+                            continue;
+                        const int x = at.x + dx, z = at.z + dz;
+                        const int eye = std::max(world->generator().surfaceHeight(x, z), vx::kSeaLevelForSpawn) + 3;
+                        if (clear(x, eye, z)) {
+                            camera.position = {double(x) + 0.5, double(eye), double(z) + 0.5};
+                            player.position = camera.position - glm::dvec3(0.0, vx::Player::kEyeHeight, 0.0);
+                            placed = true;
+                        }
+                    }
         }
         world->collectDrawInfo(drawInfo, waterInfo);
         renderer.updateChunkMeta(drawInfo);
@@ -493,7 +554,7 @@ int main(int, char** argv) {
                 hud.beginFrame();
                 hud.loadingScreen(1.0f, title, "ready");
                 glViewport(0, 0, fbw, fbh);
-                menuBackdrop.draw(rc, *jobs, world->generator(), fbw, fbh, glfwGetTime());
+                menuBackdrop.draw(rc, *jobs, world->generator(), fbw, fbh, glfwGetTime(), &fx);
                 hud.render();
                 window->swapBuffers();
             }
@@ -513,14 +574,12 @@ int main(int, char** argv) {
     bool lmbHeld = false;            // a punch lands on the press, not every frame it is held
     glm::dvec3 flyPrev{0.0};          // last frame's camera in fly mode, for its velocity
     bool walkMode = false;
-    // sounds/ next to the assets dir; nothing ships in it, the user fills it themselves
-    vx::AudioEngine audio;
-    // Decoded up front on the workers. Every clip is held as PCM for the process lifetime,
-    // which is the point: a play used to open the file and decode it whole, on this thread.
-    audio.init(assets.parent_path() / "sounds", jobs.get());
     vx::PlayerSounds playerSounds;
     vx::AmbienceState ambience;
     vx::StormSounds storm;
+    vx::AmbientCalls calls;
+    vx::MusicDirector music;
+    glm::dvec3 earPrev{0.0};
     storm.selfSchedule = false; // thunder now follows the lightning, after its own delay
     // How blocked the path from a sound to the ear is, 0 clear .. 1 solid. One DDA per sound
     // EVENT, which is far cheaper than it sounds, the crosshair already runs this same
@@ -573,7 +632,9 @@ int main(int, char** argv) {
     bool f4Held = false;
     bool f6Held = false;
     bool takeScreenshot = false;
-    bool hotbarOpen = false;
+    bool hotbarOpen = true;
+    bool pickerOpen = false;
+    bool eHeld = false;
     bool escHeld = false;
     bool settingsOpen = false;
     vx::DebugHud::WorldUi worldUi;
@@ -588,16 +649,16 @@ int main(int, char** argv) {
     float breakProgress = 0.0f;
     bool breaking = false;
     double digClock = 0.0; // paces the chipping sound while a break is held
-    constexpr int kHotbar[] = {vx::blocks::Stone,  vx::blocks::Dirt,   vx::blocks::Grass,
-                               vx::blocks::Sand,   vx::blocks::Snow,   vx::blocks::Wood,
-                               vx::blocks::Planks, vx::blocks::Bricks, vx::blocks::Leaves,
-                               vx::blocks::Gravel, vx::blocks::Glow,   vx::blocks::Water,
-                               // one Lamp entry; the hue comes from the settings colour and
-                               // is resolved at placement time, so the bar stays a bar
-                               vx::blocks::LampFirst};
-    constexpr int kHotbarCount = int(sizeof(kHotbar) / sizeof(kHotbar[0]));
+    constexpr int kHotbarCount = 9;
     int hotbarSel = 0;
-    int placeBlock = kHotbar[hotbarSel];
+    int placeBlock = fx.hotbar[hotbarSel];
+    const GLuint iconAtlas = vx::createIconAtlas(blockTex);
+    bool rmbHeld = false;
+    // the first-person hand
+    float bobPhase = 0.0f, bobAmount = 0.0f;
+    float swing = 1.0f;  // 0..1 through an arm swing, 1 at rest
+    float equip = 1.0f;  // 0 just switched, 1 held up
+    int heldPrev = -1;
     std::uint64_t allocsPrevFrame = vx::heapAllocCount();
 
     while (!window->shouldClose()) {
@@ -612,6 +673,7 @@ int main(int, char** argv) {
         audio.setBusVolume(vx::AudioEngine::Bus::World, fx.volWorld);
         audio.setBusVolume(vx::AudioEngine::Bus::Ui, fx.volUi);
         audio.setBusVolume(vx::AudioEngine::Bus::Ambient, fx.volAmbient);
+        audio.setBusVolume(vx::AudioEngine::Bus::Music, fx.volMusic);
         const bool esc = window->keyDown(GLFW_KEY_ESCAPE);
         if (esc && !escHeld) {
             settingsOpen = !settingsOpen; // ESC pauses into the settings menu, not quit
@@ -649,7 +711,15 @@ int main(int, char** argv) {
         if (f4 && !f4Held)
             hotbarOpen = !hotbarOpen;
         f4Held = f4;
-        if (hotbarOpen && !settingsOpen) {
+        const bool eKey = window->keyDown(GLFW_KEY_E);
+        if (eKey && !eHeld && !settingsOpen && !lampPickerOpen && !hud.typing())
+            pickerOpen = !pickerOpen;
+        eHeld = eKey;
+        if (pickerOpen && esc)
+            settingsOpen = false; // escape closes the picker, not into the pause menu
+        if (pickerOpen && esc)
+            pickerOpen = false;
+        if (hotbarOpen && !settingsOpen && !pickerOpen) {
             for (int k = 0; k < kHotbarCount; ++k)
                 if (window->keyDown(GLFW_KEY_1 + k))
                     hotbarSel = k;
@@ -659,7 +729,7 @@ int main(int, char** argv) {
             if (sc != 0.0)
                 hotbarSel = (hotbarSel - (sc > 0.0 ? 1 : -1) + kHotbarCount) % kHotbarCount;
         }
-        placeBlock = kHotbar[hotbarSel];
+        placeBlock = fx.hotbar[hotbarSel];
 
         const double now = glfwGetTime();
         const float frameMs = float((now - prevTime) * 1000.0);
@@ -675,14 +745,14 @@ int main(int, char** argv) {
         // One authority on who owns the mouse: the window is focused and no menu is up.
         // Menus are the ONLY thing that hands the cursor back, alt-tabbing counts because
         // focus is gone. Everything below reads this rather than testing buttons itself.
-        const bool menuOpen = settingsOpen || lampPickerOpen;
+        const bool menuOpen = settingsOpen || lampPickerOpen || pickerOpen;
         const bool mouseOurs = window->focused() && !menuOpen && !hud.wantsMouse();
         if (mouseOurs != cursorCaptured) {
             cursorCaptured = mouseOurs;
             window->setCursorCaptured(mouseOurs);
         }
 
-        if (settingsOpen || lampPickerOpen) {
+        if (settingsOpen || lampPickerOpen || pickerOpen) {
             // paused in a menu: freeze look/move/edit, keep streaming + drawing
         } else if (walkMode) {
             if (mouseOurs)
@@ -696,6 +766,7 @@ int main(int, char** argv) {
                 if (window->keyDown(GLFW_KEY_D)) in.strafe += 1.0f;
                 if (window->keyDown(GLFW_KEY_A)) in.strafe -= 1.0f;
                 in.jump = window->keyDown(GLFW_KEY_SPACE);
+                in.sprint = window->keyDown(GLFW_KEY_LEFT_CONTROL);
                 const glm::dvec3 before = player.position;
                 player.step(*world, in);
                 // The animals are solid: shoved aside, and a turtle pushes back a little.
@@ -726,8 +797,25 @@ int main(int, char** argv) {
                 }
             }
             camera.position = player.eye();
+            // the head bobs with the stride, and a sprint widens the view a little
+            {
+                const float hs = float(std::sqrt(player.velocity.x * player.velocity.x + player.velocity.z * player.velocity.z));
+                const float amt = player.onGround && !player.inWater ? std::min(hs / 4.4f, 1.6f) : 0.0f;
+                bobAmount += (amt - bobAmount) * std::min(1.0f, float(dt) * 8.0f);
+                bobPhase += float(dt) * hs * 1.9f;
+                const glm::vec3 right = glm::normalize(glm::cross(camera.forward(), glm::vec3(0.0f, 1.0f, 0.0f)));
+                camera.position += glm::dvec3(right * (std::sin(bobPhase) * 0.035f * bobAmount)) +
+                                   glm::dvec3(0.0, (std::abs(std::cos(bobPhase)) * 0.055 - 0.03) * double(bobAmount), 0.0);
+                const float want = hs > 5.2f ? 7.0f : 0.0f;
+                camera.fovKick += (want - camera.fovKick) * std::min(1.0f, float(dt) * 6.0f);
+            }
         } else {
             camera.update(*window, dt, hud.wantsMouse(), hud.wantsKeyboard(), mouseOurs);
+            {
+                const float want = window->keyDown(GLFW_KEY_LEFT_SHIFT) && mouseOurs ? 9.0f : 0.0f;
+                camera.fovKick += (want - camera.fovKick) * std::min(1.0f, float(dt) * 5.0f);
+                bobAmount += (0.0f - bobAmount) * std::min(1.0f, float(dt) * 8.0f);
+            }
             // Flying through them still scatters them; nothing is shoved, a fly camera has no body.
             const glm::vec3 flyVel = dt > 0.0f ? glm::vec3(camera.position - flyPrev) / dt : glm::vec3(0.0f);
             wildlife.interact({camera.position - glm::dvec3(0.0, vx::Player::kEyeHeight, 0.0),
@@ -736,9 +824,10 @@ int main(int, char** argv) {
         }
         flyPrev = camera.position;
 
-        if (!settingsOpen && !lampPickerOpen && camera.flying()) {
+        if (!menuOpen && camera.flying()) {
             const bool lmb = window->mouseDown(GLFW_MOUSE_BUTTON_LEFT);
             const bool mmb = window->mouseDown(GLFW_MOUSE_BUTTON_MIDDLE);
+            const bool rmb = window->mouseDown(GLFW_MOUSE_BUTTON_RIGHT);
             const auto hit = vx::raycastVoxels(
                 camera.position, camera.forward(), 6.0, [&](const glm::ivec3& p) {
                     const vx::BlockId b = world->blockAtWorld(p);
@@ -802,27 +891,52 @@ int main(int, char** argv) {
                 digClock = 1.0;
             }
 
+            // Middle click picks the block you are looking at into the slot; with shift held on a
+            // lamp it opens the colour picker for that lamp instead.
             if (mmb && !mmbHeld && hit.hit) {
-                const glm::dvec3 at(hit.voxel);
                 const vx::BlockId aimed = world->blockAtWorld(hit.voxel);
-                if (vx::blocks::isLamp(aimed)) {
-                    // Aiming at a lamp means you want to recolour that lamp, not stack
-                    // another onto its face. The repaint happens when a swatch is chosen.
+                const bool shift = window->keyDown(GLFW_KEY_LEFT_SHIFT) || window->keyDown(GLFW_KEY_RIGHT_SHIFT);
+                if (shift && vx::blocks::isLamp(aimed)) {
                     lampPickerOpen = true;
                     lampPickerTarget = hit.voxel;
-                } else {
-                    const int put = placeBlock == vx::blocks::LampFirst
-                                        ? int(vx::blocks::LampFirst + fx.lampSwatch)
-                                        : placeBlock;
-                    world->setBlock(renderer, *light, hit.voxel + hit.normal,
-                                    vx::BlockId(put));
-                    const float occ = occlusionTo(at);
-                    // Same chain, pitched UP: setting a block down is a lighter sound than
-                    // breaking one.
-                    audioHit(audio, "place", put, at, occ, 1.25f, 0.85f);
+                } else if (vx::blocks::inPicker(aimed)) {
+                    const vx::BlockId z2x = aimed == vx::blocks::WoodZ          ? vx::blocks::WoodX
+                                            : aimed == vx::blocks::SpruceWoodZ ? vx::blocks::SpruceWoodX
+                                            : aimed == vx::blocks::BirchWoodZ  ? vx::blocks::BirchWoodX
+                                                                                : aimed;
+                    int slot = -1;
+                    for (int k = 0; k < kHotbarCount; ++k)
+                        if (fx.hotbar[k] == int(z2x))
+                            slot = k;
+                    if (slot >= 0)
+                        hotbarSel = slot;
+                    else
+                        fx.hotbar[hotbarSel] = int(z2x);
+                    placeBlock = fx.hotbar[hotbarSel];
                 }
             }
             mmbHeld = mmb;
+            if (rmb && !rmbHeld && hit.hit) {
+                const glm::dvec3 at(hit.voxel);
+                const vx::BlockId aimed = world->blockAtWorld(hit.voxel);
+                // a plant in the way is replaced, the way you would plant over a weed
+                const glm::ivec3 cell = vx::blocks::isCross(aimed) && !vx::blocks::isWaterlogged(aimed)
+                                            ? hit.voxel
+                                            : hit.voxel + hit.normal;
+                int put = placeBlock;
+                // a lying log turns to lie the way you are looking
+                const glm::vec3 f = camera.forward();
+                if (std::abs(f.z) > std::abs(f.x) &&
+                    (put == vx::blocks::WoodX || put == vx::blocks::SpruceWoodX || put == vx::blocks::BirchWoodX))
+                    put += 1;
+                world->setBlock(renderer, *light, cell, vx::BlockId(put));
+                const float occ = occlusionTo(at);
+                // Same chain, pitched UP: setting a block down is a lighter sound than
+                // breaking one.
+                audioHit(audio, "place", put, at, occ, 1.25f, 0.85f);
+                swing = 0.0f;
+            }
+            rmbHeld = rmb;
         }
 
         // eye submerged -> underwater fog/tint in the composite pass, and the same flag
@@ -855,7 +969,23 @@ int main(int, char** argv) {
         // rather than a cover raycast every frame.
         {
             const glm::ivec3 ear(glm::floor(camera.position));
-            ambience.skyAccess = float(world->skyLightAtWorld(ear)) / 15.0f;
+            ambience.skyAccess = world->skyAccessAt(ear);
+            // Slower going into the dark than coming back out, the way an eye does it. A lamp by you
+            // or in your hand is light to adjust to as well, or it would glare.
+            const float lamp = std::max(world->blockLightAt(ear),
+                                        std::max(fx.handLight.r, std::max(fx.handLight.g, fx.handLight.b)) / 15.0f);
+            const float eyeTarget = glm::mix(2.4f, 1.0f, std::max(glm::smoothstep(0.1f, 0.7f, ambience.skyAccess),
+                                                                  glm::smoothstep(0.15f, 0.65f, lamp)));
+            fx.eyeGain += (eyeTarget - fx.eyeGain) *
+                          (1.0f - std::exp(-float(dt) / (eyeTarget > fx.eyeGain ? 1.8f : 0.6f)));
+            // Sky light dies with depth in water, but the light above it is what counts for shafts:
+            // go by the first cell over the water the eye is in, so the sea has them at any depth
+            // and a lake in a cave has none.
+            glm::ivec3 over = ear;
+            if (eyeUnderwater)
+                for (int k = 0; k < 128 && vx::blocks::isWater(world->blockAtWorld(over)); ++k)
+                    ++over.y;
+            fx.eyeSky += (world->skyAccessAt(over) - fx.eyeSky) * (1.0f - std::exp(-float(dt) / 0.8f));
             ambience.depth =
                 float(world->generator().surfaceHeight(ear.x, ear.z) - ear.y);
             // Same function the frame shades from, so dusk sounds like dusk looks rather
@@ -868,7 +998,7 @@ int main(int, char** argv) {
             if (fx.autoWeather) {
                 const auto w = weatherDirector.update(float(dt), float(camera.position.y),
                                                       ambience.desert, ambience.coast,
-                                                      fx.timeOfDay);
+                                                      fx.timeOfDay, ambience.snow);
                 fx.precip = w.precip;
                 fx.snow = w.snow;
                 stormLevel = w.storm;
@@ -914,6 +1044,9 @@ int main(int, char** argv) {
                 fx.biomeTint[1] = airTint.y;
                 fx.biomeTint[2] = airTint.z;
                 fx.biomeHaze = airHaze;
+                // northern lights over the cold biomes, eased in as you travel into them
+                const float wantAurora = std::clamp(ambience.snow * 1.4f, 0.0f, 1.0f) * (1.0f - fx.precip);
+                fx.aurora += (wantAurora - fx.aurora) * std::min(1.0f, float(dt) * 0.2f);
             }
             ambience.underwater = eyeUnderwater;
             // A coarse count of the water around the ear, so standing by a lake is audibly
@@ -936,13 +1069,34 @@ int main(int, char** argv) {
                 const int offs[5][2] = {{0, 0}, {kSpread, 0}, {-kSpread, 0}, {0, kSpread},
                                         {0, -kSpread}};
                 float coast = 0.0f, desert = 0.0f;
+                float w[int(vx::Biome::Count)] = {};
+                const auto& gen = world->generator();
                 for (const auto& o : offs) {
-                    const auto b = world->generator().biomeAt(ear.x + o[0], ear.z + o[1]);
+                    const auto b = gen.biomeAt(ear.x + o[0], ear.z + o[1]);
                     coast += std::max(b.ocean, b.beach);
                     desert += b.desert;
+                    if (gen.version() >= 3)
+                        w[int(gen.biomeOf(ear.x + o[0], ear.z + o[1]))] += 0.2f;
                 }
                 ambience.coast = coast / 5.0f;
                 ambience.desert = desert / 5.0f;
+                using B = vx::Biome;
+                if (gen.version() >= 3) {
+                    ambience.desert = std::max(ambience.desert, w[int(B::Desert)] + w[int(B::RedDesert)] + w[int(B::Badlands)]);
+                    ambience.open = w[int(B::Plains)] + w[int(B::Meadow)] + w[int(B::Savanna)] + 0.5f * w[int(B::Beach)];
+                    ambience.conifer = w[int(B::Taiga)] + 0.6f * w[int(B::SnowyTaiga)];
+                    ambience.jungle = w[int(B::Jungle)];
+                    ambience.swamp = w[int(B::Swamp)];
+                    ambience.snow = w[int(B::Tundra)] + w[int(B::SnowyTaiga)] + w[int(B::Snowcap)];
+                    ambience.alpine = w[int(B::Alpine)] + w[int(B::Snowcap)];
+                    ambience.forest = w[int(B::Forest)] + w[int(B::BirchForest)];
+                } else {
+                    ambience.open = 1.0f - ambience.desert - ambience.coast;
+                }
+                const glm::dvec3 earNow = camera.position;
+                const float moved = dt > 0.0f ? float(glm::length(earNow - earPrev) / double(dt)) : 0.0f;
+                earPrev = earNow;
+                ambience.speed += (std::min(moved, 120.0f) - ambience.speed) * std::min(1.0f, float(dt) * 3.0f);
                 int leaves = 0, reef = 0;
                 for (int dy = -3; dy <= 9; dy += 6)
                     for (int dz = -8; dz <= 8; dz += 8)
@@ -955,10 +1109,15 @@ int main(int, char** argv) {
                                         ? 1
                                         : 0;
                         }
-                ambience.forest = std::min(float(leaves) / 5.0f, 1.0f);
+                ambience.canopy = std::min(float(leaves) / 5.0f, 1.0f);
+                if (world->generator().version() < 3)
+                    ambience.forest = ambience.canopy;
                 ambience.reef = std::min(float(reef) / 4.0f, 1.0f);
             }
             vx::applyAmbience(audio, vx::mixAmbience(ambience), fx.volAmbient);
+            calls.update(audio, ambience, camera.position, float(dt));
+            music.update(audio, float(dt), ambience.daylight, ambience.depth > 12.0f && ambience.skyAccess < 0.3f,
+                         eyeUnderwater);
             storm.update(audio, fx.precip, ambience.skyAccess, float(dt));
         }
 
@@ -1036,8 +1195,14 @@ int main(int, char** argv) {
             we.desert = ambience.desert;
             we.reef = ambience.reef;
             we.nearWater = ambience.nearWater;
+            we.swamp = ambience.swamp;
+            we.jungle = ambience.jungle;
+            we.snow = ambience.snow;
             we.underwater = eyeUnderwater;
             wildlife.update(float(dt), *world, camera.position, we);
+            vx::Wildlife::Call heard[16];
+            for (int k = 0, n = wildlife.takeCalls(heard, 16); k < n; ++k)
+                audio.playCall(heard[k].clip, heard[k].pos, 0.8f, 0.9f + 0.2f * float(k % 5) / 4.0f);
         }
 
         if (world->consumeDirty()) {
@@ -1081,13 +1246,38 @@ int main(int, char** argv) {
             const int crack =
                 breaking ? vx::crackLayer(int(breakProgress * float(vx::crackStages())))
                          : -1;
-            if (rc.lightVolume && fx.volumetric)
+            if (rc.lightVolume)
                 rc.lightVolume->update(*world, camera.position);
+            // a lamp in the hand lights the way, coming up as it is drawn
+            // Lit half in its own colour and half in white: a green lamp in the hand used to turn
+            // everything about you neon green.
+            const vx::BlockId held = vx::BlockId(placeBlock);
+            const glm::vec3 emit(float(vx::blocks::emitR(held)), float(vx::blocks::emitG(held)),
+                                 float(vx::blocks::emitB(held)));
+            const float emitLevel = std::max(emit.r, std::max(emit.g, emit.b));
+            fx.handLight = settingsOpen || emitLevel <= 0.0f
+                               ? glm::vec3(0.0f)
+                               : glm::mix(emit, glm::vec3(emitLevel), 0.5f) * equip;
             renderFrame(rc, camera, fx, caveCull, fbW, fbH, 0, float(now), &timers, hasSel,
                         selMin, eyeUnderwater, &taaState, fogEnd, crack, blockTex,
                         fx.farTerrain ? vx::FarTerrain::kFogEnd : 0.0f);
-            if (hotbarOpen)
-                overlay.drawHotbar(fbW, fbH, kHotbar, kHotbarCount, hotbarSel, blockTex);
+            if (!settingsOpen) {
+                if (placeBlock != heldPrev) {
+                    heldPrev = placeBlock;
+                    equip = 0.0f;
+                }
+                equip = std::min(1.0f, equip + float(dt) * 4.5f);
+                if (breaking && swing >= 1.0f)
+                    swing = 0.0f;
+                swing = std::min(1.0f, swing + float(dt) * 3.6f);
+                const float lightHere = vx::blocks::emissive(held)
+                                            ? 1.0f
+                                            : 0.18f + 0.82f * std::clamp(ambience.daylight * fx.eyeSky, 0.0f, 1.0f);
+                const glm::vec2 bob(std::sin(bobPhase) * 0.018f * bobAmount, -std::abs(std::cos(bobPhase)) * 0.022f * bobAmount);
+                overlay.drawHeld(fbW, fbH, placeBlock, blockTex, swing, equip, bob, glm::vec3(lightHere));
+            }
+            if (hotbarOpen && camera.flying())
+                overlay.drawHotbar(fbW, fbH, fx.hotbar, kHotbarCount, hotbarSel, blockTex);
         }
 
         world->finishLightSlice(*light); // before anything below can change the world
@@ -1123,12 +1313,20 @@ int main(int, char** argv) {
         const bool vsyncBefore = vsync;
         bool quitRequested = false;
         hud.diagnostics(stats, camera);
+        {
+            const bool wasOpen = pickerOpen;
+            hud.blockPicker(pickerOpen, fx.hotbar, hotbarSel, iconAtlas);
+            if (wasOpen && !pickerOpen)
+                vx::Settings::save(settingsFile, fx, vsync, caveCull, world->radius, camera.fovYDeg);
+        }
         if (hud.lampPicker(lampPickerOpen, fx.lampSwatch)) {
             // repaint the lamp that was middle-clicked; an emitter-to-emitter swap, which
             // is the path that has to retract the old hue's light as well as add the new
             if (vx::blocks::isLamp(world->blockAtWorld(lampPickerTarget)))
                 world->setBlock(renderer, *light, lampPickerTarget,
                                 vx::BlockId(vx::blocks::LampFirst + fx.lampSwatch));
+            if (vx::blocks::isLamp(vx::BlockId(fx.hotbar[hotbarSel])))
+                fx.hotbar[hotbarSel] = vx::blocks::LampFirst + fx.lampSwatch;
             vx::Settings::save(settingsFile, fx, vsync, caveCull, world->radius,
                                camera.fovYDeg);
         }
@@ -1180,6 +1378,7 @@ int main(int, char** argv) {
             weatherDirector.reset();
             lightning.reset();
             snowCover = 0.0f;
+            menuBackdrop.quiesce(); // its search may still be reading the old world's generator
             farTerrain.reset();
             lightVolume.invalidate();
             int newSeed = 0, newGen = vx::TerrainGenerator::kLatestVersion;
@@ -1214,6 +1413,13 @@ int main(int, char** argv) {
         }
         if (vsync != vsyncBefore)
             window->setVsync(vsync);
+        if (settingsOpen) {
+            const auto ui = hud.uiSounds();
+            if (ui.hover)
+                audio.play("ui_hover", 0.5f);
+            if (ui.click)
+                audio.play("ui_click", 0.8f);
+        }
         hud.render();
         if (quitRequested)
             window->requestClose();

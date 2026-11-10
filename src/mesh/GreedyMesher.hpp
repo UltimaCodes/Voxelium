@@ -19,6 +19,9 @@ struct GreedyStats {
     // Summed w*h per direction for the OPAQUE layer at LOD 0, must equal the naive
     // mesher's per-direction face counts (the correctness oracle).
     std::int64_t areaPerDir[6] = {};
+    // The opaque quads come out grouped by direction, +X -X +Y -Y +Z -Z then the cross-plane
+    // foliage, and these are the group sizes: the cull pass skips the groups facing away.
+    std::uint32_t buckets[7] = {};
 };
 
 // Binary greedy mesher over a padded raw grid (34^3 = 32 voxels + 1 pad each side). The
@@ -43,16 +46,21 @@ public:
     // diagonals are only read for the water's wave corners.
     static constexpr int kMeshNeighbors = 10;
     static constexpr int kDiagonalOffsets[4][2] = {{1, 1}, {1, -1}, {-1, 1}, {-1, -1}}; // x, z
+    // shell (LOD 0, a chunk too far off to make out single blocks): leaves hide what is behind
+    // them as solid blocks do, so a canopy is its outside only, and the small cross-plane plants
+    // are left out. Up close the faces inside a canopy show through its gaps; out there a block
+    // is a few pixels and its leaves' smaller mips are nearly solid anyway.
     GreedyStats mesh(const Chunk& chunk, const Chunk* const* neighbors,
                      std::vector<PackedQuad>& outOpaque,
                      std::vector<PackedQuad>& outWater, int lod = 0,
-                     std::uint8_t coarseNeighbors = 0);
+                     std::uint8_t coarseNeighbors = 0, bool shell = false);
 
 private:
     struct Plane {
         std::uint32_t rows[kChunkSize];
         BlockId block;
         std::uint32_t light; // packed r,g,b,sky (see namespace light), part of the merge key
+        std::uint8_t wet;    // the face looks out into water (QuadFormat w3), part of the merge key
         std::uint8_t dir;
         std::uint8_t slice;
         std::int16_t next;
@@ -68,7 +76,7 @@ private:
     // two diagonal quads per cross-plane foliage voxel, into the opaque list
     void emitCross(std::vector<PackedQuad>& out, GreedyStats& stats);
     void meshLayer(bool water, std::vector<PackedQuad>& out, GreedyStats& stats);
-    void addFace(int dir, int slice, int u, int v, BlockId block, std::uint32_t light);
+    void addFace(int dir, int slice, int u, int v, BlockId block, std::uint32_t light, bool wet);
     // Per-corner water surface level for the face of water voxel (x,y,z) in direction dir,
     // packed 4 corners x 3 bits. Averages the depth of the columns meeting at each corner,
     // so a sheet that thins out ramps instead of stepping once per cell. Water quads never
@@ -111,11 +119,16 @@ private:
     std::uint64_t m_waterX[kChunkSize][kChunkSize];
     std::uint64_t m_waterY[kChunkSize][kChunkSize];
     std::uint64_t m_waterZ[kChunkSize][kChunkSize];
+    std::uint64_t m_leafX[kChunkSize][kChunkSize]; // leaves, for the shell
+    std::uint64_t m_leafY[kChunkSize][kChunkSize];
+    std::uint64_t m_leafZ[kChunkSize][kChunkSize];
     std::int16_t m_heads[6][kChunkSize];
     std::vector<Plane> m_planes;
+    std::vector<PackedQuad> m_sorted; // scratch for grouping the output by direction
     bool m_hasWater = false;
     bool m_hasCross = false;
     bool m_smoothAO = false; // LOD 0 only: distant chunks don't bother (pad is air anyway)
+    bool m_shell = false;    // see mesh()
     std::uint8_t m_coarseNeighbors = 0; // faces meshed as a cross-LOD skirt
 };
 

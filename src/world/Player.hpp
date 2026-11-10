@@ -11,6 +11,7 @@ struct PlayerInput {
     float strafe = 0.0f;
     float yawDeg = 0.0f;
     bool jump = false;
+    bool sprint = false;
 };
 
 // Minecraft-flavored player physics on a fixed 60 Hz timestep: an AABB (0.6 x 1.8)

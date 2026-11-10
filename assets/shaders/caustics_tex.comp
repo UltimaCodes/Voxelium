@@ -1,0 +1,46 @@
+#version 460 core
+
+// The caustic web on a seabed, once a frame into a tile 64 blocks across that repeats: two layers of
+// moving cellular distance, scrolled against each other and sharpened into the thin bright filaments
+// focused sunlight makes. Two layers at different scales because one reads as an obvious repeat. Each
+// is a whole number of cells across the tile so its edges meet. chunk.frag reads one texel of it
+// rather than working out 18 cells a pixel, which cost the whole terrain pass a millisecond.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(r8, binding = 0) uniform writeonly image2D uOut;
+layout(location = 0) uniform float uTime;
+
+const float kTile = 64.0;
+
+float hash(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
+// cellular distance with `cells` cells across the tile, wrapping
+float layer(vec2 uv, float cells, float t) {
+    vec2 p = uv * cells;
+    vec2 i = floor(p);
+    vec2 f = p - i;
+    float best = 1e9;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x) {
+            vec2 g = vec2(float(x), float(y));
+            vec2 c = mod(i + g, cells);
+            vec2 o = vec2(hash(c), hash(c + 37.1));
+            o = 0.5 + 0.5 * sin(t * 0.9 + 6.2831 * o);
+            best = min(best, length(g + o - f));
+        }
+    return best;
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv = (vec2(px) + 0.5) / vec2(imageSize(uOut));
+    // about 0.55 and 1.0 cells a block
+    float a = layer(uv, 35.0, uTime);
+    float b = layer(uv + 0.173, 64.0, uTime * 1.17);
+    // clamp first: a neighbour's point can be over a cell away, and pow of a negative is NaN
+    float c = pow(clamp(1.0 - min(a, b), 0.0, 1.0), 6.0);
+    imageStore(uOut, px, vec4(c));
+}

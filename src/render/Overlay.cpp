@@ -6,6 +6,10 @@
 #include "gfx/Shader.hpp"
 
 #include <glad/gl.h>
+#include <glm/gtc/matrix_transform.hpp>
+
+#include <algorithm>
+#include <cmath>
 
 namespace vx {
 
@@ -14,13 +18,7 @@ namespace {
 // every block added since gets an icon automatically; this used to be a hand-written
 // switch that had silently fallen behind, leaving gravel, lamps and the ores all drawn as
 // the same flat blue "no texture" tint. Water genuinely has no tile, so it keeps the tint.
-int iconLayerFor(int block) {
-    if (block == blocks::Water || blocks::isWater(BlockId(block)))
-        return -1;
-    if (block == blocks::Grass)
-        return 3; // grassy side reads better in a slot than the flat top
-    return blockTopLayer(block);
-}
+int iconLayerFor(int block) { return blockIconLayer(block); }
 } // namespace
 
 bool Overlay::init(const std::filesystem::path& shaderDir) {
@@ -30,7 +28,8 @@ bool Overlay::init(const std::filesystem::path& shaderDir) {
     m_hudProg = loadProgram(shaderDir / "hud_quad.vert", shaderDir / "hud_quad.frag");
     m_crackProg =
         loadProgram(shaderDir / "overlay_crack.vert", shaderDir / "overlay_crack.frag");
-    if (!m_boxProg || !m_crossProg || !m_hudProg || !m_crackProg)
+    m_heldProg = loadProgram(shaderDir / "held.vert", shaderDir / "held.frag");
+    if (!m_boxProg || !m_crossProg || !m_hudProg || !m_crackProg || !m_heldProg)
         return false;
     glCreateVertexArrays(1, &m_vao); // attribute-less; the shaders pull from gl_VertexID
     return true;
@@ -45,6 +44,8 @@ void Overlay::shutdown() {
         glDeleteProgram(m_crossProg);
     if (m_hudProg)
         glDeleteProgram(m_hudProg);
+    if (m_heldProg)
+        glDeleteProgram(m_heldProg);
     m_vao = m_boxProg = m_crossProg = m_hudProg = 0;
 }
 
@@ -98,6 +99,44 @@ void Overlay::drawCrosshair(int fbWidth, int fbHeight, const glm::vec4& color) c
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDrawArrays(GL_TRIANGLES, 0, 12);
     glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
+}
+
+void Overlay::drawHeld(int fbWidth, int fbHeight, int blockId, unsigned int blockTexArray, float swing, float equip,
+                       const glm::vec2& bob, const glm::vec3& light) const {
+    if (blockId <= 0 || blocks::isWater(BlockId(blockId)))
+        return;
+    const float aspect = float(fbWidth) / float(std::max(fbHeight, 1));
+    const glm::mat4 proj = glm::perspective(glm::radians(60.0f), aspect, 0.05f, 10.0f);
+    // a swing is a quick arc down and across, then back
+    const float s = std::sin(swing * 3.14159f);
+    const float s2 = std::sin(std::sqrt(swing) * 3.14159f);
+    const float dip = (1.0f - equip) * 0.6f;
+    glm::mat4 m(1.0f);
+    m = glm::translate(m, glm::vec3(0.70f + bob.x - s2 * 0.22f, -0.47f + bob.y - dip + s * 0.12f - s2 * 0.1f, -1.05f - s * 0.12f));
+    m = glm::rotate(m, glm::radians(-18.0f - s * 40.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    m = glm::rotate(m, glm::radians(42.0f + s2 * 25.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    const bool cross = blocks::isCross(BlockId(blockId));
+    m = glm::scale(m, glm::vec3(cross ? 0.55f : 0.38f));
+    glUseProgram(m_heldProg);
+    glProgramUniformMatrix4fv(m_heldProg, 0, 1, GL_FALSE, &proj[0][0]);
+    glProgramUniformMatrix4fv(m_heldProg, 1, 1, GL_FALSE, &m[0][0]);
+    glProgramUniform1ui(m_heldProg, 2, unsigned(blockId));
+    glProgramUniform1i(m_heldProg, 3, cross ? 1 : 0);
+    glProgramUniform3fv(m_heldProg, 4, 1, &light.x);
+    glBindTextureUnit(0, blockTexArray);
+    glBindVertexArray(m_vao);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    if (cross) {
+        glDisable(GL_CULL_FACE);
+        glDrawArrays(GL_TRIANGLES, 0, 24);
+    } else {
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+    }
+    glEnable(GL_CULL_FACE);
     glEnable(GL_DEPTH_TEST);
 }
 

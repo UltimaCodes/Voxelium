@@ -70,6 +70,17 @@ int lodForDist2(std::int64_t d2, double s) {
     return 5;
 }
 
+// What a chunk is meshed at: its LOD in the low bits, and at LOD 0 past kShellChunks the shell bit
+// (GreedyMesher::mesh: leaves only as an outside, no small plants). Stored and compared whole
+// wherever a LOD is, so crossing that distance remeshes a chunk the way crossing a band does.
+constexpr int kShellBit = 8;
+constexpr int kShellChunks = 6;
+int meshLevelForDist2(std::int64_t d2, double s) {
+    const int lod = lodForDist2(d2, s);
+    return lod == 0 && d2 > std::int64_t(kShellChunks) * kShellChunks ? kShellBit : lod;
+}
+int lodOf(int level) { return level & (kShellBit - 1); }
+
 // chunks meshed at this LOD or coarser generate without caves (they'd be averaged away by
 // the downsample; trees still generate, see TerrainGenerator::generate). approaching one,
 // desired LOD drops below this, re-generates it detailed. caves cost ~4x gen/mesh/quads,
@@ -165,6 +176,7 @@ void ChunkManager::landEmpty(ChunkPos pos, int lod, Renderer& renderer) {
     e.connectivity = computeConnectivity(*e.voxels);
     e.sunlit = false;
     e.lod = std::int8_t(lod);
+    std::fill(std::begin(e.buckets), std::end(e.buckets), 0u);
     e.remesh = false;
     e.lightDirty = false;
     e.state = ChunkState::Meshed;
@@ -223,6 +235,10 @@ void ChunkManager::columnRange(int cx, int cz, int& y0, int& y1, bool& skyAtTop)
     const int surfChunk = (surf + 1) >= 0 ? (surf + 1) / kChunkSize
                                           : -((-(surf + 1) + kChunkSize - 1) / kChunkSize);
     y0 = m_center.y - kVerticalRadius;
+    // Flying high the band floats off the ground. It still has to reach what you are looking down
+    // on, up to a height past the clouds; above that the far terrain stands in.
+    if (m_center.y <= kHighestLookDown)
+        y0 = std::min(y0, surfChunk - 1);
     const int bandTop = m_center.y + kVerticalRadius;
     if (bandTop + 1 >= surfChunk) {
         // over everything the column can hold, so the top chunk is open sky everywhere; the
@@ -238,6 +254,15 @@ void ChunkManager::columnRange(int cx, int cz, int& y0, int& y1, bool& skyAtTop)
         y1 = bandTop; // buried: a chunk of separation is 32 blocks, sky reaches 15
         skyAtTop = false;
     }
+}
+
+bool ChunkManager::belowResidentRange(ChunkPos pos) const {
+    if (pos.y >= m_center.y - kVerticalRadius - 1)
+        return false;
+    int y0 = 0, y1 = 0;
+    bool sky = false;
+    columnRange(pos.x, pos.z, y0, y1, sky);
+    return pos.y < y0 - 1;
 }
 
 bool ChunkManager::columnPresent(ChunkPos col) const {
@@ -273,7 +298,7 @@ void ChunkManager::rescan(ChunkPos center) {
     for (const auto& item : m_chunks)
         if (std::abs(item.first.x - center.x) > dataR + 1 ||
             std::abs(item.first.z - center.z) > dataR + 1 ||
-            std::abs(item.first.y - center.y) > kVerticalRadius + 1)
+            item.first.y > center.y + kVerticalRadius + 1 || belowResidentRange(item.first))
             m_evictList.push_back(item.first);
 
     m_genQueue.clear();
@@ -303,7 +328,7 @@ ChunkManager::LodAudit ChunkManager::auditLod() const {
         // Matches rescan()'s own eviction threshold (dataR + 1 where dataR = radius + 2)
         // exactly, anything past this should have been on the evict list and gone by now.
         if (std::abs(pos.x - m_center.x) > radius + 3 || std::abs(pos.z - m_center.z) > radius + 3 ||
-            std::abs(pos.y - m_center.y) > kVerticalRadius + 1) {
+            pos.y > m_center.y + kVerticalRadius + 1 || belowResidentRange(pos)) {
             ++a.stranded;
             continue;
         }
@@ -314,19 +339,20 @@ ChunkManager::LodAudit ChunkManager::auditLod() const {
             continue;
         if (e.state != ChunkState::Meshed)
             continue; // still in flight isn't a bug on its own; busy() should have caught it
-        const int desired = lodForDist2(horizontalDist2(pos, m_center), lodScale());
+        const int desired = meshLevelForDist2(horizontalDist2(pos, m_center), lodScale());
         if (e.lod != desired)
             ++a.lodMismatch;
         // Exactly the self-heal condition in update() that queues a coarse->detailed regen
         // (dirty is excluded there on purpose too, see #64, an unsaved edit keeps a chunk
         // coarse until it's saved, which is correct, not stuck).
-        if (desired < kCoarseLod && !e.detailed && !e.voxels->uniform() && !e.dirty)
+        if (lodOf(desired) < kCoarseLod && !e.detailed && !e.voxels->uniform() && !e.dirty)
             ++a.coarseInDetailBand;
     }
     return a;
 }
 
 void ChunkManager::processEvictions(Renderer& renderer, JobSystem& jobs) {
+    int editsWaiting = 0;
     for (std::size_t i = 0; i < m_evictList.size();) {
         const auto it = m_chunks.find(m_evictList[i]);
         if (it == m_chunks.end()) {
@@ -339,6 +365,8 @@ void ChunkManager::processEvictions(Renderer& renderer, JobSystem& jobs) {
                               e.state == ChunkState::Meshing || e.voxels->hasJobRefs() ||
                               (e.pendingDetail && e.pendingDetail->hasJobRefs());
         if (inFlight) {
+            if (e.dirty && !e.saving)
+                ++editsWaiting; // its save has not even started: busy() until it has
             ++i; // a worker still holds it, retry next frame
             continue;
         }
@@ -409,6 +437,7 @@ void ChunkManager::processEvictions(Renderer& renderer, JobSystem& jobs) {
         m_evictList[i] = m_evictList.back();
         m_evictList.pop_back();
     }
+    m_editsAwaitingSave = editsWaiting;
 }
 
 void ChunkManager::rebuildArena(Renderer& renderer) {
@@ -569,6 +598,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         m_visDirty = true;
         ++m_jobsInFlight;
         ++m_genInFlight;
+        m_jobsRunning.fetch_add(1, std::memory_order_relaxed);
         jobs.submit([this, voxels, pos, detailed] {
             const auto t0 = Clock::now();
             // disk first: a saved (player-edited) chunk loads instead of regenerating.
@@ -579,8 +609,11 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             m_genNanos.fetch_add(nsSince(t0), std::memory_order_relaxed);
             m_genCount.fetch_add(1, std::memory_order_relaxed);
             voxels->releaseJob();
-            std::lock_guard lock(m_genDoneMutex);
-            m_genDone.push_back(pos);
+            {
+                std::lock_guard lock(m_genDoneMutex);
+                m_genDone.push_back(pos);
+            }
+            m_jobsRunning.fetch_sub(1, std::memory_order_release);
         });
     }
 
@@ -668,7 +701,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         if (std::abs(pos.x - center.x) > radius ||
             std::abs(pos.z - center.z) > radius)
             return;
-        const int desired = lodForDist2(horizontalDist2(pos, center), lodScale());
+        const int desired = meshLevelForDist2(horizontalDist2(pos, center), lodScale());
         const bool firstMesh = e.state == ChunkState::Ready;
         const bool reLod = e.state == ChunkState::Meshed && (e.lod != desired || e.remesh);
         // A coarse chunk close enough to want detail re-generates (with caves). The regen is
@@ -696,7 +729,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         // should be at now. Everything above ground is already in it (the generator only skips
         // caves), and holding the far mesh until the regen landed put LOD 2-5 chunks right at
         // the camera: 410 of the 1183 chunks within 6 of it, on average, flying at 45 b/s.
-        if (e.state == ChunkState::Meshed && !e.detailed && desired < kCoarseLod &&
+        if (e.state == ChunkState::Meshed && !e.detailed && lodOf(desired) < kCoarseLod &&
             !e.voxels->uniform() && !e.dirty)
             m_regenScratch.push_back(pos);
         if (!(firstMesh || reLod) || e.meshingLod == desired)
@@ -813,17 +846,21 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         it->second.pendingDetail = c2;
         ++m_jobsInFlight;
         ++m_regenInFlight;
+        m_jobsRunning.fetch_add(1, std::memory_order_relaxed);
         jobs.submit([this, c2, pos] {
             if (!m_regions.load(pos, *c2))
                 m_gen.generate(*c2, pos, /*detailed=*/true);
             c2->releaseJob();
-            std::lock_guard lock(m_regenDoneMutex);
-            m_regenDone.push_back({pos, c2});
+            {
+                std::lock_guard lock(m_regenDoneMutex);
+                m_regenDone.push_back({pos, c2});
+            }
+            m_jobsRunning.fetch_sub(1, std::memory_order_release);
         });
     }
 
     for (const ChunkPos pos : m_emptyScratch)
-        landEmpty(pos, lodForDist2(horizontalDist2(pos, center), lodScale()), renderer);
+        landEmpty(pos, meshLevelForDist2(horizontalDist2(pos, center), lodScale()), renderer);
     // Only as many as there are free slots get scheduled, so only those need to be in order.
     const auto nearer = [center](ChunkPos a, ChunkPos b) {
         return horizontalDist2(a, center) < horizontalDist2(b, center);
@@ -847,12 +884,13 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         }
         const auto it = m_chunks.find(pos);
         Entry& e = it->second;
-        const int lod = lodForDist2(horizontalDist2(pos, center), lodScale());
+        const int level = meshLevelForDist2(horizontalDist2(pos, center), lodScale());
+        const int lod = lodOf(level);
         if (e.state == ChunkState::Ready)
             e.state = ChunkState::Meshing; // first mesh: not drawn until it lands
         // (a re-LOD or relight keeps state Meshed so the old mesh stays drawn meanwhile)
         e.remesh = false;
-        e.meshingLod = std::int8_t(lod);
+        e.meshingLod = std::int8_t(level);
 
         const std::uint8_t skirt = coarseNeighborMask(pos, lod, center, lodScale());
 
@@ -880,25 +918,29 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         // allocating on submit (SPEC.md #67).
         std::vector<PackedQuad>* quadBuf = m_quadPool.checkout();
         std::vector<PackedQuad>* waterBuf = m_waterPool.checkout();
-        jobs.submit([this, voxels, nb, pos, lod, skirt, quadBuf, waterBuf] {
+        m_jobsRunning.fetch_add(1, std::memory_order_relaxed);
+        jobs.submit([this, voxels, nb, pos, level, skirt, quadBuf, waterBuf] {
             // one per worker thread, reused across jobs, and never destroyed on purpose: see
             // computeConnectivity (a thread_local with a destructor corrupts the heap when a
             // worker exits, on this toolchain)
             thread_local GreedyMesher& mesher = *new GreedyMesher();
             const auto t0 = Clock::now();
-            const GreedyStats stats =
-                mesher.mesh(*voxels, nb.data(), *quadBuf, *waterBuf, lod, skirt);
+            const GreedyStats stats = mesher.mesh(*voxels, nb.data(), *quadBuf, *waterBuf, lodOf(level), skirt,
+                                                  (level & kShellBit) != 0);
             const std::uint16_t connectivity = computeConnectivity(*voxels);
             m_meshNanos.fetch_add(nsSince(t0), std::memory_order_relaxed);
             m_meshCount.fetch_add(1, std::memory_order_relaxed);
 
-            MeshResult result{pos, quadBuf, waterBuf, stats, connectivity, std::int8_t(lod)};
+            MeshResult result{pos, quadBuf, waterBuf, stats, connectivity, std::int8_t(level)};
             voxels->releaseJob();
             for (const Chunk* n : nb)
                 if (n)
                     n->releaseJob();
-            std::lock_guard lock(m_meshDoneMutex);
-            m_meshDone.push_back(std::move(result));
+            {
+                std::lock_guard lock(m_meshDoneMutex);
+                m_meshDone.push_back(std::move(result));
+            }
+            m_jobsRunning.fetch_sub(1, std::memory_order_release);
         });
     }
 
@@ -1039,6 +1081,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             }
             e.connectivity = r.connectivity;
             e.sunlit = r.stats.sunlit;
+            std::copy(std::begin(r.stats.buckets), std::end(r.stats.buckets), std::begin(e.buckets));
             e.lod = r.lod;
             e.state = ChunkState::Meshed;
             noteDirty(r.pos);
@@ -1090,6 +1133,29 @@ void ChunkManager::loadWorld(Renderer& renderer, int seed, std::filesystem::path
     // the store points at when it finishes, and keep reading a chunk that is about to go back
     // to the pool and be regenerated into. Let every one land first.
     waitForSaves();
+    // Generation and mesh jobs read the generator and the chunks and write into pool buffers, all
+    // of which go below. Callers drain first, but one that gave up waiting (a frame cap on a slow
+    // machine, a Debug build) had the old generator freed under a running job. What they finished
+    // is for the old world: their buffers go back to the pools and their counts to zero.
+    while (m_jobsRunning.load(std::memory_order_acquire) > 0)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    for (std::vector<MeshResult>* done : {&m_meshDone, &m_uploads}) {
+        for (MeshResult& r : *done) {
+            m_quadPool.checkin(r.quadBuf);
+            m_waterPool.checkin(r.waterBuf);
+        }
+        done->clear();
+    }
+    for (const RegenResult& r : m_regenDone) {
+        const auto it = m_chunks.find(r.pos);
+        if (it == m_chunks.end() || it->second.pendingDetail != r.voxels)
+            m_pool.release(r.voxels); // an entry's own pending detail goes with the entry below
+    }
+    m_regenDone.clear();
+    m_genDone.clear();
+    m_jobsInFlight = 0;
+    m_genInFlight = 0;
+    m_regenInFlight = 0;
     // Point at the new world BEFORE tearing down, so nothing that runs during teardown can
     // write the old world's chunks into the new world's directory.
     m_regions.flush();
@@ -1121,7 +1187,7 @@ void ChunkManager::loadWorld(Renderer& renderer, int seed, std::filesystem::path
     m_seedDeferred.clear();
     m_genQueue.clear();
     m_evictList.clear();
-    m_uploads.clear();
+    m_editsAwaitingSave = 0;
     m_fallQueue.clear();
     m_fluidQueue.clear();
     m_pendingMesh = 0;
@@ -1168,7 +1234,8 @@ void ChunkManager::collectDrawInfo(std::vector<ChunkDrawInfo>& out,
         const glm::ivec3 cp{item.first.x, item.first.y, item.first.z};
         if (e.quads > 0 && e.range.count != 0) {
             e.metaIndex = std::int32_t(out.size());
-            out.push_back({cp, e.range.first, e.range.count, e.sunlit ? 1u : 0u});
+            ChunkDrawInfo& d = out.emplace_back(ChunkDrawInfo{cp, e.range.first, e.range.count, e.sunlit ? 1u : 0u});
+            std::copy(std::begin(e.buckets), std::end(e.buckets), std::begin(d.buckets));
         } else {
             e.metaIndex = -1;
         }
@@ -1644,9 +1711,14 @@ BlockId ChunkManager::blockAtWorld(const glm::ivec3& wp) const {
     return c ? c->get(wp.x & 31, wp.y & 31, wp.z & 31) : blocks::Stone;
 }
 
-int ChunkManager::skyLightAtWorld(const glm::ivec3& wp) const {
+float ChunkManager::skyAccessAt(const glm::ivec3& wp) const {
     const Chunk* c = voxelsAt({wp.x >> 5, wp.y >> 5, wp.z >> 5});
-    return c ? light::sky(c->lightAt(wp.x & 31, wp.y & 31, wp.z & 31)) : 0;
+    return c ? float(light::sky(c->lightAt(wp.x & 31, wp.y & 31, wp.z & 31))) / 255.0f : 0.0f;
+}
+
+float ChunkManager::blockLightAt(const glm::ivec3& wp) const {
+    const Chunk* c = voxelsAt({wp.x >> 5, wp.y >> 5, wp.z >> 5});
+    return c ? float(light::block(c->lightAt(wp.x & 31, wp.y & 31, wp.z & 31))) / 255.0f : 0.0f;
 }
 
 void ChunkManager::remeshNow(Renderer& renderer, ChunkPos pos) {
@@ -1670,6 +1742,7 @@ void ChunkManager::remeshNow(Renderer& renderer, ChunkPos pos) {
                                             coarseNeighborMask(pos, 0, m_center, lodScale()));
     e.connectivity = computeConnectivity(*e.voxels);
     e.sunlit = stats.sunlit; // an edit can open a sealed chunk to the sky, or seal it
+    std::copy(std::begin(stats.buckets), std::end(stats.buckets), std::begin(e.buckets));
 
     if (e.range.count != 0) {
         renderer.free(e.range);

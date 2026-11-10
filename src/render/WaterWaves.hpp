@@ -36,6 +36,8 @@ public:
         glm::vec4 shape{0.0f};    // sharpness s, exp(-2s), mean of exp(s(sin - 1)), 2 / (1 - exp(-2s))
         float scale = 0.0f;       // blocks at full strength, weather included; 0 = flat water
         glm::vec2 camWrap{0.0f};  // camera xz modulo kWrap, for the chop and the foam
+        glm::vec4 group{0.0f};    // phases at the camera: two wave groups, the shore's two wanders
+        float breakClock = 0.0f;  // breakers come ashore one a unit of this
     };
     // The chop and foam noise repeat every kWrap blocks, and the camera's position modulo it is
     // what they are offset by. That keeps them still when the camera moves (they used to slide
