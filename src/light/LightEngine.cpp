@@ -10,12 +10,11 @@ namespace vx {
 
 namespace {
 
-// There is no world ceiling any more, so these are properties of the TERRAIN: the
-// generator never writes a solid voxel above kTerrainTop or below kTerrainBottom. Anything
-// out there that is not loaded is therefore open sky above and bedrock below, which is
-// what lets an unloaded neighbour be answered without a world bound.
+// There is no world ceiling, so this is a property of the TERRAIN: the generator never writes
+// a solid voxel above kTerrainTop. Anything not loaded up there is open sky; anything not
+// loaded below it is rock. There is no floor either: the caves go below y 0 and their light
+// with them (a floor at 0 here once left every lamp down there lighting nothing).
 constexpr int kSkyAbove = kTerrainTop;
-constexpr int kRockBelow = kTerrainBottom;
 
 constexpr glm::ivec3 kStep[6] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
                                  {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
@@ -71,8 +70,6 @@ void LightEngine::resetChunkCache() {
 }
 
 BlockId LightEngine::blockAt(const glm::ivec3& wp) const {
-    if (wp.y < kRockBelow)
-        return blocks::Stone;
     const Chunk* c = lookupChunk(chunkOf(wp));
     if (c)
         return c->get(wp.x & 31, wp.y & 31, wp.z & 31);
@@ -82,8 +79,6 @@ BlockId LightEngine::blockAt(const glm::ivec3& wp) const {
 }
 
 int LightEngine::getLevel(const glm::ivec3& wp, int channel) const {
-    if (wp.y < kRockBelow)
-        return 0;
     const Chunk* c = lookupChunk(chunkOf(wp));
     if (!c)
         return (channel == Sky && wp.y >= kSkyAbove) ? 15 : 0;
@@ -565,7 +560,8 @@ void LightEngine::onBlockChanged(const glm::ivec3& wp, BlockId oldId, BlockId ne
             for (int ch = 0; ch < kChannels; ++ch)
                 enqueue(ch, wp + kStep[d]);
         if (getLevel(wp + glm::ivec3(0, 1, 0), Sky) == 15) {
-            for (int y = wp.y; y >= 0 && !blocks::blocksLight(blockAt({wp.x, y, wp.z})); --y) {
+            // down to the first thing that stops it: rock, bedrock, or the end of what is loaded
+            for (int y = wp.y; !blocks::blocksLight(blockAt({wp.x, y, wp.z})); --y) {
                 setLevel({wp.x, y, wp.z}, Sky, 15);
                 enqueue(Sky, {wp.x, y, wp.z});
             }

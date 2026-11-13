@@ -31,6 +31,7 @@ public:
         float temp = 0.5f;     // 0 frozen .. 1 hot, at sea level
         float snowLine = 0.0f; // the height snow starts at here
         float water = -1.0f;   // the surface of a river or lake over this column; below h for none
+        float volcanic = 0.0f; // 0..1 up a volcano's cone: its dark rock and ash
     };
     // n x n points from (x0, z0), step blocks apart, row-major. step 1 carries all the detail;
     // coarser steps leave out what would alias, and are for maps and the far horizon.

@@ -565,6 +565,24 @@ void Wildlife::update(float dt, const ChunkManager& world, const glm::dvec3& cam
                     c.life = std::min(c.life, 0.6f);
                 break;
             }
+            case Bat: {
+                // never flying straight for long: it jinks every way, and turns back off the rock
+                c.vel += glm::vec3(rnd() - 0.5f, (rnd() - 0.5f) * 0.6f, rnd() - 0.5f) * (30.0f * dt);
+                const float sp = glm::length(c.vel);
+                if (sp > 5.5f)
+                    c.vel *= 5.5f / sp;
+                else if (sp < 2.5f)
+                    c.vel *= 2.5f / std::max(sp, 0.01f);
+                const glm::dvec3 next = c.pos + glm::dvec3(c.vel) * double(dt);
+                if (isSolidAt(world, next) || isSolidAt(world, next + glm::dvec3(c.vel * 0.15f)))
+                    c.vel = -c.vel * 0.8f + glm::vec3(rnd() - 0.5f, 0.0f, rnd() - 0.5f);
+                else
+                    c.pos = next;
+                c.phase += dt * 24.0f;
+                if (dist2 > 40.0 * 40.0 || env.skyAccess > 0.4f)
+                    c.life = std::min(c.life, 0.6f);
+                break;
+            }
             case Bird: {
                 c.pos += glm::dvec3(c.vel) * double(dt);
                 c.pos.y += std::sin(c.age * 1.3f + c.aux) * 0.4 * double(dt);
@@ -771,6 +789,9 @@ void Wildlife::update(float dt, const ChunkManager& world, const glm::dvec3& cam
         if (!env.underwater && env.skyAccess > 0.35f && land < 22)
             spawnHerd(world, cam);
     }
+    // bats in the dark underground, out of the water
+    if (!env.underwater && env.skyAccess < 0.08f && count(Bat) < 4 && rnd() < dt * 0.4f)
+        spawnBat(world, cam);
     // a flock crosses now and then in fair weather; never two at once
     m_flockClock -= dt;
     if (m_flockClock <= 0.0f) {
@@ -801,6 +822,7 @@ glm::vec2 Wildlife::bodyExtent(const Critter& c) {
         case Butterfly: r = 0.6f, hh = 0.4f; break;
         case Gull:
         case Bird: r = 1.0f, hh = 0.25f; break;
+        case Bat: r = 0.9f, hh = 0.25f; break;
         case Fish: r = 0.6f, hh = 0.3f; break;
         case Crab: r = 0.6f, hh = 0.25f; break;
         case Sheep: r = 0.45f, hh = 0.48f; break;
@@ -935,6 +957,31 @@ void Wildlife::spawnHerd(const ChunkManager& w, const glm::dvec3& cam) {
         c->aux3 = rnd() * 3.0f;
         c->call = g.callEvery * (0.3f + rnd());
         c->phase = rnd() * 6.0f;
+    }
+}
+
+// Bats: underground, a few flitting about the dark round the player, somewhere with room to fly.
+void Wildlife::spawnBat(const ChunkManager& w, const glm::dvec3& cam) {
+    for (int t = 0; t < 8; ++t) {
+        const glm::vec3 d = glm::normalize(glm::vec3(rnd() - 0.5f, (rnd() - 0.5f) * 0.4f, rnd() - 0.5f) + glm::vec3(1e-4f));
+        const glm::dvec3 p = cam + glm::dvec3(d * (5.0f + rnd() * 12.0f));
+        bool open = true;
+        for (const auto& o : {glm::dvec3(0.0), glm::dvec3(1.2, 0.0, 0.0), glm::dvec3(-1.2, 0.0, 0.0), glm::dvec3(0.0, 0.0, 1.2),
+                              glm::dvec3(0.0, 0.0, -1.2), glm::dvec3(0.0, 1.0, 0.0)})
+            open = open && w.blockAtWorld(glm::ivec3(glm::floor(p + o))) == blocks::Air;
+        if (!open)
+            continue;
+        Critter* c = acquire();
+        if (!c)
+            return;
+        c->kind = Bat;
+        c->pos = p;
+        c->vel = glm::vec3(rnd() - 0.5f, 0.0f, rnd() - 0.5f) * 6.0f;
+        c->color = glm::vec3(0.16f, 0.12f, 0.11f);
+        c->size = 0.32f + rnd() * 0.08f;
+        c->phase = rnd() * 6.28f;
+        c->life = 30.0f + rnd() * 30.0f;
+        return;
     }
 }
 
@@ -1176,7 +1223,8 @@ void Wildlife::draw(const glm::mat4& viewProj, const glm::dvec3& cam, const glm:
             float a = std::min(1.0f, c.age * 2.0f) * std::clamp(c.life / 0.6f, 0.0f, 1.0f) *
                       (1.0f - glm::smoothstep(far * 0.6f, far, d));
             const bool emissive = c.kind == Firefly || c.kind == Jelly;
-            const float lit = emissive ? 1.0f : m_light;
+            // daylight for everything out under the sky; a bat lives in the dark
+            const float lit = emissive ? 1.0f : (c.kind == Bat ? 0.1f : m_light);
             // Sprites turn to a heading in the camera's own plane; bodies need the real one, along
             // the ground.
             glm::vec2 h;

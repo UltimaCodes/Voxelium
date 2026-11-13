@@ -13,11 +13,12 @@ Get `voxelium-win64.zip` from Releases, unzip it, run `voxelium.exe`. Windows on
 ## What's in it
 
 - Endless worlds from a seed, with oceans, mountain ranges, rivers that actually run down to the sea, lakes and 17 biomes from jungle to tundra
-- Caves that go way down to a bedrock floor, with big caverns, underground lakes, ravines and old mineshafts. They change with what's above them: lush caves with moss and glow berries under jungles and swamps, dripstone caves under deserts, ice caves under the snow, glowing mushroom caves deep down, and the odd crystal geode
-- Lighthouses, shipwrecks, desert ruins and pyramids. There's also a cool easter egg under the pyramids too :D
+- Caves that go way down to a bedrock floor, with big caverns, underground lakes and old mineshafts. They change with what's above them: lush caves with moss and glow berries under jungles and swamps, dripstone caves under deserts, ice caves under the snow, glowing mushroom caves deep down, and the odd crystal geode
+- Mountains that aren't all the same: jagged alpine ranges, rounded old ones and ranges stepped in cliff bands, with scree, glaciers and alpine meadows. Volcanoes with crater lakes (some are islands), and karst towers sticking straight up out of the jungle
+- Lighthouses, shipwrecks, desert ruins, pyramids, log cabins in the woods, standing stones and ruined watchtowers on the hills. There's also a cool easter egg under the pyramids too :D
 - Actual physics for the water (waves and all) and sand shifting via particles and gravity
 - Rain that makes puddles, snow that piles up and melts, and thunderstorms with actual lightning
-- Sheep, cows, pigs, chickens, deer, foxes, rabbits, frogs, crabs, turtles, fish, glowing jellyfish, birds, bees, butterflies and fireflies. You can punch all of them and they will run (thats all they do)
+- Sheep, cows, pigs, chickens, deer, foxes, rabbits, frogs, crabs, turtles, fish, glowing jellyfish, birds, bats, bees, butterflies and fireflies. You can punch all of them and they will run (thats all they do)
 - No build height limit, lamps in 25 colours, and save files that are only a few KB because they only store what you changed
 
 ![pyramids in the desert](media/pyramid.jpg)

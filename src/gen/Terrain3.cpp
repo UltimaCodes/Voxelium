@@ -772,6 +772,97 @@ void Terrain3::gridImpl(int x0, int z0, int n, int step, Sample* out, bool smoot
             }
             h += m;
 
+            const std::uint32_t ms = std::uint32_t(m_seed);
+            // Not every range is the same country. A slow field picks, range by range: crags on the
+            // upper slopes, the plain eroded ridges, or a range stepped in benches and cliff bands.
+            if (m > 4.0f && !smooth) {
+                const float jag = smooth01(0.56f, 0.74f, valueNoise(wx / 2600.0f, wz / 2600.0f, ms + 501u));
+                const float terr = smooth01(0.60f, 0.78f, valueNoise(wx / 3100.0f, wz / 3100.0f, ms + 503u)) * (1.0f - jag);
+                if (jag > 0.0f) {
+                    // fewer octaves where the far horizon samples coarsely, or they shimmer
+                    const int octaves = step <= 16 ? 2 : 1;
+                    float crag = 0.0f, amp = 1.0f, f = 1.0f / 64.0f;
+                    for (int oc = 0; oc < octaves; ++oc, amp *= 0.5f, f *= 2.1f) {
+                        const float v = 1.0f - std::abs(valueNoise(wx * f, wz * f, ms + 505u + std::uint32_t(oc)) * 2.0f - 1.0f);
+                        crag += v * v * amp;
+                    }
+                    h += crag * 15.0f * jag * smooth01(25.0f, 90.0f, m);
+                }
+                if (terr > 0.0f) {
+                    const float stepH = 13.0f + 7.0f * valueNoise(wx / 400.0f, wz / 400.0f, ms + 509u);
+                    const float t = m / stepH, frac = t - std::floor(t);
+                    const float stepped = (std::floor(t) + smooth01(0.68f, 1.0f, frac)) * stepH;
+                    h += (stepped - m) * terr * smooth01(15.0f, 50.0f, m);
+                }
+            }
+
+            // Karst: in warm wet country well away from the coast, towers of rock standing straight up
+            // out of the forest, tens of blocks high and a few dozen apart.
+            const float karst = smooth01(0.58f, 0.68f, tempV[o]) * smooth01(0.52f, 0.64f, wetV[o]) *
+                                smooth01(300.0f, 700.0f, d) * (1.0f - desert) * (1.0f - smooth01(10.0f, 40.0f, m));
+            if (!smooth && karst > 0.0f && step <= 16) {
+                constexpr float kCell = 70.0f;
+                const int cx = int(std::floor(wx / kCell)), cz = int(std::floor(wz / kCell));
+                float tower = 0.0f;
+                for (int dz = -1; dz <= 1; ++dz)
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const std::uint32_t th = hash2(cx + dx, cz + dz, ms + 521u);
+                        if ((th & 255u) > 120u)
+                            continue;
+                        const float tx = (float(cx + dx) + 0.2f + 0.6f * hash01(th >> 8)) * kCell;
+                        const float tz = (float(cz + dz) + 0.2f + 0.6f * hash01(hash2(cx + dx, cz + dz, ms + 523u))) * kCell;
+                        const float r = 6.0f + 8.0f * hash01(hash2(cx + dx, cz + dz, ms + 525u));
+                        const float tall = 30.0f + 60.0f * hash01(hash2(cx + dx, cz + dz, ms + 527u));
+                        const float ddx = wx - tx, ddz = wz - tz;
+                        const float dist = std::sqrt(ddx * ddx + ddz * ddz) * (0.85f + 0.3f * valueNoise(wx * 0.18f, wz * 0.18f, ms + 529u));
+                        const float wall = 1.0f - smooth01(r - 2.0f, r + 1.5f, dist);
+                        tower = std::max(tower, wall * (tall + 5.0f * valueNoise(wx * 0.25f, wz * 0.25f, ms + 531u)));
+                    }
+                h += tower * karst;
+            }
+
+            // Volcanoes: now and then a lone cone with a crater at the top and a lake in it, an island
+            // where one rises out of the sea. In absolute heights, so the crater floor and its lake are
+            // level whatever the country under it, and in the smoothed land too, so rivers run off it.
+            float volcanic = 0.0f, craterLake = -1.0f;
+            {
+                constexpr float kVCell = 2600.0f;
+                const int vx = int(std::floor(wx / kVCell)), vz = int(std::floor(wz / kVCell));
+                const std::uint32_t vh = hash2(vx, vz, ms + 541u);
+                if ((vh & 255u) < 70u) {
+                    const float cxw = (float(vx) + 0.3f + 0.4f * hash01(vh >> 8)) * kVCell;
+                    const float czw = (float(vz) + 0.3f + 0.4f * hash01(hash2(vx, vz, ms + 543u))) * kVCell;
+                    const float rb = 300.0f + 160.0f * hash01(hash2(vx, vz, ms + 545u));
+                    const float hv = 110.0f + 70.0f * hash01(hash2(vx, vz, ms + 547u));
+                    const float rc = 36.0f + 22.0f * hash01(hash2(vx, vz, ms + 549u));
+                    const float ddx = wx - cxw, ddz = wz - czw;
+                    const float dist = std::sqrt(ddx * ddx + ddz * ddz);
+                    if (dist < rb) {
+                        constexpr float kBase = 70.0f;
+                        const auto cone = [&](float r) { return hv * std::pow(1.0f - r / rb, 1.7f); };
+                        const float rim = kBase + cone(rc);
+                        // gullies running down the flanks: noise round a circle of directions, which has
+                        // no seam where an angle would wrap
+                        const float ux = ddx / std::max(dist, 1.0f), uz = ddz / std::max(dist, 1.0f);
+                        const float gully = smooth ? 0.0f
+                                                   : (valueNoise(40.0f + ux * 9.0f + dist * 0.004f, 40.0f + uz * 9.0f, ms + 551u) - 0.5f) *
+                                                         10.0f * smooth01(0.0f, 0.4f, dist / rb);
+                        if (dist < rc) {
+                            h = rim - 0.45f * rc * (1.0f - (dist / rc) * (dist / rc));
+                            if (dist < rc * 0.9f)
+                                craterLake = rim - 8.0f;
+                        } else {
+                            // standing on the ground under it at the foot, on its own fixed heights by
+                            // the top: a fixed foot rose out of the sea floor as a circular cliff
+                            const float onGround = h + cone(dist) + gully;
+                            const float fixedTop = std::max(h, kBase + cone(dist) + gully);
+                            h = glm::mix(onGround, fixedTop, smooth01(rb * 0.75f, rb * 0.35f, dist));
+                        }
+                        volcanic = 1.0f - smooth01(rb * 0.45f, rb, dist);
+                    }
+                }
+            }
+
             if (desert > 0.0f && duneA != nullptr && !smooth) {
                 // two crest fields crossing, on long swells: narrow crests, wide troughs
                 const float a = 1.0f - std::abs(std::clamp(duneA[o], -1.0f, 1.0f));
@@ -854,8 +945,11 @@ void Terrain3::gridImpl(int x0, int z0, int n, int step, Sample* out, bool smoot
                 }
             }
 
+            if (craterLake > h && craterLake > water)
+                water = std::floor(craterLake);
             Sample& s = out[o];
             s.h = h;
+            s.volcanic = volcanic;
             s.broad = broad;
             s.coast = d;
             s.desert = desert;

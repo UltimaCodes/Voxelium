@@ -138,6 +138,7 @@ private:
         float moisture = 0.5f;
         float temp = 0.5f;
         int water = -1; // a river or lake's surface; below h for none
+        bool volcanic = false; // up a volcano's cone
         Biome biome = Biome::Plains;
     };
     Column column(int wx, int wz) const;
@@ -153,6 +154,7 @@ private:
         std::uint8_t rock[kChunkSize][kChunkSize];
         std::uint8_t moisture[kChunkSize][kChunkSize];
         std::uint8_t temp[kChunkSize][kChunkSize];
+        std::uint8_t volcanic[kChunkSize][kChunkSize];
         Biome biome[kChunkSize][kChunkSize];
     };
     std::shared_ptr<const ColumnTile> columnTile(int cx, int cz) const;

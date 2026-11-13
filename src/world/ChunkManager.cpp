@@ -345,10 +345,15 @@ ChunkManager::LodAudit ChunkManager::auditLod() const {
         // Exactly the self-heal condition in update() that queues a coarse->detailed regen
         // (dirty is excluded there on purpose too, see #64, an unsaved edit keeps a chunk
         // coarse until it's saved, which is correct, not stuck).
-        if (lodOf(desired) < kCoarseLod && !e.detailed && detailCouldAdd(pos, e) && !e.dirty)
+        if (lodOf(desired) < kCoarseLod && nearEnoughDown(pos, m_center) && !e.detailed && detailCouldAdd(pos, e) &&
+            !e.dirty)
             ++a.coarseInDetailBand;
     }
     return a;
+}
+
+bool ChunkManager::nearEnoughDown(ChunkPos pos, ChunkPos center) {
+    return pos.y >= center.y - kDetailBelow;
 }
 
 bool ChunkManager::detailCouldAdd(ChunkPos pos, const Entry& e) const {
@@ -591,7 +596,7 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         voxels->fillLight(0);
         voxels->retainJob();
         // far chunks generate coarse (no caves/trees); re-gen'd detailed when approached
-        const bool detailed = lodForDist2(horizontalDist2(pos, center), lodScale()) < kCoarseLod;
+        const bool detailed = lodForDist2(horizontalDist2(pos, center), lodScale()) < kCoarseLod && nearEnoughDown(pos, center);
         Entry entry; // state defaults to Generating
         entry.voxels = voxels;
         entry.detailed = detailed;
@@ -735,7 +740,8 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         // should be at now. Everything above ground is already in it (the generator only skips
         // caves), and holding the far mesh until the regen landed put LOD 2-5 chunks right at
         // the camera: 410 of the 1183 chunks within 6 of it, on average, flying at 45 b/s.
-        if (e.state == ChunkState::Meshed && !e.detailed && lodOf(desired) < kCoarseLod && detailCouldAdd(pos, e) &&
+        if (e.state == ChunkState::Meshed && !e.detailed && lodOf(desired) < kCoarseLod && nearEnoughDown(pos, center) &&
+            detailCouldAdd(pos, e) &&
             !e.dirty)
             m_regenScratch.push_back(pos);
         if (!(firstMesh || reLod) || e.meshingLod == desired)
@@ -767,6 +773,21 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
             if (nit->second.state == ChunkState::Generating || !nit->second.lit) {
                 ready = false;
                 break;
+            }
+        }
+        // Solid rock with solid rock on all six sides has no face to draw either: the deep stone
+        // and the bedrock under every column were a mesh job each for nothing. If a neighbour
+        // opens up later, the regen swap or the edit that opened it sends this one back here.
+        if (ready && e.meshingLod < 0 && e.voxels->uniform() && blocks::occludes(e.voxels->uniformId())) {
+            bool buried = true;
+            for (const auto& f : kFaceOffsets) {
+                const auto nit = m_chunks.find({pos.x + f[0], pos.y + f[1], pos.z + f[2]});
+                buried = buried && nit != m_chunks.end() && nit->second.voxels && nit->second.voxels->uniform() &&
+                         blocks::occludes(nit->second.voxels->uniformId());
+            }
+            if (buried) {
+                m_emptyScratch.push_back(pos);
+                return;
             }
         }
         if (ready)
@@ -996,6 +1017,28 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         e.voxels = r.voxels;
         e.pendingDetail = nullptr;
         e.detailed = true;
+        // Where a cave now opens onto a face that was solid, the rock across it has a face to show,
+        // and that face belongs to the neighbour, meshed when this side was still solid: it showed
+        // the void through the cave wall until something else made it mesh again.
+        for (int d = 0; d < 6; ++d) {
+            const int axis = d >> 1, at = (d & 1) ? 0 : kChunkSize - 1;
+            bool opened = false;
+            for (int a = 0; a < kChunkSize && !opened; ++a)
+                for (int b = 0; b < kChunkSize && !opened; ++b) {
+                    const int x = axis == 0 ? at : a, y = axis == 1 ? at : (axis == 0 ? a : b), z = axis == 2 ? at : b;
+                    opened = !blocks::occludes(e.voxels->get(x, y, z)) && blocks::occludes(old->get(x, y, z));
+                }
+            if (!opened)
+                continue;
+            const ChunkPos n{r.pos.x + kFaceOffsets[d][0], r.pos.y + kFaceOffsets[d][1], r.pos.z + kFaceOffsets[d][2]};
+            if (const auto nit = m_chunks.find(n); nit != m_chunks.end()) {
+                if (nit->second.meshingLod >= 0)
+                    nit->second.lightDirty = true; // a mesh already out read the old faces: once more after it
+                else if (nit->second.state == ChunkState::Meshed)
+                    nit->second.remesh = true;
+                touchScan(n);
+            }
+        }
         m_pool.release(old);
         --m_jobsInFlight;
         --m_regenInFlight;

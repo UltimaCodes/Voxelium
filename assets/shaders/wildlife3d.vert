@@ -24,7 +24,7 @@ out float vAlpha;
 const int kParts = 8;
 const int kVerts = kParts * 36;
 const int kButterfly = 1, kGull = 3, kFish = 4, kLeaf = 5, kBird = 8, kCrab = 9, kTurtle = 10, kJelly = 11;
-const int kSheep = 12, kCow = 13, kPig = 14, kChicken = 15, kRabbit = 16, kDeer = 17, kFox = 18, kFrog = 19, kBee = 20;
+const int kSheep = 12, kCow = 13, kPig = 14, kChicken = 15, kRabbit = 16, kDeer = 17, kFox = 18, kFrog = 19, kBee = 20, kBat = 21;
 
 // set by a model that glows (a jellyfish): its colour is then used flat, not shaded
 float gEmit = 0.0;
@@ -312,7 +312,7 @@ void main() {
     Part pt;
     if (kind == kButterfly) pt = butterfly(p, ph);
     else if (kind == kGull) pt = flyer(p, ph, true);
-    else if (kind == kBird) pt = flyer(p, ph, false);
+    else if (kind == kBird || kind == kBat) pt = flyer(p, ph, false);
     else if (kind == kFish) pt = fish(p, ph);
     else if (kind == kCrab) pt = crab(p, ph);
     else if (kind == kTurtle) pt = turtle(p, ph);

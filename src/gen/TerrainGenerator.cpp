@@ -314,6 +314,7 @@ std::shared_ptr<const TerrainGenerator::ColumnTile> TerrainGenerator::columnTile
             tile->rock[z][x] = rock;
             tile->moisture[z][x] = std::uint8_t(std::clamp(s.moisture, 0.0f, 1.0f) * 255.0f + 0.5f);
             tile->temp[z][x] = std::uint8_t(std::clamp(s.temp, 0.0f, 1.0f) * 255.0f + 0.5f);
+            tile->volcanic[z][x] = std::uint8_t(std::clamp(s.volcanic, 0.0f, 1.0f) * 255.0f + 0.5f);
             tile->biome[z][x] = classify(x0 + kP + x, z0 + kP + z, h, s.broad, s.desert, s.coast, s.moisture, s.temp, snow);
         }
     std::lock_guard<std::mutex> g(lock);
@@ -765,6 +766,7 @@ TerrainGenerator::Column TerrainGenerator::column(int wx, int wz) const {
         c.temp = float(t->temp[z][x]) / 255.0f;
         c.water = t->water[z][x];
         c.biome = t->biome[z][x];
+        c.volcanic = t->volcanic[z][x] > 100;
         return c;
     }
     if (m_version >= 2) {
@@ -1159,8 +1161,15 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
             const int bandWarp = mesa ? int(valueNoise(wxf * 0.02f, wzf * 0.02f, seedOff(m_seed, 317)) * 5.0f) : 0;
             const bool seabed = h < kSeaLevel - 1;
             const bool bare = !desert && !beach && !seabed && rock[z][x] != 0;
-            const bool snowy = !desert && !beach && !seabed && rock[z][x] < 2 &&
-                               h >= (tile3 ? int(tile3->snow[z][x]) : snowLineAt(baseX + x, baseZ + z));
+            const int snowAt = tile3 ? int(tile3->snow[z][x]) : snowLineAt(baseX + x, baseZ + z);
+            const bool snowy = !desert && !beach && !seabed && rock[z][x] < 2 && h >= snowAt;
+            // a volcano's cone: dark rock, and ash lying in its hollows
+            const bool volcanic = tile3 && !seabed && tile3->volcanic[z][x] > 100;
+            // Ice where the snow lies deep and level well above the line: glaciers in the high basins.
+            const bool glacier = tile3 && snowy && rock[z][x] == 0 && h >= snowAt + 14 && patch > 0.3f;
+            // Scree: the loose stone under the crags, on slopes too steep for grass and not sheer.
+            const bool scree = tile3 && rock[z][x] == 1 && !snowy && !desert && h > kSeaLevel + 20 &&
+                               valueNoise(float(baseX + x) * 0.09f, float(baseZ + z) * 0.09f, seedOff(m_seed, 319)) > 0.55f;
             // patches of gravel on the sea floor break up an otherwise flat sheet of sand
             const bool gravelBed = seabed && h < kSeaLevel - 5 &&
                                    valueNoise(float(baseX + x) * 0.05f, float(baseZ + z) * 0.05f,
@@ -1225,8 +1234,14 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
                         id = gravelBed ? blocks::Gravel : blocks::Sand;
                     else if (desert)
                         id = bio == Biome::RedDesert ? blocks::RedSand : blocks::Sand;
+                    else if (glacier && wy >= h - 4)
+                        id = wy == h && patch > 0.85f ? blocks::Snow : blocks::Ice;
                     else if (snowy && wy >= h - 1)
                         id = blocks::Snow; // a couple blocks of cap
+                    else if (volcanic)
+                        id = wy == h && patch > 0.45f ? blocks::Gravel : blocks::Slate;
+                    else if (scree && wy >= h - 1)
+                        id = blocks::Gravel;
                     else if (bare)
                         id = tile3 ? bareRock : blocks::Stone;
                     else if (wy == h)
@@ -1434,7 +1449,7 @@ void TerrainGenerator::carveCaves2(Chunk& chunk, int baseX, int baseY, int baseZ
             if (v3) {
                 const float n = 0.75f * valueNoise(float(wx) * 0.0016f, float(wz) * 0.0016f, seedOff(m_seed, 230)) +
                                 0.25f * valueNoise(float(wx) * 0.006f, float(wz) * 0.006f, seedOff(m_seed, 231));
-                richCol = smooth01(0.22f, 0.78f, n);
+                richCol = smooth01(0.34f, 0.86f, n); // most country is solid rock with the odd passage
                 pillar = valueNoise(float(wx) * 0.055f, float(wz) * 0.055f, seedOff(m_seed, 235)) > 0.9f;
                 constexpr int kLakeCell = 192;
                 const auto levelOf = [&](int rx, int rz) {
@@ -1456,10 +1471,10 @@ void TerrainGenerator::carveCaves2(Chunk& chunk, int baseX, int baseY, int baseZ
             }
             // A ravine: where the path field is near zero inside the rare mask, cut down from the
             // surface by up to ~45, narrower the deeper it goes so its walls lean in. Rare: the
-            // first version's mask covered a fifth of the land.
+            // first version's mask covered a fifth of the land. Version 3 has none: a winding
+            // trench that starts and stops in open country reads as a scratch across the map.
             const int i2 = x + z * kChunkSize;
-            // version 3 keeps them to a few patches of country: they were several to every kilometre
-            const float rm = v3 ? smooth01(0.66f, 0.74f, ravMask[i2]) : smooth01(0.48f, 0.58f, ravMask[i2]);
+            const float rm = v3 ? 0.0f : smooth01(0.48f, 0.58f, ravMask[i2]);
             const int ravDepth = rm > 0.0f ? int(18.0f + 27.0f * rm) : 0;
             for (int y = 0; y < kChunkSize; ++y) {
                 const int wy = baseY + y;
@@ -1476,7 +1491,7 @@ void TerrainGenerator::carveCaves2(Chunk& chunk, int baseX, int baseY, int baseZ
                 float rich = richCol;
                 if (v3) {
                     const float band = valueNoise(float(wy) * 0.03f, float(wx + wz) * 0.0011f, seedOff(m_seed, 232));
-                    rich = std::clamp(richCol * (0.35f + 1.0f * band), 0.0f, 1.0f);
+                    rich = std::clamp(richCol * (0.25f + 1.0f * band), 0.0f, 1.0f);
                 }
                 // version 3's tunnels are the passages between its rooms, not the whole of its caves
                 const float wormR2 = v3 ? kWormR2 * (0.02f + 0.18f * rich) : kWormR2;
@@ -1486,7 +1501,7 @@ void TerrainGenerator::carveCaves2(Chunk& chunk, int baseX, int baseY, int baseZ
                 // just a crater, or a hole in a hillside
                 if (cover >= 12) {
                     const int deep = std::min(depth, cover);
-                    const float t = v3 ? (deep > 48 ? 0.40f : (deep > 24 ? 0.46f : 0.55f)) + 0.32f * (1.0f - rich)
+                    const float t = v3 ? (deep > 48 ? 0.43f : (deep > 24 ? 0.49f : 0.58f)) + 0.32f * (1.0f - rich)
                                        : (deep > 48 ? 0.42f : (deep > 24 ? 0.50f : 0.60f));
                     open = cav[i] > t && !pillar;
                 }
@@ -1500,9 +1515,8 @@ void TerrainGenerator::carveCaves2(Chunk& chunk, int baseX, int baseY, int baseZ
                     }
                 }
                 if (!open && depth < ravDepth && !wet) {
-                    // a few blocks across at the top, pinching in below. Version 3's are wider: at
-                    // 0.016 they were one-block slits wandering across the country.
-                    const float width = (v3 ? 0.08f : 0.016f) * (1.0f - 0.7f * float(depth) / float(ravDepth));
+                    // a few blocks across at the top (0.045 cut gashes 20-30 wide), pinching in below
+                    const float width = 0.016f * (1.0f - 0.7f * float(depth) / float(ravDepth));
                     open = std::abs(rav[i2]) < width;
                 }
                 if (open && wy <= damBelow)
@@ -2159,8 +2173,9 @@ void TerrainGenerator::placeTrees3(Chunk& chunk, ChunkPos pos) const {
                     boulder();
                 continue;
             }
-            if (col.h > col.snowLine - 34)
-                continue;
+            if (col.volcanic || col.h > col.snowLine - 34)
+                continue; // nothing roots in fresh ash, or up in the snow
+
             if (col.h > col.snowLine - 74 && int((hsh >> 21) % 40u) < col.h - (col.snowLine - 74))
                 continue;
 
@@ -2281,6 +2296,8 @@ void TerrainGenerator::placeFoliage3(Chunk& chunk, ChunkPos pos) const {
             const BlockId ground = y > 0 ? chunk.get(x, y - 1, z) : blocks::Grass;
             if (y > 0 && (ground == blocks::Air || blocks::isWater(ground) || ground == blocks::Snow || ground == blocks::Ice))
                 continue;
+            if (tile->volcanic[z][x] > 100)
+                continue; // nothing grows on fresh ash
             if (tile->rock[z][x] != 0) {
                 if ((bio == Biome::Alpine || bio == Biome::Tundra || bio == Biome::Taiga) && roll < 30)
                     set(x, y, z, blocks::Pebbles);
@@ -2444,7 +2461,7 @@ void TerrainGenerator::placeFoliage3(Chunk& chunk, ChunkPos pos) const {
                         set(x, y, z, blocks::FireflyBush);
                     break;
                 case Biome::Alpine:
-                    if (flowerRoll(14))
+                    if (flowerRoll(32))
                         set(x, y, z, flowerFrom({blocks::FlowerBlue, blocks::FlowerPurple, blocks::FlowerWhite}));
                     else if (roll < 250)
                         set(x, y, z, blocks::GrassTuft);
@@ -2482,6 +2499,55 @@ void TerrainGenerator::placeFoliage3(Chunk& chunk, ChunkPos pos) const {
                     break;
             }
         }
+
+    // One feature a chunk at most, kept inside it: a fallen log in the woods with mushrooms on it,
+    // or a spike of ice standing out on the tundra.
+    const std::uint32_t fh = cellHash(wrapMul(pos.x, 31u) + std::uint32_t(seedOff(m_seed, 261)), wrapMul(pos.z, 57u));
+    const int fx = 4 + int((fh >> 4) % 24u), fz = 4 + int((fh >> 9) % 24u);
+    const Biome fb = tile->biome[fz][fx];
+    const int fsurf = tile->h[fz][fx];
+    if (tile->rock[fz][fx] != 0 || tile->water[fz][fx] > fsurf || fsurf < kSeaLevel || fsurf >= tile->snow[fz][fx])
+        return;
+    const bool woods = fb == Biome::Forest || fb == Biome::BirchForest || fb == Biome::Taiga || fb == Biome::Jungle;
+    if (woods && fh % 100u < 30u) {
+        const bool alongX = ((fh >> 14) & 1u) != 0u;
+        const int len = 3 + int((fh >> 15) % 3u);
+        const BlockId log = fb == Biome::BirchForest ? (alongX ? blocks::BirchWoodX : blocks::BirchWoodZ)
+                            : fb == Biome::Taiga     ? (alongX ? blocks::SpruceWoodX : blocks::SpruceWoodZ)
+                                                     : (alongX ? blocks::WoodX : blocks::WoodZ);
+        for (int k = 0; k < len; ++k) {
+            const int lx = alongX ? fx + k - len / 2 : fx, lz = alongX ? fz : fz + k - len / 2;
+            const int gy = tile->h[lz][lx];
+            if (std::abs(gy - fsurf) > 1)
+                break;
+            const int ly = gy + 1 - baseY;
+            if (ly < 0 || ly >= kChunkSize)
+                continue;
+            // the plants on the ground give way to it, a tree does not
+            const BlockId cur = chunk.get(lx, ly, lz);
+            if (cur != blocks::Air && !blocks::isCross(cur))
+                break;
+            chunk.set(lx, ly, lz, log);
+            if (ly + 1 < kChunkSize && chunk.get(lx, ly + 1, lz) == blocks::Air && voxelHash(baseX + lx, gy, baseZ + lz) % 4u == 0u)
+                chunk.set(lx, ly + 1, lz, blocks::MushroomBrown);
+        }
+    } else if (fb == Biome::Tundra && fh % 100u < 9u) {
+        const int tall = 7 + int((fh >> 15) % 14u);
+        for (int k = 0; k < tall; ++k) {
+            const int r = k < tall / 3 ? 2 : (k < tall * 2 / 3 ? 1 : 0);
+            const int ly = fsurf + 1 + k - baseY;
+            if (ly < 0 || ly >= kChunkSize)
+                continue;
+            for (int dz = -r; dz <= r; ++dz)
+                for (int dx = -r; dx <= r; ++dx) {
+                    if (r == 2 && std::abs(dx) == 2 && std::abs(dz) == 2)
+                        continue;
+                    const BlockId cur = chunk.get(fx + dx, ly, fz + dz);
+                    if (cur == blocks::Air || blocks::isCross(cur) || cur == blocks::Snow)
+                        chunk.set(fx + dx, ly, fz + dz, blocks::Ice);
+                }
+        }
+    }
 }
 
 void TerrainGenerator::placeFoliage(Chunk& chunk, ChunkPos pos, const int (*heights)[kChunkSize],
@@ -2645,6 +2711,39 @@ TerrainGenerator::StructureSite TerrainGenerator::structureSite(int cx, int cz) 
         site.kind = coast ? 3 : 0;
         return site;
     }
+    // Inland, version 3: what people built out in the country and left.
+    if (m_version >= 3 && g >= kSeaLevel + 3 && !col.rock && col.water <= g && col.desert < 0.3f && !col.volcanic) {
+        int lo = g, hi = g;
+        for (const auto& d : {std::pair<int, int>{6, 6}, {-6, 6}, {6, -6}, {-6, -6}}) {
+            const int hh = column(ax + d.first, az + d.second).h;
+            lo = std::min(lo, hh);
+            hi = std::max(hi, hh);
+        }
+        const bool level = hi - lo <= 3;
+        const Biome b = col.biome;
+        const bool woods = b == Biome::Taiga || b == Biome::SnowyTaiga || b == Biome::Forest || b == Biome::BirchForest;
+        const bool open = b == Biome::Plains || b == Biome::Meadow || b == Biome::Savanna || b == Biome::Tundra;
+        // a cabin in the woods
+        if (woods && level && (rv >> 6) % 4u == 0u) {
+            site.kind = 5;
+            return site;
+        }
+        // a ring of standing stones out in the open
+        if (open && level && (rv >> 6) % 6u == 0u) {
+            site.kind = 6;
+            return site;
+        }
+        // a watchtower on the brow of a hill: higher than the ground all round it
+        if ((open || woods || b == Biome::Alpine) && (rv >> 9) % 3u == 0u) {
+            int lower = 0;
+            for (const auto& d : {std::pair<int, int>{14, 0}, {-14, 0}, {0, 14}, {0, -14}, {10, 10}, {-10, -10}})
+                lower += column(ax + d.first, az + d.second).h <= g - 2 ? 1 : 0;
+            if (lower >= 5) {
+                site.kind = 7;
+                return site;
+            }
+        }
+    }
     return none;
 }
 
@@ -2661,6 +2760,23 @@ void TerrainGenerator::placeStructures(Chunk& chunk, ChunkPos pos) const {
         const int lx = wx - baseX, ly = wy - baseY, lz = wz - baseZ;
         if (lx >= 0 && lx < kChunkSize && ly >= 0 && ly < kChunkSize && lz >= 0 && lz < kChunkSize)
             chunk.set(lx, ly, lz, id);
+    };
+    // Trees cleared off the ground round a cabin or a tower, someone having cut them back: logs and
+    // leaves within r of it, from the ground up.
+    const auto clearTrees = [&](int ax, int az, int r, int g) {
+        for (int wz = az - r; wz <= az + r; ++wz)
+            for (int wx = ax - r; wx <= ax + r; ++wx) {
+                if ((wx - ax) * (wx - ax) + (wz - az) * (wz - az) > r * r)
+                    continue;
+                for (int wy = g - 12; wy <= g + 26; ++wy) { // a tower stands on a brow, its trees lower down
+                    const int lx = wx - baseX, ly = wy - baseY, lz = wz - baseZ;
+                    if (lx < 0 || lx >= kChunkSize || ly < 0 || ly >= kChunkSize || lz < 0 || lz >= kChunkSize)
+                        continue;
+                    const BlockId b = chunk.get(lx, ly, lz);
+                    if (blocks::isLogBlock(b) || blocks::isLeafBlock(b))
+                        chunk.set(lx, ly, lz, blocks::Air);
+                }
+            }
     };
     // a block that only replaces water or air: the hull of a wreck does not carve the seabed
     const auto putSoft = [&](int wx, int wy, int wz, BlockId id) {
@@ -2795,6 +2911,112 @@ void TerrainGenerator::placeStructures(Chunk& chunk, ChunkPos pos) const {
                     }
                 put(ax, top + 2, az, blocks::Glow);
                 put(ax, top + 5, az, blocks::Stone);
+                continue;
+            }
+
+            // ---- a cabin in the woods: logs at the corners, plank walls, a gable roof ------------
+            if (st.kind == 5) {
+                const bool alongX = (rv & 4u) != 0u;
+                constexpr int kLong = 4, kShort = 3; // 9 x 7
+                const bool spruce = column(ax, az).biome == Biome::Taiga || column(ax, az).biome == Biome::SnowyTaiga;
+                const BlockId log = spruce ? blocks::SpruceWood : blocks::Wood;
+                const BlockId planks = spruce ? blocks::SprucePlanks : blocks::Planks;
+                const auto at = [&](int l, int s, int k, BlockId id) { put(alongX ? ax + l : ax + s, g + k, alongX ? az + s : az + l, id); };
+                clearTrees(ax, az, 9, g);
+                for (int l = -kLong - 1; l <= kLong + 1; ++l)
+                    for (int s = -kShort - 1; s <= kShort + 1; ++s) {
+                        const bool inside = std::abs(l) <= kLong && std::abs(s) <= kShort;
+                        if (inside) {
+                            for (int k = -3; k <= -1; ++k)
+                                at(l, s, k, blocks::Cobblestone);
+                            at(l, s, 0, planks);
+                            const bool corner = std::abs(l) == kLong && std::abs(s) == kShort;
+                            const bool wall = std::abs(l) == kLong || std::abs(s) == kShort;
+                            for (int k = 1; k <= 4; ++k) {
+                                BlockId id = corner ? log : (wall ? planks : blocks::Air);
+                                if (wall && !corner && k == 2 && (l == 0 || s == 0 || std::abs(l) == 2))
+                                    id = blocks::Glass;
+                                if (s == -kShort && l == 0 && k <= 2)
+                                    id = blocks::Air; // the door
+                                at(l, s, k, id);
+                            }
+                            // the gable ends fill up to the roof
+                            if (std::abs(l) == kLong)
+                                for (int k = 5; k < 5 + kShort - std::abs(s); ++k)
+                                    at(l, s, k, planks);
+                            else
+                                for (int k = 5; k < 5 + kShort - std::abs(s); ++k)
+                                    at(l, s, k, blocks::Air);
+                        }
+                        // the roof, one plank thick, a block of overhang all round
+                        at(l, s, 5 + kShort - std::abs(s), planks);
+                        for (int k = 1; k <= 3; ++k)
+                            if (!inside)
+                                at(l, s, 5 + kShort - std::abs(s) + k, blocks::Air);
+                    }
+                // a stone chimney up the far end, and a lamp lit inside
+                for (int k = 1; k <= 5 + kShort + 3; ++k)
+                    at(kLong - 1, kShort - 1, k, blocks::Cobblestone);
+                at(-kLong + 1, kShort - 1, 1, BlockId(blocks::LampFirst + blocks::kLampHues + 1));
+                continue;
+            }
+
+            // ---- standing stones: a ring of them, some fallen, a flat stone in the middle --------
+            if (st.kind == 6) {
+                const int count = 8 + int((rv >> 12) % 4u);
+                const float radius = 6.0f + float((rv >> 16) % 3u);
+                for (int i = 0; i < count; ++i) {
+                    const std::uint32_t sh = voxelHash(ax + i, 96, az);
+                    const float ang = (float(i) + 0.3f * (float(sh % 100u) / 100.0f)) * 6.2831853f / float(count);
+                    const int px = ax + int(std::lround(std::cos(ang) * radius)), pz = az + int(std::lround(std::sin(ang) * radius));
+                    const int gy = column(px, pz).h;
+                    const BlockId stone = (sh >> 8) % 3u == 0u ? blocks::Andesite : blocks::Stone;
+                    if ((sh >> 12) % 5u == 0u) { // fallen, lying outward
+                        put(px, gy + 1, pz, stone);
+                        put(px + (std::cos(ang) > 0.0f ? 1 : -1), gy + 1, pz, blocks::MossyCobble);
+                        continue;
+                    }
+                    const int tall = 2 + int((sh >> 16) % 3u);
+                    for (int k = 0; k <= tall; ++k)
+                        put(px, gy + k, pz, k == tall && (sh & 1u) ? blocks::MossyCobble : stone);
+                }
+                put(ax, g + 1, az, blocks::Andesite);
+                put(ax + 1, g + 1, az, blocks::Andesite);
+                continue;
+            }
+
+            // ---- a watchtower gone to ruin on the brow of a hill ---------------------------------
+            if (st.kind == 7) {
+                constexpr int kHalf = 2; // 5 x 5
+                const int tall = 9 + int((rv >> 12) % 6u);
+                clearTrees(ax, az, 7, g);
+                for (int dz = -kHalf; dz <= kHalf; ++dz)
+                    for (int dx = -kHalf; dx <= kHalf; ++dx) {
+                        const int wx = ax + dx, wz = az + dz;
+                        for (int k = -4; k <= 0; ++k)
+                            put(wx, g + k, wz, blocks::StoneBricks);
+                        const bool wall = std::abs(dx) == kHalf || std::abs(dz) == kHalf;
+                        const int topK = tall - int(voxelHash(wx, 95, wz) % 4u); // the top broken unevenly
+                        for (int k = 1; k <= tall + 1; ++k) {
+                            const std::uint32_t bh = voxelHash(wx, g + k, wz);
+                            BlockId id = blocks::Air;
+                            if (wall && k <= topK)
+                                id = bh % 5u == 0u ? blocks::MossyCobble : (bh % 3u == 0u ? blocks::Cobblestone : blocks::StoneBricks);
+                            if (wall && dz == kHalf && dx == 0 && k <= 2)
+                                id = blocks::Air; // the doorway
+                            if (wall && k % 4 == 3 && (dx == 0 || dz == 0) && !(dz == kHalf && dx == 0))
+                                id = blocks::Air; // arrow slits
+                            put(wx, g + k, wz, id);
+                        }
+                    }
+                // the stones that fell, lying round its foot
+                for (int i = 0; i < 12; ++i) {
+                    const std::uint32_t fh = voxelHash(ax + i * 7, 97, az - i * 3);
+                    const int ox = int(fh % 13u) - 6, oz = int((fh >> 8) % 13u) - 6;
+                    if (std::abs(ox) <= kHalf + 1 && std::abs(oz) <= kHalf + 1)
+                        continue;
+                    put(ax + ox, column(ax + ox, az + oz).h + 1, az + oz, (fh >> 16) & 1u ? blocks::MossyCobble : blocks::Cobblestone);
+                }
                 continue;
             }
         }

@@ -27,7 +27,6 @@ inline constexpr int kHighestLookDown = 19; // chunk y (about 640): past it the 
 // voxel above kTerrainTop, so everything above it is open sky by construction, which is
 // what lets sky light be seeded without a world top to descend from.
 inline constexpr int kTerrainTop = 384;
-inline constexpr int kTerrainBottom = 0; // bedrock floor; nothing generates below
 
 // Legacy alias. A few places still want "how tall is generated terrain" in chunks.
 inline constexpr int kWorldChunksY = kTerrainTop / kChunkSize;

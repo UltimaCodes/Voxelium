@@ -367,6 +367,11 @@ private:
     // uniform chunk never went back for its caves, so below the first few chunks you met there
     // were none).
     bool detailCouldAdd(ChunkPos pos, const Entry& e) const;
+    // Chunks further below the camera than this stay coarse (deep rock, no caves) until it comes
+    // down toward them: generating and meshing the caves under every hill you fly over was the
+    // bulk of the work that fell behind a fast flight.
+    static constexpr int kDetailBelow = 3;
+    static bool nearEnoughDown(ChunkPos pos, ChunkPos center);
     void rebuildArena(Renderer& renderer);
     void rebuildVisibility(ChunkPos cameraChunk);
     // The same flood written against the hash map, kept as the reference the dense-grid one is

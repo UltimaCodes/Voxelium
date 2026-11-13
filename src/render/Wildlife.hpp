@@ -94,7 +94,7 @@ public:
 private:
     enum Kind : std::uint8_t {
         Butterfly = 1, Firefly, Gull, Fish, Leaf, Mote, Bubble, Bird, Crab, Turtle, Jelly,
-        Sheep, Cow, Pig, Chicken, Rabbit, Deer, Fox, Frog, Bee
+        Sheep, Cow, Pig, Chicken, Rabbit, Deer, Fox, Frog, Bee, Bat
     };
     // the animals that walk the land, in herds
     static bool walks(Kind k) { return k >= Sheep && k <= Frog; }
@@ -162,6 +162,7 @@ private:
     void spawnJelly(const ChunkManager& w, const glm::dvec3& cam);
     void spawnHerd(const ChunkManager& w, const glm::dvec3& cam);
     void spawnBee(const ChunkManager& w, const glm::dvec3& cam);
+    void spawnBat(const ChunkManager& w, const glm::dvec3& cam);
     void walk(Critter& c, float dt, const ChunkManager& w, const glm::dvec3& cam, const Env& env, double dist2);
     // where the middle of an animal's body is: walkers stand on their position
     static glm::dvec3 centerOf(const Critter& c);
