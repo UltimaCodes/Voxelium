@@ -362,6 +362,11 @@ private:
 
     void rescan(ChunkPos center);
     void processEvictions(Renderer& renderer, JobSystem& jobs);
+    // A coarse chunk that generating in detail can change: anything with more than one block in
+    // it, and solid stone where caves can reach (the coarse pass leaves deep rock solid, and a
+    // uniform chunk never went back for its caves, so below the first few chunks you met there
+    // were none).
+    bool detailCouldAdd(ChunkPos pos, const Entry& e) const;
     void rebuildArena(Renderer& renderer);
     void rebuildVisibility(ChunkPos cameraChunk);
     // The same flood written against the hash map, kept as the reference the dense-grid one is

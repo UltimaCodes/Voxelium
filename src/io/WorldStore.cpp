@@ -13,31 +13,41 @@ namespace {
 constexpr const char* kMeta = "world.cfg";
 
 // Copies the .vxr region files only. Anything else in a world folder is ours (the meta
-// file) or is not ours to move around.
+// file) or is not ours to move around. -1 if any of them would not copy.
 int copyRegions(const std::filesystem::path& from, const std::filesystem::path& to) {
     std::error_code ec;
     std::filesystem::create_directories(to, ec);
     if (!std::filesystem::exists(from, ec))
         return 0;
     int n = 0;
+    bool failed = false;
     for (const auto& e : std::filesystem::directory_iterator(from, ec)) {
         if (e.path().extension() != ".vxr")
             continue;
+        std::error_code cec;
         std::filesystem::copy_file(e.path(), to / e.path().filename(),
-                                   std::filesystem::copy_options::overwrite_existing, ec);
-        if (!ec)
+                                   std::filesystem::copy_options::overwrite_existing, cec);
+        if (cec) {
+            VX_ERROR("could not copy %s: %s", e.path().string().c_str(), cec.message().c_str());
+            failed = true;
+        } else {
             ++n;
+        }
     }
-    return n;
+    return failed || ec ? -1 : n;
 }
 
-void removeRegions(const std::filesystem::path& dir) {
+// Every region in `dir`, or only those `keep` has no copy of.
+void removeRegions(const std::filesystem::path& dir, const std::filesystem::path* keep = nullptr) {
     std::error_code ec;
     if (!std::filesystem::exists(dir, ec))
         return;
+    std::vector<std::filesystem::path> doomed;
     for (const auto& e : std::filesystem::directory_iterator(dir, ec))
-        if (e.path().extension() == ".vxr")
-            std::filesystem::remove(e.path(), ec);
+        if (e.path().extension() == ".vxr" && !(keep && std::filesystem::exists(*keep / e.path().filename(), ec)))
+            doomed.push_back(e.path());
+    for (const auto& p : doomed)
+        std::filesystem::remove(p, ec);
 }
 
 std::size_t dirBytes(const std::filesystem::path& dir) {
@@ -117,17 +127,21 @@ bool WorldStore::save(const std::string& name, int seed, int gen) const {
     std::filesystem::create_directories(dir, ec);
     if (ec)
         return false;
-    // Stale regions from a previous save under this name would otherwise survive as chunks
-    // the new save never had.
-    removeRegions(dir);
+    // Copied over the old save first, so a copy that fails part way leaves it whole rather than
+    // emptied. Then the regions the new save never had go, or they would survive as its chunks.
+    const int n = copyRegions(liveDir(), dir);
+    if (n < 0)
+        return false;
+    const std::filesystem::path live = liveDir();
+    removeRegions(dir, &live);
     {
         std::ofstream out(dir / kMeta, std::ios::trunc);
-        if (!out)
-            return false;
         out << "seed=" << seed << "\n";
         out << "gen=" << gen << "\n";
+        out.close();
+        if (out.fail())
+            return false;
     }
-    const int n = copyRegions(liveDir(), dir);
     VX_INFO("world saved: \"%s\" seed %d, generator %d, %d region file(s)", clean.c_str(), seed, gen, n);
     return true;
 }
@@ -154,6 +168,10 @@ bool WorldStore::load(const std::string& name, int& seedOut, int& genOut) const 
     genOut = gen;
     clearLive();
     const int n = copyRegions(dir, liveDir());
+    if (n < 0) { // half a world is worse than none: its edits would come back with holes in
+        clearLive();
+        return false;
+    }
     VX_INFO("world loaded: \"%s\" seed %d, generator %d, %d region file(s)", name.c_str(), seedOut,
             genOut, n);
     return true;

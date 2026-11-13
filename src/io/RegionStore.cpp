@@ -73,45 +73,55 @@ RegionStore::Region& RegionStore::ensureLoaded(RegionKey key) {
                                       std::istreambuf_iterator<char>());
         const bool magicOk = buf.size() >= 4 && std::memcmp(buf.data(), kMagic, 4) == 0;
         const bool versionOk = buf.size() >= 8 && read32(buf.data() + 4) == kVersion;
-        if (magicOk && versionOk && buf.size() >= kHeader) {
-            const std::size_t count = read32(buf.data() + 8);
-            const std::size_t dataStart = kHeader + count * kDirEntry;
-            if (dataStart <= buf.size()) {
-                for (std::size_t i = 0; i < count; ++i) {
-                    const std::uint8_t* e = buf.data() + kHeader + i * kDirEntry;
-                    const std::int32_t cy = std::int32_t(read32(e));
-                    const std::uint32_t locals = read32(e + 4);
-                    const std::uint32_t off = read32(e + 8);
-                    const std::uint32_t len = read32(e + 12);
-                    if (len == 0)
-                        continue;
-                    const std::size_t begin = dataStart + off;
-                    if (begin + len > buf.size())
-                        continue;
-                    const std::int64_t k =
-                        (std::int64_t(cy) << 8) | std::int64_t(locals & 0xFFu);
-                    region.slots[k].assign(buf.begin() + std::ptrdiff_t(begin),
-                                           buf.begin() + std::ptrdiff_t(begin + len));
-                }
+        const std::size_t count = buf.size() >= kHeader ? read32(buf.data() + 8) : 0;
+        const std::size_t dataStart = kHeader + count * kDirEntry;
+        if (magicOk && versionOk && buf.size() >= kHeader && dataStart <= buf.size()) {
+            for (std::size_t i = 0; i < count; ++i) {
+                const std::uint8_t* e = buf.data() + kHeader + i * kDirEntry;
+                const std::int32_t cy = std::int32_t(read32(e));
+                const std::uint32_t locals = read32(e + 4);
+                const std::uint32_t off = read32(e + 8);
+                const std::uint32_t len = read32(e + 12);
+                if (len == 0)
+                    continue;
+                const std::size_t begin = dataStart + off;
+                if (begin + len > buf.size())
+                    continue;
+                const std::int64_t k =
+                    (std::int64_t(cy) << 8) | std::int64_t(locals & 0xFFu);
+                region.slots[k].assign(buf.begin() + std::ptrdiff_t(begin),
+                                       buf.begin() + std::ptrdiff_t(begin + len));
             }
-        } else if (magicOk && buf.size() >= 8) {
-            VX_ERROR("region %s uses save format v%u, this build reads v%u, ignoring it "
-                     "(the terrain regenerates; edits in it are lost)",
-                     regionPath(key).string().c_str(), read32(buf.data() + 4), kVersion);
         } else {
-            VX_ERROR("region %s is corrupt, ignoring", regionPath(key).string().c_str());
+            if (magicOk && versionOk)
+                VX_ERROR("region %s is cut short, ignoring", regionPath(key).string().c_str());
+            else if (magicOk && buf.size() >= 8)
+                VX_ERROR("region %s uses save format v%u, this build reads v%u, ignoring it "
+                         "(the terrain regenerates; edits in it are lost)",
+                         regionPath(key).string().c_str(), read32(buf.data() + 4), kVersion);
+            else
+                VX_ERROR("region %s is corrupt, ignoring", regionPath(key).string().c_str());
+            // The next save of this region would write over it. Keep it beside the new one.
+            file.close();
+            std::error_code ec;
+            std::filesystem::rename(regionPath(key), regionPath(key).string() + ".bad", ec);
         }
     }
     return m_regions.emplace(key, std::move(region)).first->second;
 }
 
 bool RegionStore::load(ChunkPos pos, Chunk& chunk) {
-    std::lock_guard lock(m_mutex);
-    Region& region = ensureLoaded(regionOf(pos));
-    const auto it = region.slots.find(localKey(pos));
-    if (it == region.slots.end() || it->second.empty())
-        return false;
-    return ChunkSerializer::deserialize(it->second, chunk);
+    std::vector<std::uint8_t> blob;
+    {
+        // Workers come through here at once; only the lookup needs the lock, not the decode.
+        std::lock_guard lock(m_mutex);
+        Region& region = ensureLoaded(regionOf(pos));
+        const auto it = region.slots.find(localKey(pos));
+        if (it == region.slots.end() || it->second.empty())
+            return false;
+        blob = it->second;
+    }
+    return ChunkSerializer::deserialize(blob, chunk);
 }
 
 void RegionStore::save(ChunkPos pos, std::vector<std::uint8_t> bytes) {
@@ -121,7 +131,7 @@ void RegionStore::save(ChunkPos pos, std::vector<std::uint8_t> bytes) {
     region.dirty = true;
 }
 
-void RegionStore::writeRegion(RegionKey key, const Region& region) const {
+bool RegionStore::writeRegion(RegionKey key, const Region& region) const {
     std::vector<std::uint8_t> out;
     out.insert(out.end(), kMagic, kMagic + 4);
     put32(out, kVersion);
@@ -147,30 +157,46 @@ void RegionStore::writeRegion(RegionKey key, const Region& region) const {
     }
     out.insert(out.end(), data.begin(), data.end());
 
-    // write to a temp file then rename, a crash mid-write can't corrupt the region
+    // Written to a temp file then renamed over, so a crash mid-write can't corrupt the region, and
+    // a short write (a full disk) never gets renamed over a good file.
     const std::filesystem::path path = regionPath(key);
     const std::filesystem::path tmp = path.string() + ".tmp";
+    bool wrote = false;
     {
         std::ofstream file(tmp, std::ios::binary | std::ios::trunc);
         file.write(reinterpret_cast<const char*>(out.data()), std::streamsize(out.size()));
+        file.close();
+        wrote = !file.fail();
     }
     std::error_code ec;
-    std::filesystem::rename(tmp, path, ec);
-    if (ec)
-        VX_ERROR("failed to write region %s: %s", path.string().c_str(), ec.message().c_str());
+    if (wrote)
+        std::filesystem::rename(tmp, path, ec);
+    if (!wrote || ec) {
+        VX_ERROR("failed to write region %s: %s", path.string().c_str(),
+                 wrote ? ec.message().c_str() : "short write");
+        std::filesystem::remove(tmp, ec);
+        return false;
+    }
+    return true;
 }
 
 void RegionStore::flush() {
     std::lock_guard lock(m_mutex);
-    int written = 0;
+    int written = 0, failed = 0;
     for (auto& [key, region] : m_regions)
         if (region.dirty) {
-            writeRegion(key, region);
-            region.dirty = false;
-            ++written;
+            // a region that would not write stays dirty, so the next flush tries it again
+            if (writeRegion(key, region)) {
+                region.dirty = false;
+                ++written;
+            } else {
+                ++failed;
+            }
         }
     if (written > 0)
         VX_INFO("saved %d region(s) to %s", written, m_dir.string().c_str());
+    if (failed > 0)
+        VX_ERROR("%d region(s) could not be saved to %s", failed, m_dir.string().c_str());
 }
 
 RegionStore::Stats RegionStore::stats() const {

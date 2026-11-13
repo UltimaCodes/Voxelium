@@ -1,5 +1,5 @@
 // One light model for everything on land, so a hill looks the same near and far. The includer
-// declares uCloudMap and uCloudMapXf and includes clouds.glsl first.
+// declares uCloudTime (the clouds' own clock) and includes clouds.glsl and cloudfield.glsl first.
 
 // Sky light in the open is 1, falls off smoothly, and a sealed cave reaches nothing. Down to
 // level 11 (a forest floor, the shade of an overhang) it is the plain smoothstep. Below that it
@@ -23,15 +23,22 @@ vec3 addLight(vec3 scene, vec3 torch, vec3 floorLight) {
     return sqrt(scene * scene + torch * torch + floorLight * floorLight);
 }
 
-const float kCloudMaxBlock = 0.5;
-
-// 0 clear, 1 under thick cloud. A fixed sample height, so hills show no rings.
+// 0 clear, 1 under thick cloud: the cover where the sun's ray crosses the cloud layer, read from the
+// weather map itself. It used a map of a few km around the camera, and a low sun's ray crosses the
+// layer further out than that, so a sky full of cloud let a morning sun through as if it were clear.
+// A fixed sample height, so hills show no rings.
 float cloudCover(vec3 worldPos, vec3 L) {
-    if (L.y <= 0.05 || worldPos.y >= kCloudBase)
+    if (worldPos.y >= kCloudBase)
         return 0.0;
-    vec2 uv = (worldPos.xz + L.xz * ((kCloudMid - 64.0) / L.y) - uCloudMapXf.xy) * uCloudMapXf.z;
-    float edge = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
-    return smoothstep(0.2, 0.7, textureLod(uCloudMap, uv, 2.0).r) * smoothstep(0.0, 0.08, edge);
+    vec2 at = worldPos.xz + L.xz * ((kCloudMid - 64.0) / max(L.y, 0.05));
+    return smoothstep(0.2, 0.7, cloudCoverage(cloudWeather(at, uCloudTime).r));
+}
+
+// How much of the sun the clouds take from the ground. `strength` is the cloud shadow setting: High's
+// 0.6 takes 90% under thick cloud, the same as the clouds take from the shafts in the air, so an
+// overcast day is flat and grey instead of sunlit under a grey sky.
+float cloudBlock(vec3 worldPos, vec3 L, float strength) {
+    return strength > 0.0 ? min(1.5 * strength, 0.92) * cloudCover(worldPos, L) : 0.0;
 }
 
 // What a climate does to green: lush and deep when wet, straw when dry, blue-grey when cold. A

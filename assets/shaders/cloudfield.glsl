@@ -1,7 +1,10 @@
-// The weather map, shared by the cloud march and the cloud shadow map, so a shadow always belongs to
-// a cloud you can see. World anchored, and the wind moves the map, not the camera. The includer has
-// clouds.glsl first.
-layout(binding = 11) uniform sampler2D uCloudWeather;
+// The weather map, shared by the cloud march, the cloud shadows, the sun's shafts and the clouds in the
+// water, so all of them agree with the clouds you can see. World anchored, and the wind moves the map,
+// not the camera. The includer has clouds.glsl first, and may pick the unit with CLOUD_WEATHER_BINDING.
+#ifndef CLOUD_WEATHER_BINDING
+#define CLOUD_WEATHER_BINDING 11
+#endif
+layout(binding = CLOUD_WEATHER_BINDING) uniform sampler2D uCloudWeather;
 
 const float kWeatherSpan = 12288.0;
 const vec2 kCloudWind = vec2(2.8, 1.75);

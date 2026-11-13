@@ -345,10 +345,16 @@ ChunkManager::LodAudit ChunkManager::auditLod() const {
         // Exactly the self-heal condition in update() that queues a coarse->detailed regen
         // (dirty is excluded there on purpose too, see #64, an unsaved edit keeps a chunk
         // coarse until it's saved, which is correct, not stuck).
-        if (lodOf(desired) < kCoarseLod && !e.detailed && !e.voxels->uniform() && !e.dirty)
+        if (lodOf(desired) < kCoarseLod && !e.detailed && detailCouldAdd(pos, e) && !e.dirty)
             ++a.coarseInDetailBand;
     }
     return a;
+}
+
+bool ChunkManager::detailCouldAdd(ChunkPos pos, const Entry& e) const {
+    if (!e.voxels->uniform())
+        return true;
+    return e.voxels->uniformId() == blocks::Stone && pos.y * kChunkSize + kChunkSize - 1 >= m_gen.caveFloorY();
 }
 
 void ChunkManager::processEvictions(Renderer& renderer, JobSystem& jobs) {
@@ -729,8 +735,8 @@ void ChunkManager::update(JobSystem& jobs, Renderer& renderer, LightEngine& ligh
         // should be at now. Everything above ground is already in it (the generator only skips
         // caves), and holding the far mesh until the regen landed put LOD 2-5 chunks right at
         // the camera: 410 of the 1183 chunks within 6 of it, on average, flying at 45 b/s.
-        if (e.state == ChunkState::Meshed && !e.detailed && lodOf(desired) < kCoarseLod &&
-            !e.voxels->uniform() && !e.dirty)
+        if (e.state == ChunkState::Meshed && !e.detailed && lodOf(desired) < kCoarseLod && detailCouldAdd(pos, e) &&
+            !e.dirty)
             m_regenScratch.push_back(pos);
         if (!(firstMesh || reLod) || e.meshingLod == desired)
             return;
@@ -1274,15 +1280,24 @@ void ChunkManager::rebuildVisibility(ChunkPos cameraChunk) {
     }
 
     const int span = 2 * radius + 1;
-    const std::size_t cells = std::size_t(span) * std::size_t(span) * std::size_t(kWorldChunksY);
+    const int x0 = m_center.x - radius, z0 = m_center.z - radius;
+    // As tall as what is loaded. It was the old fixed world's 0..383, so nothing below sea level
+    // was ever reached by the flood and caves down there were never drawn: holes to nothing.
+    int y0 = cameraChunk.y, y1 = cameraChunk.y;
+    for (const auto& item : m_chunks)
+        if (std::abs(item.first.x - m_center.x) <= radius && std::abs(item.first.z - m_center.z) <= radius) {
+            y0 = std::min(y0, item.first.y);
+            y1 = std::max(y1, item.first.y);
+        }
+    const int ySpan = y1 - y0 + 1;
+    const std::size_t cells = std::size_t(span) * std::size_t(span) * std::size_t(ySpan);
     m_floodGrid.assign(cells, nullptr);
     m_floodSeen.assign(cells, 0);
-    const int x0 = m_center.x - radius, z0 = m_center.z - radius;
     const auto cellOf = [&](const ChunkPos& p) -> std::size_t {
-        const int gx = p.x - x0, gz = p.z - z0;
-        if (gx < 0 || gx >= span || gz < 0 || gz >= span || p.y < 0 || p.y >= kWorldChunksY)
+        const int gx = p.x - x0, gz = p.z - z0, gy = p.y - y0;
+        if (gx < 0 || gx >= span || gz < 0 || gz >= span || gy < 0 || gy >= ySpan)
             return std::size_t(-1);
-        return (std::size_t(p.y) * std::size_t(span) + std::size_t(gx)) * std::size_t(span) + std::size_t(gz);
+        return (std::size_t(gy) * std::size_t(span) + std::size_t(gx)) * std::size_t(span) + std::size_t(gz);
     };
     for (const auto& item : m_chunks)
         if (const std::size_t c = cellOf(item.first); c != std::size_t(-1))
@@ -1371,8 +1386,6 @@ void ChunkManager::floodByHash(ChunkPos cameraChunk, std::vector<std::uint32_t>&
                 continue;
             const ChunkPos next{pos.x + kFaceOffsets[d][0], pos.y + kFaceOffsets[d][1],
                                 pos.z + kFaceOffsets[d][2]};
-            if (next.y < 0 || next.y >= kWorldChunksY)
-                continue;
             if (std::abs(next.x - m_center.x) > radius || std::abs(next.z - m_center.z) > radius)
                 continue;
             const auto it = m_chunks.find(next);
@@ -1395,10 +1408,8 @@ void ChunkManager::updateVisibilityIfNeeded(Renderer& renderer, const glm::dvec3
         m_lastCaveCull = false;
         return; // shader bypasses the bitset; stale bits are fine
     }
-    const ChunkPos cameraChunk{
-        int(std::floor(cameraPos.x / kChunkSize)),
-        std::clamp(int(std::floor(cameraPos.y / kChunkSize)), 0, kWorldChunksY - 1),
-        int(std::floor(cameraPos.z / kChunkSize))};
+    const ChunkPos cameraChunk{int(std::floor(cameraPos.x / kChunkSize)), int(std::floor(cameraPos.y / kChunkSize)),
+                               int(std::floor(cameraPos.z / kChunkSize))};
     if (!m_visDirty && cameraChunk == m_lastFloodCenter && m_lastCaveCull)
         return;
     m_lastFloodCenter = cameraChunk;
@@ -1703,12 +1714,13 @@ void ChunkManager::saveDirty() {
 }
 
 BlockId ChunkManager::blockAtWorld(const glm::ivec3& wp) const {
-    if (wp.y < 0)
-        return blocks::Stone;
-    if (wp.y >= kWorldHeight)
-        return blocks::Air;
+    // Whatever is loaded there, at any height. It answered stone below y 0 and air above the old
+    // world top whatever was really there, so in a cave under the sea you hit stone in the air,
+    // walked into it, and could not break or place anything.
     const Chunk* c = voxelsAt({wp.x >> 5, wp.y >> 5, wp.z >> 5});
-    return c ? c->get(wp.x & 31, wp.y & 31, wp.z & 31) : blocks::Stone;
+    if (c)
+        return c->get(wp.x & 31, wp.y & 31, wp.z & 31);
+    return wp.y >= kTerrainTop ? blocks::Air : blocks::Stone; // not loaded: the sky above the terrain, rock below
 }
 
 float ChunkManager::skyAccessAt(const glm::ivec3& wp) const {
@@ -1814,8 +1826,6 @@ int ChunkManager::setBlocks(Renderer& renderer, LightEngine& light,
     light.beginEdit();
     int applied = 0;
     for (const BlockEdit& e : edits) {
-        if (e.pos.y < 0 || e.pos.y >= kWorldHeight)
-            continue;
         const ChunkPos pos{e.pos.x >> 5, e.pos.y >> 5, e.pos.z >> 5};
         const auto it = m_chunks.find(pos);
         if (it == m_chunks.end() || it->second.state == ChunkState::Generating)
@@ -1908,8 +1918,6 @@ int ChunkManager::setBlocks(Renderer& renderer, LightEngine& light,
 }
 
 void ChunkManager::queueFallCheck(const glm::ivec3& p) {
-    if (p.y < 1 || p.y >= kWorldHeight)
-        return;
     if (m_fallQueue.size() < 200000) // a runaway cascade must not eat memory
         m_fallQueue.push_back(p);
 }

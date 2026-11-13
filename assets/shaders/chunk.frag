@@ -46,10 +46,9 @@ layout(location = 28) uniform float uRelief;     // derived surface relief, 0 = 
 layout(location = 29) uniform float uDaylight;   // 1 full day, 0 after dusk
 layout(location = 30) uniform float uWetness;    // 0 dry .. 1 soaked (#29)
 layout(location = 34) uniform float uSnowCover;  // how much of the sky-facing ground has snow on it (33 is uCloudBias)
-layout(location = 31) uniform vec3 uCloudMapXf;  // cloud map: world XZ of its corner, 1 / span
+layout(location = 31) uniform float uCloudTime;  // the clouds' clock, for their shadows
 
 layout(binding = 0) uniform sampler2DArray uBlockTex; // sRGB storage: reads back linear
-layout(binding = 6) uniform sampler2D uCloudMap; // coverage field, see cloudmap.frag
 layout(binding = 7) uniform sampler2D uClimate;  // moisture, temperature (FarTerrain)
 layout(location = 35) uniform vec3 uClimateXf;   // x, z of its corner, 1 / span; z = 0 for none
 layout(location = 36) uniform float uWashTime;   // seconds, wrapped: the wash on the beach
@@ -65,6 +64,8 @@ layout(location = 43) uniform vec3 uHandLight;   // a lamp in the hand: its ligh
 layout(binding = 11) uniform sampler3D uBounce;  // sunlight off the ground nearby, LightVolume::computeBounce
 layout(location = 44) uniform float uBounceOn;
 #include "clouds.glsl"
+#define CLOUD_WEATHER_BINDING 6
+#include "cloudfield.glsl"
 #include "texlayer.glsl"
 #include "lighting.glsl"
 layout(binding = 12) uniform sampler2D uCaustics; // the caustic web, a 64-block tile (caustics_tex.comp)
@@ -362,9 +363,9 @@ void main() {
         sunFacing = mix(ndl, 1.0, 0.4);
         shadow = mix(shadow, 1.0, 0.18);
     }
-    float cloud = uCloudShadow > 0.0 ? cloudCover(uCamPos + vWorldRel, uSunL) * uCloudShadow : 0.0;
+    float cloud = cloudBlock(uCamPos + vWorldRel, uSunL, uCloudShadow);
 
-    vec3 sun = uLandSun * (sunFacing * mix(shadow, 1.0, emitMask) * gate * (1.0 - kCloudMaxBlock * cloud));
+    vec3 sun = uLandSun * (sunFacing * mix(shadow, 1.0, emitMask) * gate * (1.0 - cloud));
     // what a cloud takes from the sun it scatters into the sky
     vec3 amb = skyFill(N, uLandAmb) * (1.0 + 0.2 * cloud) * skyLevel(skyL);
     vec3 fill = sunFill(N, uSunL, uLandSun) * skyLevel(skyL);
@@ -394,7 +395,7 @@ void main() {
             // it comes up off the ground: an overhang's underside gets the most, a wall half, a floor little
             float facing = 0.16 * (0.65 - 0.35 * N.y);
             vec3 thrown = uLandSun * vec3(1.0, 0.93, 0.82) * (facing * b) * smoothstep(0.0, 0.3, skyL) *
-                          (1.0 - kCloudMaxBlock * cloud);
+                          (1.0 - cloud);
             fill = mix(fill, fill * 0.55 + thrown, w);
         }
     }
@@ -443,7 +444,7 @@ void main() {
     // contour lines over every hill. They ease toward the tread's light.
     float farOff = smoothstep(180.0, 520.0, length(vWorldRel));
     if (farOff > 0.0 && vDir < 6u && N.y == 0.0)
-        scene = mix(scene, uLandSun * uSunL.y * gate * (1.0 - kCloudMaxBlock * cloud) + amb, farOff * 0.7);
+        scene = mix(scene, uLandSun * uSunL.y * gate * (1.0 - cloud) + amb, farOff * 0.7);
     face = mix(face, 1.0, farOff * 0.6);
     vec3 emission = albedo * (uEmissive * 1.6 * emitMask);
     outColor = vec4(albedo * face * addLight(scene, torch, floorLight) + emission + wetSpec + transmit + washSheen * skyLevel(skyL), 1.0);

@@ -32,12 +32,15 @@ void main() {
     uint nrm = data[idx + 2];
 
     vec3 rel = vec3(uOriginRel.x + float(ij.x) * uSpacing, h - uCamY, uOriginRel.z + float(ij.y) * uSpacing);
+    vWater = float((rgbw >> 24) & 255u);
     // Under the real terrain wherever the real terrain is: dip a few blocks approaching the seam
-    // so the streamed chunks always win the depth test and this never pokes through them.
-    rel.y -= 5.0 * (1.0 - smoothstep(uInner, uInner + 220.0, length(rel.xz)));
+    // so the streamed chunks always win the depth test and this never pokes through them. Not the
+    // sea: it already sits a little under the near water, and sunk it left a step all round the edge
+    // of the streamed world with the cut edge of its sea floor showing over it.
+    if (vWater < 0.5)
+        rel.y -= 5.0 * (1.0 - smoothstep(uInner, uInner + 220.0, length(rel.xz)));
 
     vColor = vec3(float(rgbw & 255u), float((rgbw >> 8) & 255u), float((rgbw >> 16) & 255u)) / 255.0;
-    vWater = float((rgbw >> 24) & 255u);
     vNormal = vec3(float(int(nrm << 24) >> 24), float(int(nrm << 16) >> 24), float(int(nrm << 8) >> 24)) / 127.0;
     vAo = float(nrm >> 24) / 255.0;
     vRel = rel;

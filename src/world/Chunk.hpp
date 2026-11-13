@@ -193,7 +193,16 @@ inline constexpr BlockId SprucePlanks = 124;
 inline constexpr BlockId BirchPlanks = 125;
 inline constexpr BlockId AcaciaPlanks = 126;
 inline constexpr BlockId JunglePlanks = 127;
-inline constexpr int kBlockCount = 128;
+inline constexpr BlockId Bedrock = 128; // the floor of the world: nothing breaks it
+// What the caves are lined with, by cave biome (version 3).
+inline constexpr BlockId Dripstone = 129;
+inline constexpr BlockId DripstoneUp = 130;   // cross: the point of a stalagmite
+inline constexpr BlockId DripstoneDown = 131; // cross: the point of a stalactite
+inline constexpr BlockId CaveVines = 132;     // cross, hangs from the ceiling
+inline constexpr BlockId GlowBerries = 133;   // cross, hangs, emitter
+inline constexpr BlockId GlowShroom = 134;    // cross, emitter
+inline constexpr BlockId Crystal = 135;       // emitter: the lining of a geode
+inline constexpr int kBlockCount = 136;
 
 inline constexpr bool isLeafBlock(BlockId id) {
     return id == Leaves || id == PalmLeaves || id == SpruceLeaves || id == BirchLeaves || id == AcaciaLeaves ||
@@ -216,7 +225,7 @@ inline constexpr bool isWaterlogged(BlockId id) {
 }
 inline constexpr bool isCross(BlockId id) {
     return id == GrassTuft || id == Flower || id == DeadBush || id == Shell || isWaterlogged(id) ||
-           (id >= TallGrass && id <= LilyPad);
+           (id >= TallGrass && id <= LilyPad) || (id >= DripstoneUp && id <= GlowShroom);
 }
 
 // Blocks with nothing under them fall. Sand and gravel only, dirt and stone staying put
@@ -224,13 +233,21 @@ inline constexpr bool isCross(BlockId id) {
 inline constexpr bool falls(BlockId id) { return id == Sand || id == Gravel || id == RedSand; }
 
 inline constexpr int luminance(BlockId id) {
-    return (id == Glow || isLamp(id)) ? 14 : (id == GlowCoral ? 12 : 0);
+    if (id == Glow || isLamp(id))
+        return 14;
+    if (id == GlowCoral || id == GlowBerries)
+        return 12;
+    if (id == GlowShroom)
+        return 10;
+    return id == Crystal ? 9 : 0;
 }
 
 // Seconds of held click to break a block. Ordered by what it feels like to dig, not by
 // any real material property: loose ground gives way at once, worked blocks resist, stone
 // and ore are the reason you go looking for a better tool later.
 inline constexpr float hardness(BlockId id) {
+    if (id == Bedrock)
+        return 1.0e9f;
     if (isCross(id))
         return 0.02f; // foliage comes away the instant you touch it
     if (isLeafBlock(id))
@@ -245,7 +262,7 @@ inline constexpr float hardness(BlockId id) {
         return 0.30f;
     if (id == Dirt || id == Grass || (id >= Moss && id <= Clay))
         return 0.42f;
-    if (isLogBlock(id) || isPlanks(id) || id == Glow || isLamp(id))
+    if (isLogBlock(id) || isPlanks(id) || id == Glow || isLamp(id) || id == Crystal)
         return 0.70f;
     if (isTerracotta(id))
         return 0.90f;
@@ -262,17 +279,42 @@ inline constexpr float hardness(BlockId id) {
 // (the shader squares the channels, so 14/12/7 reads yellow, not white) whose red carries
 // furthest and blue dies first, so it goes orange at the edges.
 // This table is the entire interface for adding an emitter.
+// The cave lights: berries a deep amber, the mushrooms teal, crystal violet.
 inline constexpr int emitR(BlockId id) {
-    return id == Glow ? 14 : (isLamp(id) ? kLampRGB[std::size_t(id - LampFirst)].r
-                                         : (id == GlowCoral ? 3 : 0));
+    if (isLamp(id))
+        return kLampRGB[std::size_t(id - LampFirst)].r;
+    switch (id) {
+        case Glow: return 14;
+        case GlowCoral: return 3;
+        case GlowBerries: return 13;
+        case GlowShroom: return 2;
+        case Crystal: return 9;
+        default: return 0;
+    }
 }
 inline constexpr int emitG(BlockId id) {
-    return id == Glow ? 12 : (isLamp(id) ? kLampRGB[std::size_t(id - LampFirst)].g
-                                         : (id == GlowCoral ? 11 : 0));
+    if (isLamp(id))
+        return kLampRGB[std::size_t(id - LampFirst)].g;
+    switch (id) {
+        case Glow: return 12;
+        case GlowCoral: return 11;
+        case GlowBerries: return 8;
+        case GlowShroom: return 10;
+        case Crystal: return 4;
+        default: return 0;
+    }
 }
 inline constexpr int emitB(BlockId id) {
-    return id == Glow ? 7 : (isLamp(id) ? kLampRGB[std::size_t(id - LampFirst)].b
-                                        : (id == GlowCoral ? 12 : 0));
+    if (isLamp(id))
+        return kLampRGB[std::size_t(id - LampFirst)].b;
+    switch (id) {
+        case Glow: return 7;
+        case GlowCoral: return 12;
+        case GlowBerries: return 2;
+        case GlowShroom: return 12;
+        case Crystal: return 13;
+        default: return 0;
+    }
 }
 inline constexpr bool emissive(BlockId id) {
     return emitR(id) > 0 || emitG(id) > 0 || emitB(id) > 0;
@@ -338,7 +380,7 @@ inline constexpr const char* soundMaterial(BlockId id) {
         return "grass"; // a plant you push through, not the water around it
     if (isWater(id))
         return "water";
-    if (isLamp(id) || id == Glow || id == GlowCoral || id == Glass || id == Ice)
+    if (isLamp(id) || id == Glow || id == GlowCoral || id == Glass || id == Ice || id == Crystal)
         return "glass";
     if (id == Pebbles)
         return "gravel";
@@ -448,6 +490,18 @@ public:
 
     bool uniform() const { return m_bits == 0; }
     BlockId uniformId() const { return m_palette[0]; }
+
+    // Back into the pool: air, and the light array and index storage given up. Kept, every pooled
+    // chunk held what the busiest one it ever was needed (a 128 KB light array and its indices),
+    // and three in four are air or stone and need neither: a long flight climbed by ~30 MB a
+    // second until the pool was full of them. Only for a chunk nothing else can see any more.
+    void shed() {
+        makeUniform(blocks::Air);
+        std::vector<std::uint64_t>().swap(m_indices);
+        m_light.store(nullptr, std::memory_order_relaxed);
+        m_lightOwn.reset();
+        m_uniformLight.store(0, std::memory_order_relaxed);
+    }
 
     BlockId get(int x, int y, int z) const {
         if (m_bits == 0)
@@ -570,8 +624,8 @@ private:
     std::vector<BlockId> m_palette; // [0] doubles as the uniform id when bits == 0
     std::vector<std::uint64_t> m_indices;
     int m_bits = 0;
-    // light array survives pool reuse (fillLight resets values, never frees). m_lightOwn
-    // holds it; m_light is the published view workers read.
+    // Allocated on the first setLight, freed by shed() when the chunk goes back to the pool.
+    // m_lightOwn holds it; m_light is the published view workers read.
     std::unique_ptr<std::atomic<std::uint32_t>[]> m_lightOwn;
     std::atomic<std::atomic<std::uint32_t>*> m_light{nullptr};
     std::atomic<std::uint32_t> m_uniformLight{0};

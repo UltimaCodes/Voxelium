@@ -20,13 +20,13 @@ inline constexpr const char* tabName(Tab t) {
 }
 
 inline constexpr bool inPicker(BlockId id) {
-    return id != Air && id < kBlockCount && !(id >= WaterL1 && id <= WaterL7);
+    return id != Air && id < kBlockCount && !(id >= WaterL1 && id <= WaterL7) && id != Bedrock;
 }
 
 inline constexpr Tab tabOf(BlockId id) {
     if (id == Water)
         return Tab::Liquid;
-    if (id == Glow || isLamp(id) || id == GlowCoral)
+    if (emissive(id))
         return Tab::Light;
     if (isCross(id) || isLeafBlock(id) || id == Cactus || id == Coconut || (id >= BrainCoral && id <= BubbleCoral))
         return Tab::Plants;
@@ -135,6 +135,14 @@ inline constexpr const char* blockName(BlockId id) {
         case BirchPlanks: return "Birch Planks";
         case AcaciaPlanks: return "Acacia Planks";
         case JunglePlanks: return "Jungle Planks";
+        case Bedrock: return "Bedrock";
+        case Dripstone: return "Dripstone";
+        case DripstoneUp: return "Stalagmite Tip";
+        case DripstoneDown: return "Stalactite Tip";
+        case CaveVines: return "Cave Vines";
+        case GlowBerries: return "Glow Berries";
+        case GlowShroom: return "Glow Mushroom";
+        case Crystal: return "Crystal";
         default: return "Block";
     }
 }

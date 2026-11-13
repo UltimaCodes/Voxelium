@@ -40,13 +40,12 @@ public:
     // Forgets the current mesh (a new world has different terrain).
     void reset();
 
-    // Inside the HDR scene pass, after the chunks. `innerRadius` is how far the real world
-    // reaches, in blocks: nothing is drawn inside it.
+    // Inside the HDR scene pass, after the chunks, with the clouds' weather map still on unit 6.
+    // `innerRadius` is how far the real world reaches, in blocks: nothing is drawn inside it.
     void draw(const glm::mat4& viewProj, const glm::dvec3& cam, const glm::vec3& sunL,
               const glm::vec3& sunColor, const glm::vec3& skyAmbient, const glm::vec3& landSun,
               const glm::vec3& landAmbient, const glm::vec3& waterLevel, float cloudShadow,
-              const glm::vec3& cloudMapXf,
-              float innerRadius);
+              float cloudTime, float cloudCover, float innerRadius);
 
     bool ready() const { return m_rings[0].haveMesh && m_rings[1].haveMesh; }
     // Moisture and temperature around the camera, red and green, for tinting the near world.

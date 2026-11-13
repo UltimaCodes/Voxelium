@@ -183,7 +183,11 @@ float coastLook(float c, const float* corners, float tx, float tz) {
     return best;
 }
 // Version 2's caves reach down to here; below it is the unbroken floor of the world.
-constexpr int kCaveFloor2 = 6;
+constexpr int kCaveFloor2 = TerrainGenerator::kCaveFloor2;
+// Version 3's go much further: they were a band from here to the surface, a layer or two of
+// tunnels however far you dug.
+constexpr int kCaveFloor3 = TerrainGenerator::kCaveFloor3;
+int caveFloor(int version) { return version >= 3 ? kCaveFloor3 : kCaveFloor2; }
 constexpr int kCaveDepth = 56;  // caves only within this many blocks below the surface
 // Squared radius of the worm tunnels around the curve where both worm fields vanish.
 // This is the single knob for tunnel width, and it is sharp: the carved volume goes with
@@ -455,6 +459,7 @@ TerrainGenerator::TerrainGenerator(int seed, int version) : m_seed(seed), m_vers
     }
 
     m_cavern = fbm2(70.0f, 3, 0.5f);
+    m_chamber = fbm2(120.0f, 2, 0.5f);
     m_tunnelA = fbm2(150.0f, 2, 0.5f);
     m_tunnelB = fbm2(137.0f, 2, 0.5f); // not 150: equal scales correlate the pair
     m_tunnelW = fbm2(90.0f, 1, 0.5f);
@@ -1106,10 +1111,15 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
     // deep bedrock: caves only reach ~56 blocks below the surface, so a chunk entirely
     // below that band is solid stone, makeUniform costs nothing (no palette/index array,
     // no quads). this is what keeps a 256-block world as cheap as the old 128.
-    // Version 2's caves go all the way down (kCaveFloor2), but only in detailed chunks: a coarse
+    // Version 2's caves go all the way down (caveFloor), but only in detailed chunks: a coarse
     // one never has caves at all, so it keeps the shortcut.
+    // Version 3 has a floor: bedrock all the way down from the bottom of its caves.
+    if (m_version >= 3 && baseY + kChunkSize - 1 < kCaveFloor3) {
+        chunk.makeUniform(blocks::Bedrock);
+        return;
+    }
     const bool deepCaves = m_version >= 2 && detailed;
-    if (baseY + kChunkSize - 1 < (deepCaves ? kCaveFloor2 : hMin - kCaveDepth)) {
+    if (baseY + kChunkSize - 1 < (deepCaves ? caveFloor(m_version) : hMin - kCaveDepth)) {
         chunk.makeUniform(blocks::Stone);
         if (m_version < 2)
             carveTestRoom(chunk, pos);
@@ -1345,7 +1355,8 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
 
 // Version 2's caves. Version 1 carved a band some 56 blocks under the surface and never broke it
 // (a 4-block skin was left everywhere), so caves were shallow, sealed, and mostly not there at
-// all. These run all the way down to kCaveFloor2:
+// all. These run all the way down to the cave floor (kCaveFloor2, version 3's far deeper kCaveFloor3,
+// where they also thin out and thicken from region to region):
 //   - caverns, the big rooms: a 3d field squashed vertically so a chamber is wider than it is
 //     tall, opening up the deeper it goes;
 //   - two sets of tunnels, the worm trick from version 1 (where two fields both cross zero is a
@@ -1360,8 +1371,10 @@ void TerrainGenerator::generate(Chunk& chunk, ChunkPos pos, bool detailed) const
 // Everything is a function of world position, so it runs per chunk with no neighbour lookups.
 void TerrainGenerator::carveCaves2(Chunk& chunk, int baseX, int baseY, int baseZ,
                                    const int (*heights)[kChunkSize], const int (*groundMin)[kChunkSize]) const {
-    if (baseY + kChunkSize - 1 < kCaveFloor2)
+    const int floorY = caveFloor(m_version);
+    if (baseY + kChunkSize - 1 < floorY)
         return;
+    const bool v3 = m_version >= 3;
     // never destroyed on purpose: see computeConnectivity (a thread_local with a destructor
     // corrupts the heap when a worker exits, on this toolchain)
     static thread_local std::vector<float>& cav = *new std::vector<float>();
@@ -1374,9 +1387,12 @@ void TerrainGenerator::carveCaves2(Chunk& chunk, int baseX, int baseY, int baseZ
         v->resize(std::size_t(kChunkSize3));
     const float fx = float(baseX), fy = float(baseY), fz = float(baseZ);
     // grid order: x + y * size + z * size * size. The cavern field steps 1.6 a block in y, which
-    // squashes its blobs to about two thirds as tall as they are wide.
-    m_cavern->GenUniformGrid3D(cav.data(), fx, fy * 1.6f, fz, kChunkSize, kChunkSize, kChunkSize, 1.0f, 1.6f,
-                               1.0f, seedOff(m_seed, 221));
+    // squashes its blobs to about two thirds as tall as they are wide. Version 3 has its own, on a
+    // much larger scale: rooms you can lose a light in, not wide places in a tunnel.
+    const float squash = v3 ? 1.45f : 1.6f;
+    (v3 ? m_chamber : m_cavern)
+        ->GenUniformGrid3D(cav.data(), fx, fy * squash, fz, kChunkSize, kChunkSize, kChunkSize, 1.0f, squash, 1.0f,
+                           seedOff(m_seed, 221));
     m_wormA->GenUniformGrid3D(wa.data(), fx, fy, fz, kChunkSize, kChunkSize, kChunkSize, 1.0f, 1.0f, 1.0f,
                               seedOff(m_seed, 3));
     m_wormB->GenUniformGrid3D(wb.data(), fx, fy, fz, kChunkSize, kChunkSize, kChunkSize, 1.0f, 1.0f, 1.0f,
@@ -1405,16 +1421,49 @@ void TerrainGenerator::carveCaves2(Chunk& chunk, int baseX, int baseY, int baseZ
             // A few scattered spots where a tunnel IS let out into the open: a cave mouth.
             const bool mouth = !wet && valueNoise(float(wx) * 0.02f, float(wz) * 0.02f, seedOff(m_seed, 229)) > 0.93f;
             // the lowest caves stand in water up to here, a level that wanders across the map
-            const int aquifer = 12 + int(valueNoise(float(wx) * 0.008f, float(wz) * 0.008f, seedOff(m_seed, 227)) * 10.0f);
+            const int aquifer = (v3 ? floorY + 6 : 12) +
+                                int(valueNoise(float(wx) * 0.008f, float(wz) * 0.008f, seedOff(m_seed, 227)) * 10.0f);
+            // Version 3: how riddled the rock is here, over a few hundred blocks. Some country is
+            // honeycombed with tunnels and great rooms, some is near solid with the odd passage,
+            // instead of the same density of the same shapes under every hill.
+            float richCol = 1.0f;
+            // Version 3: columns of rock left standing through the great rooms, and in some country a
+            // lake lying in the caves, at a level of its own.
+            bool pillar = false;
+            int lakeLevel = INT32_MIN, damBelow = INT32_MIN;
+            if (v3) {
+                const float n = 0.75f * valueNoise(float(wx) * 0.0016f, float(wz) * 0.0016f, seedOff(m_seed, 230)) +
+                                0.25f * valueNoise(float(wx) * 0.006f, float(wz) * 0.006f, seedOff(m_seed, 231));
+                richCol = smooth01(0.22f, 0.78f, n);
+                pillar = valueNoise(float(wx) * 0.055f, float(wz) * 0.055f, seedOff(m_seed, 235)) > 0.9f;
+                constexpr int kLakeCell = 192;
+                const auto levelOf = [&](int rx, int rz) {
+                    const std::uint32_t lc = cellHash(std::uint32_t(rx) + std::uint32_t(seedOff(m_seed, 236)), std::uint32_t(rz));
+                    return lc % 100u < 40u ? -70 + int((lc >> 8) % 70u) : INT32_MIN;
+                };
+                const int rx = floorDivI(wx, kLakeCell), rz = floorDivI(wz, kLakeCell);
+                lakeLevel = levelOf(rx, rz);
+                // Where two of these meet at different levels the water would stand as a wall: a dam
+                // of rock along the line instead, up to the higher of the two.
+                const int ox = wx - rx * kLakeCell, oz = wz - rz * kLakeCell;
+                for (const auto& [nx, nz] : {std::pair<int, int>{ox < 2 ? rx - 1 : (ox >= kLakeCell - 2 ? rx + 1 : rx), rz},
+                                             {rx, oz < 2 ? rz - 1 : (oz >= kLakeCell - 2 ? rz + 1 : rz)}})
+                    if (nx != rx || nz != rz) {
+                        const int other = levelOf(nx, nz);
+                        if (other != lakeLevel)
+                            damBelow = std::max(damBelow, std::max(other, lakeLevel));
+                    }
+            }
             // A ravine: where the path field is near zero inside the rare mask, cut down from the
             // surface by up to ~45, narrower the deeper it goes so its walls lean in. Rare: the
             // first version's mask covered a fifth of the land.
             const int i2 = x + z * kChunkSize;
-            const float rm = smooth01(0.48f, 0.58f, ravMask[i2]);
+            // version 3 keeps them to a few patches of country: they were several to every kilometre
+            const float rm = v3 ? smooth01(0.66f, 0.74f, ravMask[i2]) : smooth01(0.48f, 0.58f, ravMask[i2]);
             const int ravDepth = rm > 0.0f ? int(18.0f + 27.0f * rm) : 0;
             for (int y = 0; y < kChunkSize; ++y) {
                 const int wy = baseY + y;
-                if (wy < kCaveFloor2 || wy > h)
+                if (wy < floorY || wy > h)
                     continue;
                 const int depth = h - wy;
                 const int cover = side - wy;
@@ -1422,33 +1471,58 @@ void TerrainGenerator::carveCaves2(Chunk& chunk, int baseX, int baseY, int baseZ
                     continue;
                 const std::size_t i = std::size_t(x) + std::size_t(y) * kChunkSize +
                                       std::size_t(z) * kChunkSize * kChunkSize;
+                // and in layers going down: a riddled level can sit over solid rock and another
+                // riddled level under that, so digging down is not the same few metres over and over
+                float rich = richCol;
+                if (v3) {
+                    const float band = valueNoise(float(wy) * 0.03f, float(wx + wz) * 0.0011f, seedOff(m_seed, 232));
+                    rich = std::clamp(richCol * (0.35f + 1.0f * band), 0.0f, 1.0f);
+                }
+                // version 3's tunnels are the passages between its rooms, not the whole of its caves
+                const float wormR2 = v3 ? kWormR2 * (0.02f + 0.18f * rich) : kWormR2;
+                const float tunnelScale = v3 ? 0.03f + 0.25f * rich : 1.0f;
                 bool open = false;
                 // caverns, never within 12 of the ground in any direction: there a big room is
                 // just a crater, or a hole in a hillside
                 if (cover >= 12) {
                     const int deep = std::min(depth, cover);
-                    const float t = deep > 48 ? 0.42f : (deep > 24 ? 0.50f : 0.60f);
-                    open = cav[i] > t;
+                    const float t = v3 ? (deep > 48 ? 0.40f : (deep > 24 ? 0.46f : 0.55f)) + 0.32f * (1.0f - rich)
+                                       : (deep > 48 ? 0.42f : (deep > 24 ? 0.50f : 0.60f));
+                    open = cav[i] > t && !pillar;
                 }
                 // tunnels: the short pair, and the long one whose radius breathes; 4 of rock over
                 // them on every side, except at a mouth
                 if (!open && (cover >= 4 || mouth)) {
-                    open = wa[i] * wa[i] + wb[i] * wb[i] < kWormR2;
+                    open = wa[i] * wa[i] + wb[i] * wb[i] < wormR2;
                     if (!open) {
-                        const float r2 = 0.05f + 0.16f * (tw[i] * 0.5f + 0.5f);
+                        const float r2 = (0.05f + 0.16f * (tw[i] * 0.5f + 0.5f)) * tunnelScale;
                         open = ta[i] * ta[i] + tb[i] * tb[i] < r2;
                     }
                 }
                 if (!open && depth < ravDepth && !wet) {
-                    // a few blocks across at the top (0.045 cut gashes 20-30 wide), pinching in below
-                    const float width = 0.016f * (1.0f - 0.7f * float(depth) / float(ravDepth));
+                    // a few blocks across at the top, pinching in below. Version 3's are wider: at
+                    // 0.016 they were one-block slits wandering across the country.
+                    const float width = (v3 ? 0.08f : 0.016f) * (1.0f - 0.7f * float(depth) / float(ravDepth));
                     open = std::abs(rav[i2]) < width;
                 }
+                if (open && wy <= damBelow)
+                    open = false;
                 if (open)
-                    chunk.set(x, y, z, wy <= aquifer ? blocks::Water : blocks::Air);
+                    chunk.set(x, y, z, wy <= std::max(aquifer, lakeLevel) ? blocks::Water : blocks::Air);
             }
+            // Version 3's bedrock: solid at the cave floor, then ragged for three blocks up, so the
+            // lowest caves stand on it and nothing ever opens under them.
+            if (v3)
+                for (int wy = std::max(floorY, baseY); wy <= std::min(floorY + 3, baseY + kChunkSize - 1); ++wy)
+                    if ((voxelHash(wx, wy, wz) & 3u) >= std::uint32_t(wy - floorY))
+                        chunk.set(x, wy - baseY, z, blocks::Bedrock);
         }
 
+    if (v3) {
+        placeGeodes(chunk, baseX, baseY, baseZ);
+        decorateCaves3(chunk, baseX, baseY, baseZ, heights);
+        return;
+    }
     // Stalactites from cave ceilings and stalagmites from their floors, a few blocks long, and
     // the glow deposits on the floors. Only inside this chunk: a spike that would cross into the
     // next one is cut, which is invisible underground.
@@ -1469,10 +1543,9 @@ void TerrainGenerator::carveCaves2(Chunk& chunk, int baseX, int baseY, int baseZ
                     const int len = 1 + int((r >> 10) % 2u);
                     for (int k = 0; k < len && y + k < kChunkSize && chunk.get(x, y + k, z) == blocks::Air; ++k)
                         chunk.set(x, y + k, z, blocks::Stone);
-                } else if (m_version < 3 && below == blocks::Stone && (r & 511u) == 511u) {
-                    // Version 2's coloured glow deposits. Version 3 has none: a cave lit by rainbow
-                    // lamps on the floor reads as a set, so it is dark but for what comes in from outside.
-                    // the same warm-shallow / cold-deep hue rule version 1 uses
+                } else if (below == blocks::Stone && (r & 511u) == 511u) {
+                    // the coloured glow deposits, by the same warm-shallow / cold-deep hue rule
+                    // version 1 uses
                     const int depth = h - wy;
                     const std::uint32_t j = voxelHash(baseX + x, 3, baseZ + z) >> 7;
                     int hue = depth > 44 ? 8 : (depth > 34 ? 7 : (depth > 26 ? 6 : (depth > 18 ? 4 : (depth > 10 ? 2 : 0))));
@@ -1481,6 +1554,184 @@ void TerrainGenerator::carveCaves2(Chunk& chunk, int baseX, int baseY, int baseZ
                         hue = int(j >> 4) % blocks::kLampHues;
                     hue = (hue + blocks::kLampHues) % blocks::kLampHues;
                     chunk.set(x, y, z, BlockId(blocks::LampFirst + hue));
+                }
+            }
+        }
+}
+
+// Crystal geodes: a hollow lined with glowing crystal, inside a shell of pale rock and then dark,
+// in a few of the 48-block cells below y 10. A cave that runs into one runs into its shell.
+void TerrainGenerator::placeGeodes(Chunk& chunk, int baseX, int baseY, int baseZ) const {
+    constexpr int kCell = 48, kReach = 9;
+    const int cx0 = floorDivI(baseX - kReach, kCell), cx1 = floorDivI(baseX + kChunkSize - 1 + kReach, kCell);
+    const int cy0 = floorDivI(baseY - kReach, kCell), cy1 = floorDivI(baseY + kChunkSize - 1 + kReach, kCell);
+    const int cz0 = floorDivI(baseZ - kReach, kCell), cz1 = floorDivI(baseZ + kChunkSize - 1 + kReach, kCell);
+    for (int cy = cy0; cy <= cy1; ++cy)
+        for (int cz = cz0; cz <= cz1; ++cz)
+            for (int cx = cx0; cx <= cx1; ++cx) {
+                const std::uint32_t hs = voxelHash(cx, cy, cz) ^ std::uint32_t(seedOff(m_seed, 250));
+                if (hs % 100u >= 14u)
+                    continue;
+                const int gx = cx * kCell + 9 + int((hs >> 7) % std::uint32_t(kCell - 18));
+                const int gy = cy * kCell + 9 + int((hs >> 13) % std::uint32_t(kCell - 18));
+                const int gz = cz * kCell + 9 + int((hs >> 19) % std::uint32_t(kCell - 18));
+                if (gy > 10 || gy < kCaveFloor3 + 14)
+                    continue;
+                const float r = 4.0f + float((hs >> 25) % 4u);
+                const int ri = int(r) + 2;
+                for (int wy = std::max(gy - ri, baseY); wy <= std::min(gy + ri, baseY + kChunkSize - 1); ++wy)
+                    for (int wz = std::max(gz - ri, baseZ); wz <= std::min(gz + ri, baseZ + kChunkSize - 1); ++wz)
+                        for (int wx = std::max(gx - ri, baseX); wx <= std::min(gx + ri, baseX + kChunkSize - 1); ++wx) {
+                            const float dx = float(wx - gx), dy = float(wy - gy), dz = float(wz - gz);
+                            const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+                            BlockId id;
+                            if (d < r - 1.6f)
+                                id = blocks::Air;
+                            else if (d < r - 0.6f)
+                                id = blocks::Crystal;
+                            else if (d < r + 0.4f)
+                                id = blocks::Andesite;
+                            else if (d < r + 1.4f)
+                                id = blocks::Slate;
+                            else
+                                continue;
+                            chunk.set(wx - baseX, wy - baseY, wz - baseZ, id);
+                        }
+            }
+}
+
+// What the caves are lined with, by what lies above them. Lush under wet country: moss on the
+// floors and walls, plants, vines down from the roof with glow berries on them. Dripstone under
+// dry country and here and there anywhere: its floors and roofs and the long points hanging and
+// standing. Frozen under the cold: ice and snow, icicles. Deep down, now and then, the fungal
+// caves: mud, mushrooms and the glowing ones. Everywhere else stone spikes and the old coloured
+// glow deposits. Inside this chunk only, like the rest of the carving: a point that would cross
+// into the next one is cut.
+void TerrainGenerator::decorateCaves3(Chunk& chunk, int baseX, int baseY, int baseZ,
+                                      const int (*heights)[kChunkSize]) const {
+    enum Kind : std::uint8_t { Plain, Lush, Drip, Frozen, Fungal };
+    const auto tile = columnTile(floorDivI(baseX, kChunkSize), floorDivI(baseZ, kChunkSize));
+    const auto rock = [](BlockId b) {
+        return b == blocks::Stone || b == blocks::Slate || b == blocks::Granite || b == blocks::Andesite ||
+               b == blocks::CoalOre || b == blocks::IronOre;
+    };
+    const auto inChunk = [](int x, int y, int z) {
+        return x >= 0 && x < kChunkSize && y >= 0 && y < kChunkSize && z >= 0 && z < kChunkSize;
+    };
+    for (int z = 0; z < kChunkSize; ++z)
+        for (int x = 0; x < kChunkSize; ++x) {
+            const int h = heights[z][x];
+            const int wx = baseX + x, wz = baseZ + z;
+            const Biome sb = tile->biome[z][x];
+            const bool cold = sb == Biome::Tundra || sb == Biome::SnowyTaiga || sb == Biome::Snowcap || sb == Biome::Alpine;
+            const bool wetLand = sb == Biome::Jungle || sb == Biome::Swamp || sb == Biome::Forest ||
+                                 sb == Biome::BirchForest || tile->moisture[z][x] > 160;
+            const bool dry = sb == Biome::Desert || sb == Biome::RedDesert || sb == Biome::Badlands || sb == Biome::Savanna;
+            const float cn = valueNoise(float(wx) * 0.0045f, float(wz) * 0.0045f, seedOff(m_seed, 240));
+            const float cn2 = valueNoise(float(wx) * 0.011f, float(wz) * 0.011f, seedOff(m_seed, 241));
+            const Kind shallow = cold                  ? Frozen
+                                 : wetLand && cn > 0.25f ? Lush
+                                 : dry && cn > 0.10f     ? Drip
+                                 : cn > 0.80f            ? Lush
+                                 : cn < 0.16f            ? Drip
+                                                         : Plain;
+            const Kind deepKind = cn2 > 0.72f ? Fungal : (cn < 0.22f ? Drip : (wetLand && cn > 0.55f ? Lush : Plain));
+            for (int y = 0; y < kChunkSize; ++y) {
+                const int wy = baseY + y;
+                if (wy > h - 4 || chunk.get(x, y, z) != blocks::Air)
+                    continue;
+                // what lies above sets the caves down to around y 10; below that it is the deep's own
+                const Kind kind = wy > 6 + int(cn2 * 12.0f) ? shallow : deepKind;
+                const std::uint32_t r = voxelHash(wx, wy, wz);
+                // the walls take the lining as well as the floor and the roof: moss creeping up them,
+                // dripstone flowstone down them, ice
+                if (kind == Lush || kind == Drip || kind == Frozen) {
+                    const BlockId lining = kind == Lush ? blocks::Moss : (kind == Drip ? blocks::Dripstone : blocks::Ice);
+                    const std::uint32_t share = kind == Lush ? 55u : (kind == Drip ? 70u : 40u);
+                    for (const auto& d : {std::pair<int, int>{1, 0}, {-1, 0}, {0, 1}, {0, -1}})
+                        if (inChunk(x + d.first, y, z + d.second) && rock(chunk.get(x + d.first, y, z + d.second)) &&
+                            voxelHash(wx + d.first, wy, wz + d.second) % 100u < share)
+                            chunk.set(x + d.first, y, z + d.second, lining);
+                }
+                const BlockId below = y > 0 ? chunk.get(x, y - 1, z) : blocks::Air;
+                const BlockId above = y + 1 < kChunkSize ? chunk.get(x, y + 1, z) : blocks::Air;
+                const bool floor = rock(below), roof = rock(above);
+                const auto hang = [&](int len, BlockId body, BlockId tip) {
+                    for (int k = 0; k < len && inChunk(x, y - k, z) && chunk.get(x, y - k, z) == blocks::Air; ++k)
+                        chunk.set(x, y - k, z, k + 1 == len ? tip : body);
+                };
+                const auto stand = [&](int len, BlockId body, BlockId tip) {
+                    for (int k = 0; k < len && inChunk(x, y + k, z) && chunk.get(x, y + k, z) == blocks::Air; ++k)
+                        chunk.set(x, y + k, z, k + 1 == len ? tip : body);
+                };
+                switch (kind) {
+                    case Lush:
+                        if (floor) {
+                            chunk.set(x, y - 1, z, (r % 10u) < 8u ? blocks::Moss : blocks::Clay);
+                            const std::uint32_t p = (r >> 4) % 100u;
+                            if (p < 30u)
+                                chunk.set(x, y, z, p < 12u ? blocks::Fern : (p < 22u ? blocks::GrassTuft : blocks::TallGrass));
+                        }
+                        if (roof) {
+                            if ((r >> 8) % 10u < 7u)
+                                chunk.set(x, y + 1, z, blocks::Moss);
+                            if ((r >> 12) % 100u < 22u) {
+                                const int len = 1 + int((r >> 16) % 5u);
+                                for (int k = 0; k < len && inChunk(x, y - k, z) && chunk.get(x, y - k, z) == blocks::Air; ++k)
+                                    chunk.set(x, y - k, z, voxelHash(wx, wy - k, wz + 7) % 6u == 0u ? blocks::GlowBerries
+                                                                                                  : blocks::CaveVines);
+                            }
+                        }
+                        break;
+                    case Drip:
+                        if (floor) {
+                            if (r % 4u != 0u)
+                                chunk.set(x, y - 1, z, blocks::Dripstone);
+                            if ((r >> 4) % 100u < 7u)
+                                stand(1 + int((r >> 10) % 3u), blocks::Dripstone, blocks::DripstoneUp);
+                        } else if (roof) {
+                            if ((r >> 6) % 4u != 0u)
+                                chunk.set(x, y + 1, z, blocks::Dripstone);
+                            if ((r >> 8) % 100u < 16u)
+                                hang(1 + int((r >> 12) % 4u), blocks::Dripstone, blocks::DripstoneDown);
+                        }
+                        break;
+                    case Frozen:
+                        if (floor)
+                            chunk.set(x, y - 1, z, r % 3u == 0u ? blocks::Snow : blocks::Ice);
+                        else if (roof) {
+                            if ((r >> 6) % 2u == 0u)
+                                chunk.set(x, y + 1, z, blocks::Ice);
+                            if ((r >> 8) % 100u < 6u)
+                                hang(1 + int((r >> 12) % 3u), blocks::Ice, blocks::Ice);
+                        }
+                        break;
+                    case Fungal:
+                        if (floor) {
+                            chunk.set(x, y - 1, z, (r % 5u) < 4u ? blocks::Mud : blocks::Moss);
+                            const std::uint32_t p = (r >> 4) % 100u;
+                            if (p < 24u)
+                                chunk.set(x, y, z, p < 7u ? blocks::GlowShroom
+                                                          : (p < 16u ? blocks::MushroomBrown : blocks::MushroomRed));
+                        }
+                        break;
+                    case Plain:
+                        if (roof && (r & 127u) < 3u)
+                            hang(1 + int((r >> 8) % 3u), blocks::Stone, blocks::Stone);
+                        else if (floor && (r & 127u) >= 3u && (r & 127u) < 5u)
+                            stand(1 + int((r >> 10) % 2u), blocks::Stone, blocks::Stone);
+                        else if (floor && (r & 511u) == 511u) {
+                            // the coloured glow deposits: warm near the surface, cold deep down
+                            const int depth = h - wy;
+                            const std::uint32_t j = voxelHash(wx, 3, wz) >> 7;
+                            int hue = depth > 44 ? 8 : (depth > 34 ? 7 : (depth > 26 ? 6 : (depth > 18 ? 4 : (depth > 10 ? 2 : 0))));
+                            hue += int(j % 3u) - 1;
+                            if ((j & 15u) == 0u)
+                                hue = int(j >> 4) % blocks::kLampHues;
+                            hue = (hue + blocks::kLampHues) % blocks::kLampHues;
+                            chunk.set(x, y, z, BlockId(blocks::LampFirst + hue));
+                        }
+                        break;
                 }
             }
         }
@@ -1629,23 +1880,27 @@ TerrainGenerator::StructureSite TerrainGenerator::pyramidSite(int cx, int cz, in
     const int ax = cx * kPyramidCell + 30 + int((hsh >> 8) % std::uint32_t(kPyramidCell - 60));
     const int az = cz * kPyramidCell + 30 + int((hsh >> 16) % std::uint32_t(kPyramidCell - 60));
     halfWidth = 11 + int((hsh >> 24) % 5u);
-    // deep in the desert, all the way across the footprint, and near enough level that the base
-    // course is not a cliff on one side
-    int lo = 1 << 30, hi = -(1 << 30);
-    for (const auto& o : {std::pair<int, int>{0, 0}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}}) {
-        const Column c = column(ax + o.first * halfWidth, az + o.second * halfWidth);
-        if (c.desert < 0.6f || c.h < kSeaLevel + 4)
-            return none;
-        lo = std::min(lo, c.h);
-        hi = std::max(hi, c.h);
-    }
-    if (hi - lo > 9)
+    // Deep in the desert all the way across the footprint, and near enough level that the base
+    // course is not a cliff on one side. It stands at the middle of the ground under it: it used to
+    // take the lowest of five samples, and between dunes that is a trough, so every pyramid stood
+    // half buried in the sand around it.
+    int hs[25];
+    int n = 0;
+    for (int j = -2; j <= 2; ++j)
+        for (int i = -2; i <= 2; ++i) {
+            const Column c = column(ax + i * halfWidth / 2, az + j * halfWidth / 2);
+            if (c.desert < 0.6f || c.h < kSeaLevel + 4)
+                return none;
+            hs[n++] = c.h;
+        }
+    std::sort(hs, hs + n);
+    if (hs[n - 1] - hs[0] > 12)
         return none;
     StructureSite s;
     s.kind = 4;
     s.x = ax;
     s.z = az;
-    s.h = lo - 1; // sunk a little, so the dunes lap its lower courses
+    s.h = hs[n / 2];
     return s;
 }
 
@@ -1679,7 +1934,7 @@ void TerrainGenerator::placePyramids(Chunk& chunk, ChunkPos pos) const {
             if (st.kind == 0)
                 continue;
             const int ax = st.x, az = st.z, y0 = st.h;
-            if (baseY > y0 + R + 4 || baseY + kChunkSize - 1 < y0 - 10)
+            if (baseY > y0 + R + 4 || baseY + kChunkSize - 1 < y0 - 16) // the foundation reaches 12 + 3 down
                 continue;
             const std::uint32_t rv = voxelHash(ax, 97, az);
             // which side the door is on, and the two sides the sand has drifted against
@@ -1693,8 +1948,10 @@ void TerrainGenerator::placePyramids(Chunk& chunk, ChunkPos pos) const {
                     const int m = std::max(std::abs(dx), std::abs(dz));
                     const int wx = ax + dx, wz = az + dz;
                     if (m <= R) {
+                        // down to the ground under it wherever that dips below the base course
                         const int top = y0 + (R - m);
-                        for (int wy = y0 - 3; wy <= top; ++wy)
+                        const int foot = std::min(y0, column(wx, wz).h) - 3;
+                        for (int wy = foot; wy <= top; ++wy)
                             put(wx, wy, wz, blocks::Sandstone);
                         for (int wy = top + 1; wy <= y0 + R + 3; ++wy)
                             put(wx, wy, wz, blocks::Air);

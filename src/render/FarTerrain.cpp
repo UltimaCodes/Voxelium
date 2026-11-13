@@ -282,8 +282,7 @@ void FarTerrain::update(const TerrainGenerator& gen, JobSystem& jobs, const glm:
 void FarTerrain::draw(const glm::mat4& viewProj, const glm::dvec3& cam, const glm::vec3& sunL,
                       const glm::vec3& sunColor, const glm::vec3& skyAmbient, const glm::vec3& landSun,
                       const glm::vec3& landAmbient, const glm::vec3& waterLevel, float cloudShadow,
-                      const glm::vec3& cloudMapXf,
-                      float innerRadius) {
+                      float cloudTime, float cloudCover, float innerRadius) {
     if (m_prog == 0)
         return;
     glUseProgram(m_prog);
@@ -298,7 +297,8 @@ void FarTerrain::draw(const glm::mat4& viewProj, const glm::dvec3& cam, const gl
     glProgramUniform3fv(m_prog, 15, 1, &camF.x);
     glProgramUniform1f(m_prog, 16, cloudShadow);
     glProgramUniform3fv(m_prog, 17, 1, &waterLevel.x);
-    glProgramUniform3fv(m_prog, 31, 1, &cloudMapXf.x);
+    glProgramUniform1f(m_prog, 31, cloudTime);
+    glProgramUniform1f(m_prog, 33, cloudCover);
     glBindVertexArray(m_vao);
     glDisable(GL_CULL_FACE); // one sheet seen from either side; winding is not worth a bug
     for (int r = 0; r < kRings; ++r) {

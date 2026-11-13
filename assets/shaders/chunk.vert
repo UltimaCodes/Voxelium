@@ -101,7 +101,9 @@ void main() {
         // winding stored. Decide the winding here instead: flip the corner order when the
         // quad's centre is on the far side of its own plane from the eye (the eye is the
         // origin in camera-relative space), which gives a double-sided quad for free.
-        vec3 n = (dir == 6u) ? vec3(0.7071, 0.0, -0.7071) : vec3(0.7071, 0.0, 0.7071);
+        // each plane's front side as kQuadCorner winds it. Plane 7's was given the wrong sign, which
+        // flipped it to face away from every eye: half the cross was never drawn, from any side.
+        vec3 n = (dir == 6u) ? vec3(0.7071, 0.0, -0.7071) : vec3(-0.7071, 0.0, -0.7071);
         vec3 centre = origin + vec3(0.5) + uOffsets[gl_DrawID].xyz;
         if (dot(n, centre) > 0.0) {
             cc = kQuadCorner[3 - corner];
@@ -116,6 +118,8 @@ void main() {
             float sw = sin(uTime * 0.9 + wpos.y * 0.55 + ph) * 0.11 * (block == 57u ? 1.0 : 0.6);
             wpos.x += sw;
             wpos.z += sw * 0.6 * cos(uTime * 0.7 + wpos.y * 0.4);
+        } else if (block >= 130u && block <= 134u) {
+            // the cave plants and dripstone points: no wind gets down there
         } else {
             // same wind wobble the leaves get, scaled by height up the blade so the root stays
             float gust = windGust(wpos);

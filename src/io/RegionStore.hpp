@@ -79,7 +79,8 @@ private:
     static std::int64_t localKey(ChunkPos pos);
     std::filesystem::path regionPath(RegionKey key) const;
     Region& ensureLoaded(RegionKey key); // caller holds the lock
-    void writeRegion(RegionKey key, const Region& region) const;
+    // False if the disk refused it; the file that was there is left as it was.
+    bool writeRegion(RegionKey key, const Region& region) const;
 
     std::filesystem::path m_dir;
     mutable std::mutex m_mutex;

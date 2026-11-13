@@ -48,12 +48,12 @@ bool Renderer::init(unsigned int drawProgram, unsigned int cullProgram) {
 
     glCreateVertexArrays(1, &m_vao);
 
+    // In video memory, filled with glNamedBufferSubData. It was persistently mapped for the CPU
+    // to write, and the driver keeps a mapping that size in system memory: every quad of every
+    // pass, shadow cascades included, was read across the bus each frame.
     glCreateBuffers(1, &m_arenaBuf);
     glNamedBufferStorage(m_arenaBuf, GLsizeiptr(kArenaQuads) * GLsizeiptr(sizeof(PackedQuad)),
-                         nullptr, kWriteMapFlags);
-    m_arenaMap = static_cast<PackedQuad*>(glMapNamedBufferRange(
-        m_arenaBuf, 0, GLsizeiptr(kArenaQuads) * GLsizeiptr(sizeof(PackedQuad)),
-        kWriteMapFlags));
+                         nullptr, GL_DYNAMIC_STORAGE_BIT);
 
     constexpr GLsizeiptr kMetaBytes = GLsizeiptr(kMaxChunks) * GLsizeiptr(sizeof(GpuChunkMeta));
     glCreateBuffers(1, &m_metaBuf);
@@ -96,7 +96,7 @@ bool Renderer::init(unsigned int drawProgram, unsigned int cullProgram) {
         glMapNamedBufferRange(m_visBuf, 0, kMaxChunks / 8 * kFrameRing, kWriteMapFlags));
     m_visCpu.assign(kMaxChunks / 32, 0xFFFFFFFFu); // everything visible until a flood runs
 
-    if (!m_arenaMap || !m_metaMap || !m_waterMetaMap || !m_readbackMap || !m_visMap) {
+    if (!m_metaMap || !m_waterMetaMap || !m_readbackMap || !m_visMap) {
         VX_ERROR("renderer: persistent mapping failed");
         return false;
     }
@@ -183,7 +183,8 @@ Renderer::Range Renderer::tryAlloc(std::span<const PackedQuad> quads, std::uint3
         block.count -= need;
         if (block.count == 0)
             m_freeList.erase(m_freeList.begin() + std::ptrdiff_t(i));
-        std::memcpy(m_arenaMap + r.first, quads.data(), std::size_t(need) * sizeof(PackedQuad));
+        glNamedBufferSubData(m_arenaBuf, GLintptr(r.first) * GLintptr(sizeof(PackedQuad)),
+                             GLsizeiptr(need) * GLsizeiptr(sizeof(PackedQuad)), quads.data());
         m_usedQuads += need;
         return r;
     }

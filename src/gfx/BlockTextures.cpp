@@ -37,7 +37,11 @@ constexpr int kBiomeLayer0 = kCrackLayer0 + kCrackStages;
 constexpr int kBiomeLayers = 28;
 // Ground cover, the newer biomes' ground and trees, and building blocks, all loaded from files.
 constexpr int kDecorLayer0 = kBiomeLayer0 + kBiomeLayers;
-constexpr int kDecorLayers = 67;
+constexpr int kDecorLayers = 75;
+constexpr int kBedrockLayer = 67; // decor slot, made from the cobblestone
+// The cave blocks, drawn in createBlockTextureArray: dripstone, its two points, vines, glow
+// berries, the glow mushroom and crystal, in that order from here.
+constexpr int kCaveLayer = 68;
 constexpr int kTurnedBark0 = kDecorLayer0 + 54; // oak, spruce, birch bark turned on its side
 constexpr int kLayers = kDecorLayer0 + kDecorLayers;
 constexpr const char* kDecorNames[kDecorLayers] = {
@@ -51,7 +55,8 @@ constexpr const char* kDecorNames[kDecorLayers] = {
     "terracotta_white", "granite", "andesite", "slate", "acacia_log", "acacia_log_top",
     "acacia_leaves", "jungle_log", "jungle_log_top", "jungle_leaves", "berry_bush", nullptr, nullptr,
     nullptr, "cobblestone", "mossy_cobble", "stone_bricks", "glass", "spruce_planks", "birch_planks",
-    "acacia_planks", "jungle_planks", "grass_tuft_b", "grass_tuft_c"};
+    "acacia_planks", "jungle_planks", "grass_tuft_b", "grass_tuft_c", nullptr,
+    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
 // Generated tiles a file may replace.
 constexpr struct {
     int layer;
@@ -831,6 +836,93 @@ unsigned int createBlockTextureArray(const std::filesystem::path& textureDir) {
             for (int x = 0; x < kTile; ++x)
                 dst[y * kTile + x] = src[x * kTile + y];
     }
+    // Bedrock: the cobblestone, near black, its pattern pushed hard so it reads as no ordinary rock.
+    {
+        const Rgba* src = pixels.data() + std::size_t(kDecorLayer0 + 57) * kTile * kTile;
+        Rgba* dst = pixels.data() + std::size_t(kDecorLayer0 + kBedrockLayer) * kTile * kTile;
+        for (int i = 0; i < kTile * kTile; ++i) {
+            const float l = (0.2126f * src[i].r + 0.7152f * src[i].g + 0.0722f * src[i].b) / 255.0f;
+            const float v = std::clamp((l - 0.45f) * 1.9f + 0.32f, 0.04f, 0.70f) * 255.0f;
+            dst[i] = {std::uint8_t(v), std::uint8_t(v * 0.97f), std::uint8_t(v * 1.02f), 255};
+        }
+    }
+    // The cave blocks.
+    {
+        const auto slot = [&](int i) { return pixels.data() + std::size_t(kDecorLayer0 + kCaveLayer + i) * kTile * kTile; };
+        const auto noise = [](int x, int y, std::uint32_t salt) {
+            std::uint32_t v = std::uint32_t(x) * 374761393u + std::uint32_t(y) * 668265263u + salt * 2246822519u;
+            v = (v ^ (v >> 13)) * 1274126177u;
+            return float((v ^ (v >> 16)) & 1023u) / 1023.0f;
+        };
+        const auto rgba = [](float r, float g, float b, std::uint8_t a = 255) {
+            const auto c = [](float v) { return std::uint8_t(std::clamp(v, 0.0f, 1.0f) * 255.0f); };
+            return Rgba{c(r), c(g), c(b), a};
+        };
+        const auto dripstone = [&](int x, int y) {
+            // a grey-brown stone laid down in thin bands, mottled; brown streaks alone read as wood
+            const float band = 0.5f + 0.5f * std::sin(float(y) * 1.3f + 2.0f * noise(x / 4, y / 4, 14));
+            const float v = 0.36f + 0.16f * noise(x / 2, y / 2, 11) + 0.08f * noise(x, y, 13) + 0.07f * band;
+            return std::array<float, 3>{v * 1.10f, v * 0.98f, v * 0.86f};
+        };
+        for (int y = 0; y < kTile; ++y)
+            for (int x = 0; x < kTile; ++x) {
+                const auto c = dripstone(x, y);
+                slot(0)[y * kTile + x] = rgba(c[0], c[1], c[2]);
+            }
+        // the points: a taper from four pixels either side of the middle to one; row 0 is the top
+        for (int down = 0; down < 2; ++down)
+            for (int y = 0; y < kTile; ++y)
+                for (int x = 0; x < kTile; ++x) {
+                    const float along = down ? float(kTile - 1 - y) / float(kTile - 1) : float(y) / float(kTile - 1);
+                    const float half = 0.6f + 3.6f * along, off = std::abs(float(x) + 0.5f - kTile * 0.5f);
+                    if (off > half) {
+                        slot(1 + down)[y * kTile + x] = {0, 0, 0, 0};
+                        continue;
+                    }
+                    const auto c = dripstone(x, y);
+                    const float edge = 1.0f - 0.35f * off / half;
+                    slot(1 + down)[y * kTile + x] = rgba(c[0] * edge, c[1] * edge, c[2] * edge);
+                }
+        // vines: three strands down the tile, leaves off them, and on the berry vine amber berries
+        for (int berries = 0; berries < 2; ++berries) {
+            Rgba* t = slot(3 + berries);
+            for (int i = 0; i < kTile * kTile; ++i)
+                t[i] = {0, 0, 0, 0};
+            for (int s = 0; s < 3; ++s) {
+                const int base = 3 + s * 5;
+                for (int y = 0; y < kTile; ++y) {
+                    const int x = base + int(std::lround(std::sin(float(y) * 0.7f + float(s) * 2.1f)));
+                    const float g = 0.85f + 0.3f * noise(x, y, 21 + std::uint32_t(s));
+                    t[y * kTile + x] = rgba(0.22f * g, 0.40f * g, 0.13f * g);
+                    if ((y + s * 3) % 4 == 0 && x + 1 < kTile)
+                        t[y * kTile + x + 1] = rgba(0.28f * g, 0.50f * g, 0.16f * g);
+                    if (berries && (y + s * 5) % 6 == 2 && x + 1 < kTile && y + 1 < kTile)
+                        for (int by = 0; by < 2; ++by)
+                            for (int bx = 0; bx < 2; ++bx)
+                                t[(y + by) * kTile + x + bx] = rgba(1.0f, 0.62f - 0.12f * float(by), 0.18f);
+                }
+            }
+        }
+        // the glow mushroom: the red one, its cap turned teal
+        {
+            const Rgba* src = pixels.data() + std::size_t(kDecorLayer0 + 18) * kTile * kTile;
+            Rgba* t = slot(5);
+            for (int i = 0; i < kTile * kTile; ++i) {
+                t[i] = src[i];
+                if (src[i].a > 0 && src[i].r > src[i].g + 30) {
+                    const float l = float(src[i].r) / 255.0f;
+                    t[i] = rgba(0.20f * l, 0.95f * l, 0.85f * l, src[i].a);
+                }
+            }
+        }
+        // crystal: violet, in facets that catch the light along their edges
+        for (int y = 0; y < kTile; ++y)
+            for (int x = 0; x < kTile; ++x) {
+                const float facet = std::fmod(float(x + y) * 0.23f + noise(x / 4, y / 4, 31) * 0.9f, 1.0f);
+                const float v = 0.55f + 0.35f * facet + (facet > 0.88f ? 0.25f : 0.0f);
+                slot(6)[y * kTile + x] = rgba(0.62f * v, 0.36f * v, 0.95f * v);
+            }
+    }
     if (loaded > 0)
         VX_INFO("block textures: loaded %d/%d from %s (rest procedural)", loaded, kLayers,
                 textureDir.string().c_str());
@@ -909,8 +1001,11 @@ int blockTopLayer(int b) {
         case blocks::SpruceWoodZ: return kBiomeLayer0 + 23;
         case blocks::BirchWoodX:
         case blocks::BirchWoodZ: return kBiomeLayer0 + 25;
+        case blocks::Bedrock: return kDecorLayer0 + kBedrockLayer;
         default: break;
     }
+    if (b >= blocks::Dripstone && b <= blocks::Crystal)
+        return kDecorLayer0 + kCaveLayer + (b - blocks::Dripstone);
     if (b >= blocks::JungleGrass && b <= blocks::Moss)
         return kDecorLayer0 + 11 + (b - blocks::JungleGrass);
     if (b >= blocks::DryDirt && b <= blocks::Slate)

@@ -235,6 +235,8 @@ int main(int, char** argv) {
     // which is the point: a play used to open the file and decode it whole, on this thread.
     audio.init(assets.parent_path() / "sounds", jobs.get());
 
+    // The saved world being played, once there is one: loaded from it or saved as it. F2 saves into it.
+    std::string worldName;
     // Every launch is a new world unless the title screen below loads one. The live one is
     // scratch either way, keeping it means saving it under a name from the ESC menu, which
     // is what makes "new seed each time" safe.
@@ -382,6 +384,7 @@ int main(int, char** argv) {
             }
             if (title.loadRequested && worldStore.load(title.selected, worldSeed, worldGen)) {
                 loaded = true;
+                worldName = title.selected;
                 break;
             }
             title.loadRequested = false; // load() failed (deleted mid-screen?), stay put
@@ -687,8 +690,18 @@ int main(int, char** argv) {
             hud.toggle();
         f3Held = f3;
         const bool f2 = window->keyDown(GLFW_KEY_F2);
-        if (f2 && !f2Held)
-            world->saveDirty(); // save edited chunks to disk
+        if (f2 && !f2Held && !hud.typing()) {
+            // Into the world this one was loaded from or last saved as. The live folder alone is
+            // scratch, the next world clears it. One with no name yet gets the ESC menu, where it
+            // is named.
+            if (worldName.empty()) {
+                settingsOpen = true;
+            } else {
+                world->saveDirty();
+                if (!worldStore.save(worldName, world->seed(), world->genVersion()))
+                    VX_ERROR("could not save \"%s\"", worldName.c_str());
+            }
+        }
         f2Held = f2;
         const bool f5 = window->keyDown(GLFW_KEY_F5);
         if (f5 && !f5Held) {
@@ -750,6 +763,8 @@ int main(int, char** argv) {
         if (mouseOurs != cursorCaptured) {
             cursorCaptured = mouseOurs;
             window->setCursorCaptured(mouseOurs);
+            if (mouseOurs)
+                camera.reanchor(*window);
         }
 
         if (settingsOpen || lampPickerOpen || pickerOpen) {
@@ -1345,14 +1360,17 @@ int main(int, char** argv) {
         if (worldUi.saveRequested) {
             worldUi.saveRequested = false;
             world->saveDirty(); // the live folder has to hold the edits before we copy it
-            if (worldStore.save(worldUi.saveName, world->seed(), world->genVersion()))
+            if (worldStore.save(worldUi.saveName, world->seed(), world->genVersion())) {
+                worldName = vx::WorldStore::sanitize(worldUi.saveName);
                 worldUi.saved = worldStore.list();
-            else
-                VX_ERROR("world save failed: name must have at least one letter or digit");
+            } else
+                VX_ERROR("world save failed (the name needs a letter or digit, or the disk said no)");
         }
         if (worldUi.deleteRequested) {
             worldUi.deleteRequested = false;
             worldStore.remove(worldUi.selected);
+            if (worldUi.selected == worldName)
+                worldName.clear(); // F2 must not bring a deleted world back
             worldUi.selected.clear();
             worldUi.saved = worldStore.list();
         }
@@ -1375,6 +1393,10 @@ int main(int, char** argv) {
                 world->update(*jobs, renderer, *light, camera.position);
                 renderer.endFrame();
             }
+            // Both worlds live in the same folder. Whatever the old one still had waiting to be
+            // written goes out now, before that folder is cleared or refilled; loadWorld would
+            // otherwise write it on top of the next world's regions.
+            world->saveDirty();
             weatherDirector.reset();
             lightning.reset();
             snowCover = 0.0f;
@@ -1385,8 +1407,10 @@ int main(int, char** argv) {
             const char* title = "voxelium";
             if (wantLoad && worldStore.load(worldUi.selected, newSeed, newGen)) {
                 world->loadWorld(renderer, newSeed, worldStore.liveDir(), newGen);
+                worldName = worldUi.selected;
                 title = "loading world";
             } else {
+                worldName.clear();
                 newSeed = int(std::chrono::steady_clock::now().time_since_epoch().count() ^
                               std::chrono::system_clock::now().time_since_epoch().count()) &
                           0x7FFFFFFF;

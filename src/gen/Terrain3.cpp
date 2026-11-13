@@ -817,18 +817,22 @@ void Terrain3::gridImpl(int x0, int z0, int n, int step, Sample* out, bool smoot
                     const float bank = std::floor(level) + 1.0f;
                     if (dist < r.half) {
                         const float u = dist / r.half;
-                        carved = std::min(carved, level - r.depth * (1.0f - u * u) - 0.6f);
+                        // Never above the ground it runs through. The level is a straight line between
+                        // two nodes a long way apart, read off the smoothed land, and it passed over
+                        // every dip between them: the water went across on walls, along the beaches too.
+                        const float lv = std::min(level, h - 1.0f);
+                        carved = std::min(carved, lv - r.depth * (1.0f - u * u) - 0.6f);
                         // a desert keeps the bed and loses the water
                         if (desert < 0.6f)
-                            water = std::max(water, std::floor(level));
+                            water = std::max(water, std::floor(lv));
                         channel = true;
                     } else {
                         // the valley sides come down to the banks
                         if (h > bank)
                             carved = std::min(carved, bank + (h - bank) * smooth01(r.half, r.valley, dist));
-                        // and low ground beside the water is raised to them, so it never stands in the air
+                        // and low ground beside the water comes up a block to meet it, never more
                         if (dist < r.half + 3.0f)
-                            bankUp = std::max(bankUp, bank);
+                            bankUp = std::max(bankUp, std::min(bank, h + 1.0f));
                     }
                 }
                 if (!channel && bankUp > carved)

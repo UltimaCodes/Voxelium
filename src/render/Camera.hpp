@@ -30,6 +30,9 @@ public:
     // Walk mode: cursor always captured, mouse look only, position comes from the
     // player. Reuses the capture state so mode switches hand off cleanly.
     void lookOnly(Window& window);
+    // Call when the cursor is captured again: whatever it did while free (a menu, another
+    // window) is not a turn of the head.
+    void reanchor(Window& window);
 
     bool flying() const { return m_flying; }
     glm::vec3 forward() const;

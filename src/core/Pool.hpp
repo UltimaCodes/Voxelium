@@ -5,9 +5,10 @@
 
 namespace vx {
 
-// Slab pool: acquire pops a free object, release pushes it back. Objects are never
-// destroyed while the pool lives, so their internal buffers (palette vectors etc.)
-// keep their capacity across reuse, steady-state load/unload churn allocates nothing.
+// Slab pool: acquire pops a free object, release pushes it back. Objects are never destroyed
+// while the pool lives. A type with a shed() gives up its big buffers on the way back in: the
+// pool holds as many objects as were ever out at once, and each one keeping the largest buffers
+// it ever had is the pool's high-water mark times the worst case.
 template <typename T>
 class Pool {
 public:
@@ -22,7 +23,11 @@ public:
         return obj;
     }
 
-    void release(T* obj) { m_free.push_back(obj); }
+    void release(T* obj) {
+        if constexpr (requires { obj->shed(); })
+            obj->shed();
+        m_free.push_back(obj);
+    }
 
     std::size_t slabCount() const { return m_slabs.size(); }
 

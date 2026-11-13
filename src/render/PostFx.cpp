@@ -59,7 +59,6 @@ bool PostFx::reloadPrograms(std::string_view defines) {
         submitProgram(fs, shaderDir / "taa.frag", defines),
         submitProgram(fs, shaderDir / "motionblur.frag", defines),
         submitProgram(fs, shaderDir / "apply_ao.frag", defines),
-        submitProgram(fs, shaderDir / "cloudmap.frag", defines),
         submitProgram(fs, shaderDir / "scatter.frag", defines),
         submitProgram(fs, shaderDir / "clouds3d.frag", defines),
     };
@@ -77,7 +76,7 @@ bool PostFx::reloadPrograms(std::string_view defines) {
     // Only now is it safe to drop the old set.
     const unsigned int old[] = {m_progSsao,    m_progBlur,  m_progComposite, m_progBloomDown,
                                 m_progBloomUp, m_progFinal, m_progTaa,       m_progMotion,
-                                m_progApplyAo, m_progCloudMap, m_progScatter, m_progClouds3d};
+                                m_progApplyAo, m_progScatter, m_progClouds3d};
     for (const unsigned int p : old)
         if (p)
             glDeleteProgram(p);
@@ -91,15 +90,10 @@ bool PostFx::reloadPrograms(std::string_view defines) {
     m_progTaa = built[6];
     m_progMotion = built[7];
     m_progApplyAo = built[8];
-    m_progCloudMap = built[9];
-    m_progScatter = built[10];
-    m_progClouds3d = built[11];
+    m_progScatter = built[9];
+    m_progClouds3d = built[10];
     if (m_vao == 0)
         glCreateVertexArrays(1, &m_vao);
-    if (m_cloudTex == 0) {
-        m_cloudTex = makeTex2D(GL_R8, kCloudMapRes, kCloudMapRes, GL_LINEAR, 6);
-        m_cloudFbo = makeFbo(m_cloudTex);
-    }
     if (m_cloudShape == 0)
         bakeCloudNoise();
     if (m_causticsTex == 0) {
@@ -176,36 +170,13 @@ void PostFx::shutdown() {
     destroyTargets();
     const GLuint progs[] = {m_progSsao,  m_progBlur,    m_progComposite, m_progBloomDown,
                             m_progBloomUp, m_progFinal, m_progTaa,       m_progMotion,
-                            m_progApplyAo, m_progCloudMap, m_progScatter, m_progClouds3d};
+                            m_progApplyAo, m_progScatter, m_progClouds3d};
     for (const GLuint p : progs)
         glDeleteProgram(p);
     const GLuint noise[] = {m_cloudShape, m_cloudDetail, m_cloudWeather, m_causticsTex};
     glDeleteTextures(4, noise);
     glDeleteProgram(m_progCaustics);
-    glDeleteFramebuffers(1, &m_cloudFbo);
-    glDeleteTextures(1, &m_cloudTex);
     glDeleteVertexArrays(1, &m_vao);
-}
-
-void PostFx::updateCloudMap(const glm::dvec3& camPos, float time, float cloudBias) {
-    constexpr float kTexel = kCloudMapSpan / float(kCloudMapRes);
-    m_cloudOrigin = {std::floor(float(camPos.x) / kTexel) * kTexel - kCloudMapSpan * 0.5f,
-                     std::floor(float(camPos.z) / kTexel) * kTexel - kCloudMapSpan * 0.5f};
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE);
-    glBindFramebuffer(GL_FRAMEBUFFER, m_cloudFbo);
-    glViewport(0, 0, kCloudMapRes, kCloudMapRes);
-    glUseProgram(m_progCloudMap);
-    glBindTextureUnit(11, m_cloudWeather);
-    glProgramUniform2fv(m_progCloudMap, 0, 1, &m_cloudOrigin.x);
-    glProgramUniform1f(m_progCloudMap, 1, kCloudMapSpan);
-    glProgramUniform1f(m_progCloudMap, 2, time);
-    glProgramUniform1f(m_progCloudMap, 33, cloudBias);
-    glBindVertexArray(m_vao);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    glGenerateTextureMipmap(m_cloudTex); // the shader blurs by picking a coarser level
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_CULL_FACE);
 }
 
 void PostFx::destroyTargets() {
@@ -385,8 +356,12 @@ void PostFx::run(const RunParams& p) {
         glProgramUniform3fv(m_progScatter, 37, 1, &p.lightVolumeCam.x);
         glProgramUniform3fv(m_progScatter, 38, 1, &p.lightVolumeMin.x);
         glProgramUniform1f(m_progScatter, 39, p.lightVolume != 0 ? 1.0f : 0.0f);
+        glProgramUniform1f(m_progScatter, 33, p.toggles.cloudCover());
+        glProgramUniform1f(m_progScatter, 44, p.time);
+        glProgramUniform1f(m_progScatter, 45, p.toggles.clouds ? 1.0f : 0.0f);
         glBindTextureUnit(1, p.shadows->texture());
         glBindTextureUnit(3, m_depth);
+        glBindTextureUnit(6, m_cloudWeather);
         glBindTextureUnit(7, p.lightVolume);
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }

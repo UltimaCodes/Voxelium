@@ -43,6 +43,17 @@ layout(location = 43) uniform float uTime;
 const float kLampAir = 0.03;
 
 #include "march.glsl"
+#include "clouds.glsl"
+#define CLOUD_WEATHER_BINDING 6
+#include "cloudfield.glsl"
+layout(location = 44) uniform float uCloudTime;
+layout(location = 45) uniform float uCloudsOn;
+#include "lighting.glsl"
+
+// How much of the sun gets past the clouds to a point: a shaft needs a gap to come through.
+float sunThroughCloud(vec3 worldPos) {
+    return uCloudsOn > 0.5 ? 1.0 - 0.9 * cloudCover(worldPos, uLightL) : 1.0;
+}
 
 const float kSeaLevel = 62.0;
 
@@ -84,7 +95,7 @@ vec3 waterShafts(vec3 rd, float dist) {
             float sheet = smoothstep(0.56, 0.74, n);
             // the water it came down through and the water between it and the eye, red first
             vec3 lost = exp(-vec3(0.22, 0.075, 0.03) * (below / L.y + t));
-            sum += sheet * shadowSingle(rel) * lost;
+            sum += sheet * shadowSingle(rel) * lost * sunThroughCloud(vec3(hit.x, kSeaLevel, hit.y));
         }
         t += stepLen;
     }
@@ -136,7 +147,7 @@ void main() {
         float t = stepLen * ign(gl_FragCoord.xy); // dithered start, breaks up banding
         float scatter = 0.0;
         for (int i = 0; i < kSteps; ++i) {
-            scatter += shadowSingle(rd * t);
+            scatter += shadowSingle(rd * t) * sunThroughCloud(uCamPos + rd * t);
             t += stepLen;
         }
         scatter /= float(kSteps);

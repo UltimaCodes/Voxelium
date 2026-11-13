@@ -265,6 +265,9 @@ vec3 lensFlare() {
     for (int i = 0; i < 5; ++i)
         vis += texture(uDepth, clamp(sunUv + kTaps[i], vec2(0.0), vec2(1.0))).r <= 0.0 ? 0.2
                                                                                       : 0.0;
+    // and a thick cloud over the sun takes it as surely as a hill does
+    if (uCloudsOn > 0.5)
+        vis *= texture(uClouds, clamp(sunUv, vec2(0.0), vec2(1.0))).a;
     if (vis <= 0.0)
         return vec3(0.0);
 
@@ -398,7 +401,9 @@ void main() {
         if (fog > 0.001) {
             float day = clamp(uSunL.y * 3.0 + 0.12, 0.0, 1.0);
             vec3 fogDir = normalize(vec3(dir.x, max(dir.y, 0.03), dir.z));
-            color = mix(color, skyGradient(fogDir, uSunL, day, uOvercast) * uBiomeTint, fog);
+            // The air is only as bright as the sky light in it. Underground there is none, so the
+            // far end of a cave goes black instead of glowing in whatever colour the sky is.
+            color = mix(color, skyGradient(fogDir, uSunL, day, uOvercast) * uBiomeTint * uSkyGate, fog);
         }
         // Only a camera in or above the layer has cloud in front of the ground. clouds3d stopped the
         // ray at the ground for it.

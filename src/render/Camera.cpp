@@ -60,6 +60,8 @@ void FlyCamera::update(Window& window, float dt, bool uiWantsMouse, bool uiWants
         position += glm::dvec3(glm::normalize(move) * speed * dt);
 }
 
+void FlyCamera::reanchor(Window& window) { window.cursorPos(m_lastX, m_lastY); }
+
 void FlyCamera::lookOnly(Window& window) {
     (void)window.consumeScrollY(); // don't let it pile up for fly mode
     if (!m_flying) {

@@ -50,8 +50,8 @@ struct FxToggles {
     // Faded in with darkness, so a day frame is untouched and the offscreen day references
     // do not move.
     float scotopic = 0.7f;
-    // Cloud shadows on terrain. Shares the sky's density field, so it only means anything
-    // with clouds on; gated separately because it costs a per-fragment fbm.
+    // Cloud shadows on terrain: how much of the sun a thick cloud takes (lighting.glsl cloudBlock).
+    // Reads the clouds' own weather map, so it only means anything with clouds on.
     float cloudShadow = 0.6f;
     // Leaf translucency: light coming THROUGH a backlit canopy rather than off it.
     float leafSss = 0.8f;
@@ -167,16 +167,13 @@ public:
     // input, so it must run after that call, not before.
     void applyOpaqueSsao(bool enabled, const glm::vec2& projScale, float nearPlane);
 
-    // Re-renders the cloud coverage texture around the camera. Call before the opaque pass;
-    // terrain samples it (unit 6) for cloud shadows. Origin is snapped to whole texels so
-    // the sample grid never shimmers as the camera moves.
-    void updateCloudMap(const glm::dvec3& camPos, float time, float cloudBias);
-    unsigned int cloudMapTex() const { return m_cloudTex; }
     // The caustic web for this moment, a tile 64 blocks across that repeats (caustics_tex.comp).
     void updateCaustics(float time);
     unsigned int causticsTex() const { return m_causticsTex; }
-    // xy = world XZ of the map's corner, z = 1 / span
-    glm::vec3 cloudMapXf() const { return {m_cloudOrigin.x, m_cloudOrigin.y, 1.0f / kCloudMapSpan}; }
+    // Where clouds are and how tall (cloudfield.glsl), for everything that has to agree with the sky:
+    // cloud shadows on the land, shafts in the air, clouds in the water.
+    unsigned int cloudWeatherTex() const { return m_cloudWeather; }
+    static constexpr double kCloudWeatherSpan = 12288.0; // cloudfield.glsl's kWeatherSpan: it repeats
 
     unsigned int sceneCopyTex() const { return m_sceneCopy; }
     unsigned int depthTex() const { return m_depth; }
@@ -226,15 +223,9 @@ private:
     unsigned int m_progSsao = 0, m_progBlur = 0, m_progComposite = 0, m_progApplyAo = 0;
     unsigned int m_progBloomDown = 0, m_progBloomUp = 0, m_progFinal = 0;
     unsigned int m_progTaa = 0, m_progMotion = 0;
-    unsigned int m_progCloudMap = 0, m_progScatter = 0, m_progClouds3d = 0;
+    unsigned int m_progScatter = 0, m_progClouds3d = 0;
     unsigned int m_vao = 0;
 
-    // 6 blocks a texel: the field's finest surviving octave is ~150 blocks across, so
-    // nothing finer than that is worth storing.
-    static constexpr int kCloudMapRes = 512;
-    static constexpr float kCloudMapSpan = 3072.0f;
-    unsigned int m_cloudTex = 0, m_cloudFbo = 0;
-    glm::vec2 m_cloudOrigin{0.0f};
     void bakeCloudNoise();
     // The clouds' noise, baked once, and the march's two half-res frames.
     unsigned int m_cloudShape = 0, m_cloudDetail = 0, m_cloudWeather = 0;

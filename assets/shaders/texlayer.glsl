@@ -7,8 +7,8 @@ bool isCutoutLayer(uint layer) {
     return layer == 7u || layer == 55u || layer == 73u || layer == 74u || layer == 124u || layer == 127u ||
            layer == 128u || layer == 135u;
 }
-// the emitters: glow, the 25 lamp swatches, glow coral
-bool isEmitterLayer(uint layer) { return layer == 4u || (layer >= 15u && layer <= 39u) || layer == 68u; }
+// the emitters: glow, the 25 lamp swatches, glow coral, glow berries, the glow mushroom, crystal
+bool isEmitterLayer(uint layer) { return layer == 4u || (layer >= 15u && layer <= 39u) || layer == 68u || (layer >= 147u && layer <= 149u); }
 // grass and ferns, which take the climate's colour like the grass they grow from
 bool isGrassLayer(uint layer) { return layer == 40u || layer == 140u || layer == 141u || (layer >= 75u && layer <= 79u); }
 // leaf litter, pebbles and lily pads: lying flat rather than standing crossed
@@ -73,6 +73,8 @@ uint texLayer(uint block, uint dir) {
         return dir >= 4u ? ring : (dir <= 1u ? turned : bark);
     }
     if (block >= 120u && block <= 127u) return block + 12u;  // cobble .. jungle planks
+    if (block == 128u) return 142u;                          // bedrock
+    if (block >= 129u && block <= 135u) return block + 14u;  // the cave blocks, dripstone .. crystal
     return 0u;
 }
 

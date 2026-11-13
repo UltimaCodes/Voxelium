@@ -37,6 +37,11 @@ public:
     static constexpr int kLatestVersion = 3;
     explicit TerrainGenerator(int seed, int version = kLatestVersion);
     int version() const { return m_version; }
+    // The lowest y a detailed chunk can have caves at: a coarse chunk of solid stone above it may
+    // still have some once it is generated in detail. Version 1 only ever carves near the surface.
+    // Version 3 has bedrock from its floor down.
+    static constexpr int kCaveFloor2 = 6, kCaveFloor3 = -96;
+    int caveFloorY() const { return m_version >= 3 ? kCaveFloor3 : (m_version == 2 ? kCaveFloor2 : INT32_MAX); }
 
     // detailed=false skips caves + glow deposits (which live underground and vanish under
     // the LOD downsample anyway), the bulk of gen cost. surface, water and trees still
@@ -219,6 +224,11 @@ private:
     FastNoise::SmartNode<> m_tunnelW;    // 3d: how wide those tunnels are, along their length
     FastNoise::SmartNode<> m_ravine;     // 2d: ravine paths, where it crosses zero
     FastNoise::SmartNode<> m_ravineMask; // 2d: the few places a ravine actually opens
+    FastNoise::SmartNode<> m_chamber;    // 3d, version 3: the great rooms, much larger than m_cavern's
+    // Version 3: lines what carveCaves2 opened by the cave biome above each column, and hollows out
+    // the odd crystal geode.
+    void decorateCaves3(Chunk& chunk, int baseX, int baseY, int baseZ, const int (*heights)[kChunkSize]) const;
+    void placeGeodes(Chunk& chunk, int baseX, int baseY, int baseZ) const;
     // groundMin: the lowest surface within kSidePad of each column, which is what a cave has to
     // stay under to not break out of a slope
     void carveCaves2(Chunk& chunk, int baseX, int baseY, int baseZ, const int (*heights)[kChunkSize],

@@ -710,7 +710,7 @@ void DebugHud::settings(bool& open, bool& vsync, bool& caveCull, int& radius, fl
                 {"E", "every block, to fill the hotbar from"},
                 {"scroll", "hotbar slot, or fly speed with the hotbar hidden"},
                 {"1-9", "hotbar slot (in the block list: put the hovered block there)"},
-                {"F2", "save edited chunks"},
+                {"F2", "save this world (ESC to name it first)"},
                 {"F3", "diagnostics overlay"},
                 {"F4", "hotbar"},
                 {"F5", "walk / fly"},

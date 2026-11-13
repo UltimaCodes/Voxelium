@@ -13,7 +13,7 @@ Get `voxelium-win64.zip` from Releases, unzip it, run `voxelium.exe`. Windows on
 ## What's in it
 
 - Endless worlds from a seed, with oceans, mountain ranges, rivers that actually run down to the sea, lakes and 17 biomes from jungle to tundra
-- Caves, ravines, flooded caves and old mineshafts naturally generated
+- Caves that go way down to a bedrock floor, with big caverns, underground lakes, ravines and old mineshafts. They change with what's above them: lush caves with moss and glow berries under jungles and swamps, dripstone caves under deserts, ice caves under the snow, glowing mushroom caves deep down, and the odd crystal geode
 - Lighthouses, shipwrecks, desert ruins and pyramids. There's also a cool easter egg under the pyramids too :D
 - Actual physics for the water (waves and all) and sand shifting via particles and gravity
 - Rain that makes puddles, snow that piles up and melts, and thunderstorms with actual lightning
@@ -24,7 +24,7 @@ Get `voxelium-win64.zip` from Releases, unzip it, run `voxelium.exe`. Windows on
 
 ## Controls
 
-WASD and mouse to move, space to jump, ctrl to sprint, F5 to switch between walking and flying (space and ctrl go up and down, shift is fast, scroll changes the speed). Hold left click to break, right click to place, middle click to grab the block you're looking at. E opens every block in the game, F4 is the hotbar and 1-9 pick a slot, shift + middle click a lamp to change its colour. ESC is settings, F3 is the debug screen, F2 saves your edits, F6 takes a screenshot.
+WASD and mouse to move, space to jump, ctrl to sprint, F5 to switch between walking and flying (space and ctrl go up and down, shift is fast, scroll changes the speed). Hold left click to break, right click to place, middle click to grab the block you're looking at. E opens every block in the game, F4 is the hotbar and 1-9 pick a slot, shift + middle click a lamp to change its colour. ESC is settings, F3 is the debug screen, F2 saves the world (the first save needs a name, so it opens ESC for that), F6 takes a screenshot.
 
 If your game lags, turn down the detail distance in settings since it's the most expensive setting.
 

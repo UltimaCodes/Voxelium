@@ -147,7 +147,6 @@ private:
     unsigned int m_visBuf = 0;
     unsigned int m_indexBuf = 0; // two triangles over four vertices, for every quad a draw can hold
 
-    PackedQuad* m_arenaMap = nullptr;
     void* m_metaMap = nullptr;
     void* m_waterMetaMap = nullptr;
     const std::uint32_t* m_readbackMap = nullptr;

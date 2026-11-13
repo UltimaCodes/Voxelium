@@ -164,8 +164,6 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
 
     if (timers) timers->scene.begin();
     const bool cloudShadows = fx.clouds && fx.cloudShadow > 0.0f;
-    if (cloudShadows)
-        rc.postfx.updateCloudMap(camera.position, time, fx.cloudCover());
     rc.postfx.updateCaustics(time);
     rc.postfx.beginScene();
     glClearColor(0.42f, 0.68f, 1.05f, 1.0f); // HDR sky
@@ -182,9 +180,11 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     const glm::vec3 camPosF(camera.position);
     glProgramUniform3fv(rc.drawProgram, 24, 1, &camPosF.x);
     glProgramUniform1f(rc.drawProgram, 25, cloudShadows ? fx.cloudShadow : 0.0f);
-    const glm::vec3 cloudXf = rc.postfx.cloudMapXf();
-    glProgramUniform3fv(rc.drawProgram, 31, 1, &cloudXf.x);
-    glBindTextureUnit(6, rc.postfx.cloudMapTex());
+    // Cloud shadows come straight off the clouds' own weather map, at their clock and cover. Bound
+    // here for the chunks, and still bound for the far terrain and the water after them.
+    glProgramUniform1f(rc.drawProgram, 31, time);
+    glProgramUniform1f(rc.drawProgram, 33, fx.cloudCover());
+    glBindTextureUnit(6, rc.postfx.cloudWeatherTex());
     const glm::vec3 climateXf = rc.farTerrain ? rc.farTerrain->climateXf() : glm::vec3(0.0f);
     glProgramUniform3fv(rc.drawProgram, 35, 1, &climateXf.x);
     // wrapped on a multiple of the sine's period, so it stays precise over a long session
@@ -245,7 +245,8 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     // depth keeps the real terrain in front of it.
     if (rc.farTerrain && fx.farTerrain && farEnd > fogEnd && fogEnd < 1e8f)
         rc.farTerrain->draw(cam.viewProj, camera.position, sunL, sky.color, sky.ambient, sky.landSun,
-                            sky.landAmbient, sky.waterLevel, cloudShadows ? fx.cloudShadow : 0.0f, cloudXf,
+                            sky.landAmbient, sky.waterLevel, cloudShadows ? fx.cloudShadow : 0.0f, time,
+                            fx.cloudCover(),
                             // past the height the chunks reach the ground from, there is no ground to leave room for
                             camera.position.y > double((kHighestLookDown + 1) * kChunkSize)
                                 ? 0.0f
@@ -291,6 +292,18 @@ void renderFrame(RenderContext& rc, const FlyCamera& camera, const FxToggles& fx
     glProgramUniform1f(rc.waterProgram, 25, sky.daylight);
     glProgramUniform3fv(rc.waterProgram, 43, 1, &fx.handLight.x);
     glProgramUniform3fv(rc.waterProgram, 40, 1, &sky.waterLevel.x);
+    // the sky it mirrors: the same cover and rain as the sky overhead, and the clouds in it
+    glProgramUniform1f(rc.waterProgram, 44, fx.cloudCover());
+    glProgramUniform1f(rc.waterProgram, 45, fx.precip * (1.0f - 0.4f * fx.snow));
+    glProgramUniform1f(rc.waterProgram, 46, fx.clouds ? 1.0f : 0.0f);
+    {
+        const auto wrap = [](double v) {
+            return float(v - std::floor(v / PostFx::kCloudWeatherSpan) * PostFx::kCloudWeatherSpan);
+        };
+        const glm::vec3 cloudCam{wrap(camera.position.x), float(camera.position.y), wrap(camera.position.z)};
+        glProgramUniform3fv(rc.waterProgram, 47, 1, &cloudCam.x);
+    }
+    glBindTextureUnit(6, rc.postfx.cloudWeatherTex());
     // The swell: its phase is worked out at the camera in double so it stays fixed to the world.
     // Half-block tessellation on High and Ultra, a block on Low and Medium.
     WaterWaves::apply(rc.waterProgram,

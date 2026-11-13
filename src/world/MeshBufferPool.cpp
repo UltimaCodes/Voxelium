@@ -13,7 +13,14 @@ std::vector<PackedQuad>* MeshBufferPool::checkout() {
 }
 
 void MeshBufferPool::checkin(std::vector<PackedQuad>* buf) {
-    buf->clear(); // keeps capacity, the reason this exists
+    // A small buffer keeps its capacity, which is the reason this exists. A big one gives it back:
+    // the next chunk to draw it is usually small, and it stays attached to that chunk for as long
+    // as it is loaded, so over a long flight every slot held the largest mesh it ever carried.
+    constexpr std::size_t kKeepQuads = 1024;
+    if (buf->capacity() > kKeepQuads)
+        std::vector<PackedQuad>().swap(*buf);
+    else
+        buf->clear();
     m_freeList.push_back(buf);
 }
 

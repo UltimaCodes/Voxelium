@@ -62,6 +62,13 @@ float vnoiseW(vec2 p, float n);
 
 #include "waves.glsl"
 #include "sky.glsl"
+#define CLOUD_BIAS_LOCATION 44
+#include "clouds.glsl"
+#define CLOUD_WEATHER_BINDING 6
+#include "cloudfield.glsl"
+layout(location = 45) uniform float uOvercast;  // rain greys the sky it reflects, as composite.frag's
+layout(location = 46) uniform float uCloudsOn;
+layout(location = 47) uniform vec3 uCloudCam;   // camera x, z modulo the weather map's span, and y
 // The camera's xz modulo 512 (render/WaterWaves.hpp kWrap). The chop and the foam are value noise
 // whose lattice repeats every 512 blocks, so camera-relative position plus this is world position
 // to that noise: the pattern stays put as the camera moves (it used to travel along with it, the
@@ -141,15 +148,25 @@ float vnoiseW(vec2 p, float n) {
 // both exactly 512 blocks
 float fbm2(vec2 p) { return 0.6 * vnoiseW(p, 672.0) + 0.4 * vnoiseW(p * 2.0 + 3.7, 1344.0); }
 
-vec3 skyColor(vec3 d) {
+// The sky seen along d from the water at P (camera-relative).
+vec3 skyColor(vec3 d, vec3 P) {
     // uDaylight, not uSunL.y: uSunL points at the MOON after dusk, so deriving the day
     // factor from it would make a midnight lake reflect a bright blue noon sky.
-    vec3 col = skyGradient(d, uDaylight > 0.0 ? uSunL : -uSunL, uDaylight, 0.0);
+    vec3 col = skyGradient(d, uDaylight > 0.0 ? uSunL : -uSunL, uDaylight, uOvercast);
     float sd = max(dot(d, uSunL), 0.0);
     // "is the thing lighting us above the horizon", true for the moon too, which is what
     // puts a moon glint on the water instead of nothing.
     float above = smoothstep(-0.03, 0.06, uSunL.y);
-    col += uSunColor * smoothstep(0.9985, 0.9995, sd) * 3.0 * above; // disc, dim for the moon
+    float cover = 0.0;
+    if (uCloudsOn > 0.5 && d.y > 0.01) {
+        // The cloud layer where the reflected ray meets it, from the same weather map and cover the
+        // sky's clouds are marched from, lit like their undersides: a lake mirrors the clouds over it.
+        vec2 hit = uCloudCam.xz + P.xz + d.xz / d.y * (kCloudMid - uCloudCam.y - P.y);
+        cover = cloudCoverage(cloudWeather(hit, uTime).r) * smoothstep(0.02, 0.12, d.y);
+        vec3 lit = uSkyAmbient * 1.5 + uSunColor * (0.3 + 0.5 * pow(sd, 4.0)) * smoothstep(-0.02, 0.15, uSunL.y);
+        col = mix(col, lit * mix(0.3, 1.0, smoothstep(0.0, 0.25, uDaylight)), cover * 0.85);
+    }
+    col += uSunColor * smoothstep(0.9985, 0.9995, sd) * 3.0 * above * (1.0 - cover) * (1.0 - uOvercast); // disc
     return col;
 }
 
@@ -252,14 +269,14 @@ vec3 reflection(vec3 P, vec3 R, float jitter) {
                 // fade near screen edges to hide the SSR cutoff
                 vec2 e = smoothstep(0.0, 0.12, uv) * smoothstep(0.0, 0.12, 1.0 - uv);
                 float edge = e.x * e.y;
-                return mix(skyColor(R) * gSkyVis, texture(uSceneColor, uv).rgb, edge);
+                return mix(skyColor(R, P) * gSkyVis, texture(uSceneColor, uv).rgb, edge);
             }
         } else {
             wasFront = true; // sky here: nothing to be behind
         }
         stepLen *= 1.18; // grow steps: dense near the surface, coarse far away
     }
-    return skyColor(R) * gSkyVis;
+    return skyColor(R, P) * gSkyVis;
 }
 
 void main() {
@@ -347,6 +364,11 @@ void main() {
     // water under an overhang, never as the thing that shades the sun, which is what made
     // the lighting step from block to block.
     float shadow = waterShadow(vWorldRel, N);
+    if (uCloudsOn > 0.5) {
+        // a cloud between it and the sun takes the glint and the sunlit body with it (lighting.glsl's cloudCover)
+        vec2 at = uCloudCam.xz + vWorldRel.xz + uSunL.xz * ((kCloudMid - 64.0) / max(uSunL.y, 0.05));
+        shadow *= 1.0 - 0.9 * smoothstep(0.2, 0.7, cloudCoverage(cloudWeather(at, uTime).r));
+    }
     float ndl = max(dot(N, uSunL), 0.0);
     float occl = 0.35 + 0.65 * vSky;            // gentle: 4-bit voxel light, so keep it soft
     gSkyVis = smoothstep(0.02, 0.45, vSky);
@@ -392,6 +414,9 @@ void main() {
     float spec = (pow(ndh, 340.0) * 2.6 + pow(ndh, 34.0) * 0.28) * shadow * occl * gSkyVis;
 
     vec3 col = mix(refr, refl, fres) + uSunColor * spec; // glint fades at night
+    // Over the far terrain's own sea, at the edge of the streamed world, be that sea: it has its own
+    // colour and its own sky in it already, and a second helping of both here was a pale ring.
+    col = mix(col, texture(uSceneColor, suv).rgb, overFar);
     // the lamp's reflection: the light is at the eye, so it sits where the surface faces straight back
     col += handLit * (pow(max(dot(N, V), 0.0), 60.0) * 0.6);
 

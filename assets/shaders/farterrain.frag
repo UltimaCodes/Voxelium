@@ -23,11 +23,12 @@ layout(location = 16) uniform float uCloudShadow;
 layout(location = 17) uniform vec3 uWaterLevel;
 layout(location = 18) uniform vec3 uHole;      // x, z of the middle of what is drawn nearer in, half its width
 layout(location = 19) uniform vec3 uHeightXf;  // x, z of this ring's corner, 1 / its span
-layout(location = 31) uniform vec3 uCloudMapXf;
-layout(binding = 6) uniform sampler2D uCloudMap;
+layout(location = 31) uniform float uCloudTime;
 layout(binding = 8) uniform sampler2D uHeights;
 
 #include "clouds.glsl"
+#define CLOUD_WEATHER_BINDING 6
+#include "cloudfield.glsl"
 #include "lighting.glsl"
 
 float h21(vec2 p) {
@@ -79,6 +80,16 @@ void main() {
         discard;
     vec3 N = normalize(vNormal);
     if (vWater > 0.5) {
+        // Where the streamed sea is still over it, come in gradually, a few pixels more each step
+        // out (TAA smooths the dither): the near sea's floor shows through less and less, instead of
+        // ending on a hard circle with the reefs cut off along it. Whole by the edge of the chunks,
+        // which reach uInner / 0.92 (fogEnd is 92% of their radius).
+        float d = length(vRel.xz);
+        float cover = smoothstep(uInner - 24.0, uInner / 0.92 - 4.0, d);
+        float n = fract(52.9829189 * fract(dot(gl_FragCoord.xy + fract(uCloudTime * 7.31) * 61.0,
+                                                vec2(0.06711056, 0.00583715))));
+        if (n >= cover)
+            discard;
         // the same parts as the near water: a body colour by depth, and the sky by Fresnel
         float absorb = 1.0 - exp(-vColor.r * 40.0 * 0.18);
         vec3 tint = mix(vec3(0.10, 0.26, 0.40), vec3(0.015, 0.06, 0.18), absorb);
@@ -105,9 +116,9 @@ void main() {
     N = normalize(mix(vec3(0.0, 1.0, 0.0), N + vec3(n - 0.5, 0.0, n2 - 0.5) * 0.3, smoothstep(uInner, uInner + 1200.0, dist)));
 
     vec3 wp = vec3(uCamPos.x + vRel.x, uCamY + vRel.y, uCamPos.z + vRel.z);
-    float cloud = uCloudShadow > 0.0 ? cloudCover(wp, uSunL) * uCloudShadow : 0.0;
+    float cloud = cloudBlock(wp, uSunL, uCloudShadow);
     float shadow = hillShadow(wp);
-    vec3 sun = uLandSun * (max(dot(N, uSunL), 0.0) * shadow * (1.0 - kCloudMaxBlock * cloud));
+    vec3 sun = uLandSun * (max(dot(N, uSunL), 0.0) * shadow * (1.0 - cloud));
     vec3 amb = (skyFill(N, uLandAmb) * (1.0 + 0.2 * cloud) + sunFill(N, uSunL, uLandSun)) * vAo;
     outColor = vec4(albedo * (sun + amb), 1.0);
 }
