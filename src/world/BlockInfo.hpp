@@ -28,7 +28,8 @@ inline constexpr Tab tabOf(BlockId id) {
         return Tab::Liquid;
     if (emissive(id))
         return Tab::Light;
-    if (isCross(id) || isLeafBlock(id) || id == Cactus || id == Coconut || (id >= BrainCoral && id <= BubbleCoral))
+    if (isCross(id) || isLeafBlock(id) || id == Cactus || id == Coconut || id == MangroveRoots ||
+        (id >= BrainCoral && id <= BubbleCoral))
         return Tab::Plants;
     if (isPlanks(id) || id == Bricks || id == Cobblestone || id == MossyCobble || id == StoneBricks || id == Glass ||
         isLogBlock(id) || isTerracotta(id) || id == Sandstone)
@@ -143,6 +144,22 @@ inline constexpr const char* blockName(BlockId id) {
         case GlowBerries: return "Glow Berries";
         case GlowShroom: return "Glow Mushroom";
         case Crystal: return "Crystal";
+        case CherryLeaves: return "Cherry Leaves";
+        case BlossomLeaves: return "Blossom Leaves";
+        case AutumnRed: return "Red Autumn Leaves";
+        case AutumnOrange: return "Orange Autumn Leaves";
+        case AutumnYellow: return "Golden Leaves";
+        case MangroveRoots: return "Mangrove Roots";
+        case CherryWood: return "Cherry Log";
+        case RedwoodWood: return "Redwood Log";
+        case MangroveWood: return "Mangrove Log";
+        case MushroomStem: return "Mushroom Stem";
+        case MushroomCapRed: return "Red Mushroom Block";
+        case MushroomCapBrown: return "Brown Mushroom Block";
+        case Bamboo: return "Bamboo";
+        case PinkPetals: return "Pink Petals";
+        case Lavender: return "Lavender";
+        case FlowerPink: return "Pink Tulip";
         default: return "Block";
     }
 }

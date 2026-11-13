@@ -20,7 +20,9 @@ inline constexpr int kSeaLevelForSpawn = 62;
 // What grows on a column and what its ground is made of, from its climate (version 3).
 enum class Biome : std::uint8_t {
     Ocean, Beach, Desert, RedDesert, Badlands, Savanna, Jungle, Swamp, Plains, Meadow, Forest,
-    BirchForest, Taiga, SnowyTaiga, Tundra, Alpine, Snowcap, Count
+    BirchForest, Taiga, SnowyTaiga, Tundra, Alpine, Snowcap,
+    CherryGrove, AutumnForest, SpringForest, FlowerField, AspenGrove, Redwood, DarkForest, Bamboo, Mangrove, Oasis,
+    Count
 };
 const char* biomeName(Biome b);
 
@@ -68,7 +70,7 @@ public:
     // A column's biome from its climate. Pure, like everything here. broad is the height without
     // the rolling hills, which the air cools by, so a hilltop is not an island of another biome.
     Biome classify(int wx, int wz, int h, float broad, float desert, float coast, float moisture, float temp,
-                   int snowLine) const;
+                   int snowLine, float oasis = 0.0f) const;
     Biome biomeOf(int wx, int wz) const; // version 3; older worlds answer plains
     // How thickly a biome is wooded, 0..1: the trees and the far horizon's canopy both go by it.
     static float treeDensity(Biome b);
@@ -181,7 +183,9 @@ private:
 
     void placeTrees(Chunk& chunk, ChunkPos pos) const;
     void placeTrees3(Chunk& chunk, ChunkPos pos) const;
-    void growTree(Chunk& chunk, ChunkPos pos, int kind, int tx, int tz, int surf, std::uint32_t rv) const;
+    // leaves: what the crown is made of, Air for the species' own
+    void growTree(Chunk& chunk, ChunkPos pos, int kind, int tx, int tz, int surf, std::uint32_t rv,
+                  BlockId leaves = 0) const;
     void placeFoliage3(Chunk& chunk, ChunkPos pos) const;
     // Lighthouses on the coast, shipwrecks on the shallow seabed and ruins in the desert: one
     // candidate per 96-block cell, built from the anchor's position alone like the trees are, so

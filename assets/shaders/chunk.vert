@@ -120,6 +120,11 @@ void main() {
             wpos.z += sw * 0.6 * cos(uTime * 0.7 + wpos.y * 0.4);
         } else if (block >= 130u && block <= 134u) {
             // the cave plants and dripstone points: no wind gets down there
+        } else if (block == 148u) {
+            // bamboo is stacked like kelp, so it sways by height and the joins stay together
+            float gust = windGust(wpos);
+            wpos.x += 0.05 * sin(uTime * 1.2 + ph + wpos.y * 0.21) * gust;
+            wpos.z += 0.04 * sin(uTime * 1.5 + ph * 1.3 + wpos.y * 0.17) * gust;
         } else {
             // same wind wobble the leaves get, scaled by height up the blade so the root stays
             float gust = windGust(wpos);
@@ -154,7 +159,8 @@ void main() {
     vec3 world = pos + uOffsets[gl_DrawID].xyz;
 
     // leaf sway: gentle wind wobble driven by world position + time
-    if (block == 7u || block == 54u || block == 70u || block == 71u || block == 110u || block == 112u || block == 113u) {
+    if (block == 7u || block == 54u || block == 70u || block == 71u || block == 110u || block == 112u || block == 113u ||
+        (block >= 136u && block <= 140u)) {
         float ph = world.x * 0.5 + world.z * 0.5;
         float gust = windGust(world);
         world.x += 0.06 * sin(uTime * 1.6 + ph) * gust;

@@ -37,11 +37,14 @@ constexpr int kBiomeLayer0 = kCrackLayer0 + kCrackStages;
 constexpr int kBiomeLayers = 28;
 // Ground cover, the newer biomes' ground and trees, and building blocks, all loaded from files.
 constexpr int kDecorLayer0 = kBiomeLayer0 + kBiomeLayers;
-constexpr int kDecorLayers = 75;
+constexpr int kDecorLayers = 95;
 constexpr int kBedrockLayer = 67; // decor slot, made from the cobblestone
 // The cave blocks, drawn in createBlockTextureArray: dripstone, its two points, vines, glow
 // berries, the glow mushroom and crystal, in that order from here.
 constexpr int kCaveLayer = 68;
+// The colourful woods, drawn in createBlockTextureArray: five leaves and the mangrove roots, three logs
+// a side and a top each, the mushroom stem and caps, bamboo plain and leafy, petals, lavender, pink tulip.
+constexpr int kWoodsLayer = 75;
 constexpr int kTurnedBark0 = kDecorLayer0 + 54; // oak, spruce, birch bark turned on its side
 constexpr int kLayers = kDecorLayer0 + kDecorLayers;
 constexpr const char* kDecorNames[kDecorLayers] = {
@@ -923,6 +926,174 @@ unsigned int createBlockTextureArray(const std::filesystem::path& textureDir) {
                 slot(6)[y * kTile + x] = rgba(0.62f * v, 0.36f * v, 0.95f * v);
             }
     }
+    // The colourful woods. Leaves are the oak's, holes and all, so they cast the same dappled shade, in
+    // two colours clumped together; bark and rings are the oak's, recoloured.
+    {
+        const auto slot = [&](int i) { return pixels.data() + std::size_t(kDecorLayer0 + kWoodsLayer + i) * kTile * kTile; };
+        const auto layerAt = [&](int l) { return pixels.data() + std::size_t(l) * kTile * kTile; };
+        const auto noise = [](int x, int y, std::uint32_t salt) {
+            std::uint32_t v = std::uint32_t(x) * 374761393u + std::uint32_t(y) * 668265263u + salt * 2246822519u;
+            v = (v ^ (v >> 13)) * 1274126177u;
+            return float((v ^ (v >> 16)) & 1023u) / 1023.0f;
+        };
+        const auto rgba = [](float r, float g, float b, std::uint8_t a = 255) {
+            const auto c = [](float v) { return std::uint8_t(std::clamp(v, 0.0f, 1.0f) * 255.0f); };
+            return Rgba{c(r), c(g), c(b), a};
+        };
+        const auto clear = [&](Rgba* t) {
+            for (int i = 0; i < kTile * kTile; ++i)
+                t[i] = {0, 0, 0, 0};
+        };
+        struct Two {
+            float a[3], b[3], share;
+        };
+        constexpr Two kLeaf[5] = {
+            {{0.93f, 0.58f, 0.73f}, {0.99f, 0.78f, 0.87f}, 0.45f}, // cherry
+            {{0.95f, 0.94f, 0.89f}, {0.48f, 0.64f, 0.30f}, 0.22f}, // blossom, a few leaves showing
+            {{0.70f, 0.14f, 0.09f}, {0.84f, 0.30f, 0.11f}, 0.40f}, // red
+            {{0.88f, 0.44f, 0.09f}, {0.96f, 0.62f, 0.18f}, 0.40f}, // orange
+            {{0.93f, 0.74f, 0.18f}, {0.99f, 0.87f, 0.38f}, 0.40f}, // golden
+        };
+        const Rgba* oak = layerAt(7);
+        for (int k = 0; k < 5; ++k)
+            for (int y = 0; y < kTile; ++y)
+                for (int x = 0; x < kTile; ++x) {
+                    const Rgba& s = oak[y * kTile + x];
+                    const float l = (0.2126f * s.r + 0.7152f * s.g + 0.0722f * s.b) / 255.0f / 0.33f;
+                    const float* c = noise(x / 2, y / 2, 41 + std::uint32_t(k)) < kLeaf[k].share ? kLeaf[k].b : kLeaf[k].a;
+                    slot(k)[y * kTile + x] = rgba(c[0] * l, c[1] * l, c[2] * l, s.a);
+                }
+        // mangrove roots: a tangle of strands arching through the cell, open between them
+        {
+            Rgba* t = slot(5);
+            clear(t);
+            for (int s = 0; s < 4; ++s)
+                for (int y = 0; y < kTile; ++y) {
+                    const float bend = std::sin(float(y) * 0.42f + float(s) * 1.9f) * 2.4f;
+                    const int x0 = 1 + s * 4 + int(std::lround(bend)) - (s == 3 ? 2 : 0);
+                    for (int w = 0; w < 2; ++w) {
+                        const int x = x0 + w;
+                        if (x < 0 || x >= kTile)
+                            continue;
+                        const float g = 0.80f + 0.30f * noise(x, y, 51 + std::uint32_t(s)) - 0.18f * float(w);
+                        t[y * kTile + x] = rgba(0.42f * g, 0.27f * g, 0.20f * g);
+                    }
+                }
+            for (int x = 0; x < kTile; ++x) {
+                const int y = 5 + int(std::lround(std::sin(float(x) * 0.5f) * 1.5f));
+                const float g = 0.78f + 0.25f * noise(x, y, 57);
+                t[y * kTile + x] = rgba(0.40f * g, 0.26f * g, 0.19f * g);
+            }
+        }
+        // bark and rings: cherry a dark plum brown, redwood a rusty red, mangrove a dull red-brown
+        constexpr float kBark[3][3] = {{0.32f, 0.19f, 0.21f}, {0.60f, 0.29f, 0.17f}, {0.42f, 0.26f, 0.20f}};
+        constexpr float kRings[3][3] = {{0.74f, 0.50f, 0.47f}, {0.76f, 0.42f, 0.28f}, {0.62f, 0.37f, 0.28f}};
+        for (int k = 0; k < 3; ++k) {
+            Rgba* side = slot(6 + k * 2);
+            Rgba* top = slot(7 + k * 2);
+            std::copy(layerAt(5), layerAt(5) + kTile * kTile, side);
+            std::copy(layerAt(6), layerAt(6) + kTile * kTile, top);
+            retint(side, kBark[k][0], kBark[k][1], kBark[k][2], k == 1 ? 1.25f : 1.0f);
+            retint(top, kRings[k][0], kRings[k][1], kRings[k][2], 1.0f);
+        }
+        // mushroom stem, cream with faint streaks; the red cap spotted white; the brown cap mottled
+        for (int y = 0; y < kTile; ++y)
+            for (int x = 0; x < kTile; ++x) {
+                const float v = 0.88f + 0.08f * noise(x, y / 3, 61) + 0.05f * noise(x, y, 62);
+                slot(12)[y * kTile + x] = rgba(0.86f * v, 0.82f * v, 0.71f * v);
+                const float r = 0.86f + 0.16f * noise(x / 2, y / 2, 63);
+                slot(13)[y * kTile + x] = rgba(0.76f * r, 0.12f * r, 0.10f * r);
+                const float b = 0.82f + 0.22f * noise(x / 2, y / 2, 64) + 0.06f * noise(x, y, 65);
+                slot(14)[y * kTile + x] = rgba(0.58f * b, 0.42f * b, 0.30f * b);
+            }
+        constexpr int kSpots[5][3] = {{3, 3, 2}, {11, 2, 2}, {7, 9, 3}, {13, 12, 2}, {2, 12, 2}};
+        for (const auto& sp : kSpots)
+            for (int y = 0; y < kTile; ++y)
+                for (int x = 0; x < kTile; ++x) {
+                    const int dx = x - sp[0], dy = y - sp[1];
+                    if (dx * dx + dy * dy <= sp[2] * sp[2] - 1)
+                        slot(13)[y * kTile + x] = rgba(0.95f, 0.93f, 0.88f);
+                }
+        // bamboo: a jointed stalk up the middle, and on the leafy one blades off the joints
+        for (int leafy = 0; leafy < 2; ++leafy) {
+            Rgba* t = slot(15 + leafy);
+            clear(t);
+            for (int y = 0; y < kTile; ++y)
+                for (int x = 6; x <= 9; ++x) {
+                    const bool joint = y == 3 || y == 11;
+                    const float edge = x == 6 || x == 9 ? 0.78f : (x == 7 ? 1.12f : 1.0f);
+                    const float g = edge * (0.92f + 0.12f * noise(x, y, 71)) * (joint ? 0.72f : 1.0f);
+                    t[y * kTile + x] = rgba(0.46f * g, 0.64f * g, 0.22f * g);
+                }
+            if (leafy)
+                for (int i = 0; i < 6; ++i) {
+                    const float g = 0.85f + 0.2f * noise(i, 0, 73);
+                    const int rx = 10 + i, ry = 3 - i / 2, lx = 5 - i, ly = 11 - i / 2;
+                    if (rx < kTile && ry >= 0)
+                        t[ry * kTile + rx] = rgba(0.34f * g, 0.56f * g, 0.17f * g);
+                    if (rx < kTile && ry + 1 < kTile && i < 4)
+                        t[(ry + 1) * kTile + rx] = rgba(0.30f * g, 0.50f * g, 0.15f * g);
+                    if (lx >= 0 && ly >= 0)
+                        t[ly * kTile + lx] = rgba(0.34f * g, 0.56f * g, 0.17f * g);
+                    if (lx >= 0 && ly + 1 < kTile && i < 4)
+                        t[(ly + 1) * kTile + lx] = rgba(0.30f * g, 0.50f * g, 0.15f * g);
+                }
+        }
+        // pink petals: little four-petalled flowers scattered over the tile, a leaf or two between
+        {
+            Rgba* t = slot(17);
+            clear(t);
+            constexpr int kAt[7][2] = {{3, 2}, {10, 3}, {6, 7}, {13, 8}, {2, 11}, {9, 12}, {14, 14}};
+            for (const auto& a : kAt) {
+                const int x = a[0], y = a[1];
+                const float g = 0.9f + 0.15f * noise(x, y, 81);
+                const int nb[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+                for (const auto& n : nb) {
+                    const int px = x + n[0], py = y + n[1];
+                    if (px >= 0 && px < kTile && py >= 0 && py < kTile)
+                        t[py * kTile + px] = rgba(0.97f * g, 0.62f * g, 0.77f * g);
+                }
+                t[y * kTile + x] = rgba(0.98f, 0.86f, 0.42f);
+                const int lx = std::min(x + 2, kTile - 1), ly = std::min(y + 1, kTile - 1);
+                if (t[ly * kTile + lx].a == 0)
+                    t[ly * kTile + lx] = rgba(0.36f * g, 0.56f * g, 0.22f * g);
+            }
+        }
+        // lavender: thin stems with long purple spikes of buds
+        {
+            Rgba* t = slot(18);
+            clear(t);
+            constexpr int kStem[5][2] = {{3, 4}, {6, 2}, {8, 5}, {11, 3}, {13, 6}};
+            for (int s = 0; s < 5; ++s) {
+                const int x = kStem[s][0], topY = kStem[s][1];
+                for (int y = topY; y < kTile; ++y) {
+                    const int lean = (kTile - 1 - y) / 7 * (s % 2 == 0 ? -1 : 1);
+                    const int px = std::clamp(x + lean, 0, kTile - 1);
+                    if (y < topY + 6) {
+                        const float g = 0.85f + 0.25f * noise(px, y, 91 + std::uint32_t(s));
+                        const bool dark = (y + s) % 2 == 0;
+                        t[y * kTile + px] = dark ? rgba(0.46f * g, 0.32f * g, 0.70f * g) : rgba(0.62f * g, 0.46f * g, 0.86f * g);
+                        if (px + 1 < kTile && (y + s) % 3 == 0)
+                            t[y * kTile + px + 1] = rgba(0.56f * g, 0.40f * g, 0.80f * g);
+                    } else {
+                        t[y * kTile + px] = rgba(0.34f, 0.48f, 0.26f);
+                    }
+                }
+            }
+        }
+        // pink tulip: the red flower, its petals turned pink
+        {
+            const Rgba* src = layerAt(kDecorLayer0 + 12);
+            Rgba* t = slot(19);
+            for (int i = 0; i < kTile * kTile; ++i) {
+                t[i] = src[i];
+                if (src[i].a > 0 && src[i].r > src[i].g + 40) {
+                    const float l = float(src[i].r) / 255.0f;
+                    t[i] = rgba(1.0f * l, 0.60f * l, 0.74f * l, src[i].a);
+                }
+            }
+        }
+    }
     if (loaded > 0)
         VX_INFO("block textures: loaded %d/%d from %s (rest procedural)", loaded, kLayers,
                 textureDir.string().c_str());
@@ -1006,6 +1177,14 @@ int blockTopLayer(int b) {
     }
     if (b >= blocks::Dripstone && b <= blocks::Crystal)
         return kDecorLayer0 + kCaveLayer + (b - blocks::Dripstone);
+    if (b >= blocks::CherryLeaves && b <= blocks::MangroveRoots)
+        return kDecorLayer0 + kWoodsLayer + (b - blocks::CherryLeaves);
+    if (b >= blocks::CherryWood && b <= blocks::MangroveWood)
+        return kDecorLayer0 + kWoodsLayer + 7 + (b - blocks::CherryWood) * 2;
+    if (b >= blocks::MushroomStem && b <= blocks::Bamboo)
+        return kDecorLayer0 + kWoodsLayer + 12 + (b - blocks::MushroomStem);
+    if (b >= blocks::PinkPetals && b <= blocks::FlowerPink)
+        return kDecorLayer0 + kWoodsLayer + 17 + (b - blocks::PinkPetals);
     if (b >= blocks::JungleGrass && b <= blocks::Moss)
         return kDecorLayer0 + 11 + (b - blocks::JungleGrass);
     if (b >= blocks::DryDirt && b <= blocks::Slate)
@@ -1021,6 +1200,8 @@ int blockIconLayer(int b) {
     using namespace blocks;
     if (isWater(BlockId(b)))
         return -1;
+    if (b >= CherryWood && b <= MangroveWood)
+        return kDecorLayer0 + kWoodsLayer + 6 + (b - CherryWood) * 2;
     switch (b) {
         case Grass: return 3;
         case Wood:

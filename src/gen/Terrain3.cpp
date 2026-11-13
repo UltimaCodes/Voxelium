@@ -439,6 +439,7 @@ std::shared_ptr<const Terrain3::RiverTile> Terrain3::riverTile(int tx, int tz) c
         const float tx2 = fx - float(ix), tz2 = fz - float(iz);
         const auto at = [&](int x, int z) { return land[std::size_t(z) * ln + x].h; };
         nd.h = glm::mix(glm::mix(at(ix, iz), at(ix + 1, iz), tx2), glm::mix(at(ix, iz + 1), at(ix + 1, iz + 1), tx2), tz2);
+        nd.desert = land[std::size_t(iz) * ln + ix].desert;
     }
     const auto node = [&](int a, int b) -> RiverNode& { return nodes[std::size_t(b) * W + a]; };
     // Each drains to its lowest neighbour. One lower than all of them is a basin and fills with a lake
@@ -518,11 +519,18 @@ void Terrain3::collectRivers(float x0, float z0, float x1, float z1, std::vector
     for (int j = j0; j <= j1; ++j)
         for (int i = i0; i <= i1; ++i) {
             const RiverNode nd = nodeAt(i, j);
+            // now and then a spring deep in the desert: a pool sunk into the sand with green round it
+            if (nd.desert > 0.8f && nd.h > float(kSeaLevel) + 4.0f) {
+                const std::uint32_t oh = hash2(i, j, std::uint32_t(m_seed) + 571u);
+                if ((oh & 255u) < 72u)
+                    lakes.push_back({nd.x + (hash01(oh >> 8) - 0.5f) * 140.0f, nd.z + (hash01(hash2(i, j, std::uint32_t(m_seed) + 573u)) - 0.5f) * 140.0f,
+                                     9.0f + 9.0f * hash01(hash2(i, j, std::uint32_t(m_seed) + 575u)), std::floor(nd.h) + 1.0f, true});
+            }
             if (nd.acc < kMinRiver)
                 continue;
             if (nd.down < 0) {
                 if (nd.lake > nd.h + 1.0f)
-                    lakes.push_back({nd.x, nd.z, std::min(110.0f + 14.0f * std::sqrt(float(nd.acc)), float(kRiverCell) * 0.55f), nd.lake});
+                    lakes.push_back({nd.x, nd.z, std::min(110.0f + 14.0f * std::sqrt(float(nd.acc)), float(kRiverCell) * 0.55f), nd.lake, false});
                 continue;
             }
             const RiverNode dn = nodeAt(i + kNbX[nd.down], j + kNbZ[nd.down]);
@@ -886,7 +894,7 @@ void Terrain3::gridImpl(int x0, int z0, int n, int step, Sample* out, bool smoot
                 h = glm::mix(h, float(kSeaLevel) + 0.6f + (valueNoise(wx * 0.09f, wz * 0.09f, std::uint32_t(m_seed) + 421u)) * 0.8f,
                              smooth01(24.0f, 48.0f, d));
 
-            float water = -1.0f;
+            float water = -1.0f, oasis = 0.0f;
             // the sea floor keeps its shape: a river ends where it meets the sea
             if ((!reaches.empty() || !lakes.empty()) && h >= float(kSeaLevel) - 1.0f) {
                 // A river wanders, wide loops in low country and tighter ones between
@@ -931,6 +939,24 @@ void Terrain3::gridImpl(int x0, int z0, int n, int step, Sample* out, bool smoot
                 h = carved;
                 for (const Lake& l : lakes) {
                     const float dx = wx - l.x, dz = wz - l.z;
+                    if (l.oasis) {
+                        // the pool, a level ring of ground round it, and the dunes coming back past that
+                        const float ring = l.radius + 30.0f;
+                        const float dist = std::sqrt(dx * dx + dz * dz);
+                        if (dist >= ring)
+                            continue;
+                        const float radius = l.radius * (0.75f + 0.5f * valueNoise(wx / 11.0f, wz / 11.0f, std::uint32_t(m_seed) + 437u));
+                        if (dist < radius) {
+                            const float u = dist / radius;
+                            h = std::min(h, l.level - 0.6f - 3.5f * (1.0f - u * u));
+                            water = std::max(water, l.level);
+                        } else {
+                            const float bank = l.level + 1.0f + valueNoise(wx * 0.2f, wz * 0.2f, std::uint32_t(m_seed) + 439u) * 0.9f;
+                            h = glm::mix(bank, h, smooth01(radius + 5.0f, ring, dist));
+                        }
+                        oasis = std::max(oasis, 1.0f - smooth01(l.radius + 8.0f, ring - 4.0f, dist));
+                        continue;
+                    }
                     // a shore that wanders in and out, not a circle
                     const float radius = l.radius * (0.70f + 0.50f * valueNoise(wx / 64.0f, wz / 64.0f, std::uint32_t(m_seed) + 431u));
                     const float dist = std::sqrt(dx * dx + dz * dz);
@@ -950,10 +976,11 @@ void Terrain3::gridImpl(int x0, int z0, int n, int step, Sample* out, bool smoot
             Sample& s = out[o];
             s.h = h;
             s.volcanic = volcanic;
+            s.oasis = oasis;
             s.broad = broad;
             s.coast = d;
             s.desert = desert;
-            s.moisture = wetV[o];
+            s.moisture = glm::mix(wetV[o], 0.72f, oasis); // the green round a spring is the climate's too
             s.temp = tempV[o];
             // cold air comes down the mountain: the warmer the climate the higher the snow
             s.snowLine = 158.0f + (tempV[o] - 0.10f) * 160.0f + ridge[k] * 14.0f + hills[k] * 12.0f;

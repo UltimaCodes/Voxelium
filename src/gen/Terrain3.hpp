@@ -32,6 +32,7 @@ public:
         float snowLine = 0.0f; // the height snow starts at here
         float water = -1.0f;   // the surface of a river or lake over this column; below h for none
         float volcanic = 0.0f; // 0..1 up a volcano's cone: its dark rock and ash
+        float oasis = 0.0f;    // 0..1 in the green ring round a desert pool
     };
     // n x n points from (x0, z0), step blocks apart, row-major. step 1 carries all the detail;
     // coarser steps leave out what would alias, and are for maps and the far horizon.
@@ -52,6 +53,7 @@ private:
         float h = 0.0f;           // the land there, broadly
         float level = 0.0f;       // its water surface
         float lake = -1.0f;       // a basin with no way out: the level it fills to
+        float desert = 0.0f;      // how desert the land there is, broadly
         int acc = 0;              // nodes draining through it
         int down = -1;            // 0..7 the neighbour it drains to, -1 none
     };
@@ -66,6 +68,7 @@ private:
     };
     struct Lake {
         float x, z, radius, level;
+        bool oasis = false; // sunk into the sand rather than filling a basin
     };
     // Every reach and lake that can touch the box, padded by how far a valley and a meander reach.
     void collectRivers(float x0, float z0, float x1, float z1, std::vector<Reach>& reaches, std::vector<Lake>& lakes) const;

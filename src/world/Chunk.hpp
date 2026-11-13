@@ -201,17 +201,36 @@ inline constexpr BlockId CaveVines = 132;     // cross, hangs from the ceiling
 inline constexpr BlockId GlowBerries = 133;   // cross, hangs, emitter
 inline constexpr BlockId GlowShroom = 134;    // cross, emitter
 inline constexpr BlockId Crystal = 135;       // emitter: the lining of a geode
-inline constexpr int kBlockCount = 136;
+// The colourful woods and fields: the blossoming and turning leaves, the trunks they grow on, giant
+// mushrooms, then the plants.
+inline constexpr BlockId CherryLeaves = 136;  // cutout
+inline constexpr BlockId BlossomLeaves = 137; // cutout
+inline constexpr BlockId AutumnRed = 138;     // cutout
+inline constexpr BlockId AutumnOrange = 139;  // cutout
+inline constexpr BlockId AutumnYellow = 140;  // cutout
+inline constexpr BlockId MangroveRoots = 141; // cutout
+inline constexpr BlockId CherryWood = 142;
+inline constexpr BlockId RedwoodWood = 143;
+inline constexpr BlockId MangroveWood = 144;
+inline constexpr BlockId MushroomStem = 145;
+inline constexpr BlockId MushroomCapRed = 146;
+inline constexpr BlockId MushroomCapBrown = 147;
+inline constexpr BlockId Bamboo = 148;        // cross, stacked
+inline constexpr BlockId PinkPetals = 149;    // carpet
+inline constexpr BlockId Lavender = 150;      // cross
+inline constexpr BlockId FlowerPink = 151;    // cross
+inline constexpr int kBlockCount = 152;
 
 inline constexpr bool isLeafBlock(BlockId id) {
     return id == Leaves || id == PalmLeaves || id == SpruceLeaves || id == BirchLeaves || id == AcaciaLeaves ||
-           id == JungleLeaves || id == BerryBush;
+           id == JungleLeaves || id == BerryBush || (id >= CherryLeaves && id <= AutumnYellow);
 }
 inline constexpr bool isLogBlock(BlockId id) {
     return id == Wood || id == PalmWood || id == SpruceWood || id == BirchWood || id == AcaciaWood ||
-           id == JungleWood || (id >= WoodX && id <= BirchWoodZ);
+           id == JungleWood || (id >= WoodX && id <= BirchWoodZ) || (id >= CherryWood && id <= MangroveWood);
 }
-inline constexpr bool isCarpet(BlockId id) { return id >= LeafLitter && id <= LilyPad; }
+inline constexpr bool isCarpet(BlockId id) { return (id >= LeafLitter && id <= LilyPad) || id == PinkPetals; }
+inline constexpr bool isMushroomBlock(BlockId id) { return id >= MushroomStem && id <= MushroomCapBrown; }
 inline constexpr bool isPlanks(BlockId id) { return id == Planks || (id >= SprucePlanks && id <= JunglePlanks); }
 inline constexpr bool isTerracotta(BlockId id) { return id >= Terracotta && id <= TerracottaWhite; }
 
@@ -224,7 +243,7 @@ inline constexpr bool isWaterlogged(BlockId id) {
 }
 inline constexpr bool isCross(BlockId id) {
     return id == GrassTuft || id == Flower || id == DeadBush || id == Shell || isWaterlogged(id) ||
-           (id >= TallGrass && id <= LilyPad) || (id >= DripstoneUp && id <= GlowShroom);
+           (id >= TallGrass && id <= LilyPad) || (id >= DripstoneUp && id <= GlowShroom) || (id >= Bamboo && id <= FlowerPink);
 }
 
 // Blocks with nothing under them fall. Sand and gravel only, dirt and stone staying put
@@ -257,11 +276,11 @@ inline constexpr float hardness(BlockId id) {
         return 0.40f;
     if (isCoral(id) || id == GlowCoral)
         return 0.60f;
-    if (id == Sand || id == Gravel || id == Snow || id == RedSand || id == Glass || id == Ice)
+    if (id == Sand || id == Gravel || id == Snow || id == RedSand || id == Glass || id == Ice || isMushroomBlock(id))
         return 0.30f;
     if (id == Dirt || id == Grass || (id >= Moss && id <= Clay))
         return 0.42f;
-    if (isLogBlock(id) || isPlanks(id) || id == Glow || isLamp(id) || id == Crystal)
+    if (isLogBlock(id) || isPlanks(id) || id == Glow || isLamp(id) || id == Crystal || id == MangroveRoots)
         return 0.70f;
     if (isTerracotta(id))
         return 0.90f;
@@ -335,7 +354,7 @@ inline constexpr bool opaque(BlockId id) {
 //   - it does NOT stop light, it attenuates it, so a canopy dapples instead of casting a
 //     solid black interior
 //   - it DOES still collide; a tree is not walk-through
-inline constexpr bool isCutout(BlockId id) { return isLeafBlock(id) || id == Glass; }
+inline constexpr bool isCutout(BlockId id) { return isLeafBlock(id) || id == Glass || id == MangroveRoots; }
 
 // Hides the faces behind it, and blocks the cave-cull visibility flood. A cutout does not.
 inline constexpr bool occludes(BlockId id) { return opaque(id) && !isCutout(id); }
@@ -386,7 +405,7 @@ inline constexpr const char* soundMaterial(BlockId id) {
     if (isCross(id) || isLeafBlock(id) || id == Grass || id == Cactus || id == Moss || id == JungleFloor ||
         id == SavannaGrass)
         return "grass";
-    if (isLogBlock(id) || isPlanks(id) || id == Coconut)
+    if (isLogBlock(id) || isPlanks(id) || id == Coconut || id == MangroveRoots || isMushroomBlock(id))
         return "wood";
     switch (id) {
         case Sand:

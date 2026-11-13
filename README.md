@@ -12,7 +12,8 @@ Get `voxelium-win64.zip` from Releases, unzip it, run `voxelium.exe`. Windows on
 
 ## What's in it
 
-- Endless worlds from a seed, with oceans, mountain ranges, rivers that actually run down to the sea, lakes and 17 biomes from jungle to tundra
+- Endless worlds from a seed, with oceans, mountain ranges, rivers that actually run down to the sea, lakes and 27 biomes from jungle to tundra
+- Way more colour: cherry blossom groves on the hills, autumn forests in red, orange and gold, white spring blossom, golden aspens, flower fields full of lavender and poppies, giant redwoods, dark forests with huge mushrooms, bamboo, mangroves on hot coasts and oases out in the desert
 - Caves that go way down to a bedrock floor, with big caverns, underground lakes and old mineshafts. They change with what's above them: lush caves with moss and glow berries under jungles and swamps, dripstone caves under deserts, ice caves under the snow, glowing mushroom caves deep down, and the odd crystal geode
 - Mountains that aren't all the same: jagged alpine ranges, rounded old ones and ranges stepped in cliff bands, with scree, glaciers and alpine meadows. Volcanoes with crater lakes (some are islands), and karst towers sticking straight up out of the jungle
 - Lighthouses, shipwrecks, desert ruins, pyramids, log cabins in the woods, standing stones and ruined watchtowers on the hills. There's also a cool easter egg under the pyramids too :D

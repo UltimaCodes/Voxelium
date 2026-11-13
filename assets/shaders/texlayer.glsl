@@ -5,14 +5,14 @@
 // foliage is cut out by its dir instead. Keep in step with texLayer below.
 bool isCutoutLayer(uint layer) {
     return layer == 7u || layer == 55u || layer == 73u || layer == 74u || layer == 124u || layer == 127u ||
-           layer == 128u || layer == 135u;
+           layer == 128u || layer == 135u || (layer >= 150u && layer <= 155u);
 }
 // the emitters: glow, the 25 lamp swatches, glow coral, glow berries, the glow mushroom, crystal
 bool isEmitterLayer(uint layer) { return layer == 4u || (layer >= 15u && layer <= 39u) || layer == 68u || (layer >= 147u && layer <= 149u); }
 // grass and ferns, which take the climate's colour like the grass they grow from
 bool isGrassLayer(uint layer) { return layer == 40u || layer == 140u || layer == 141u || (layer >= 75u && layer <= 79u); }
-// leaf litter, pebbles and lily pads: lying flat rather than standing crossed
-bool isCarpet(uint block) { return block >= 87u && block <= 89u; }
+// leaf litter, pebbles, lily pads and petals: lying flat rather than standing crossed
+bool isCarpet(uint block) { return (block >= 87u && block <= 89u) || block == 149u; }
 
 // block id + face dir -> texture-array layer. mirrors BlockTextures layer order.
 uint texLayer(uint block, uint dir) {
@@ -75,6 +75,13 @@ uint texLayer(uint block, uint dir) {
     if (block >= 120u && block <= 127u) return block + 12u;  // cobble .. jungle planks
     if (block == 128u) return 142u;                          // bedrock
     if (block >= 129u && block <= 135u) return block + 14u;  // the cave blocks, dripstone .. crystal
+    if (block >= 136u && block <= 141u) return block + 14u;  // cherry, blossom, the autumn leaves, mangrove roots
+    if (block >= 142u && block <= 144u) {                    // cherry, redwood and mangrove logs
+        uint side = 156u + (block - 142u) * 2u;
+        return cap ? side + 1u : side;
+    }
+    if (block >= 145u && block <= 148u) return block + 17u;  // mushroom stem and caps, bamboo
+    if (block >= 149u && block <= 151u) return block + 18u;  // petals, lavender, pink tulip
     return 0u;
 }
 
@@ -86,5 +93,6 @@ uint variantLayer(uint block, uint layer, uint h) {
     }
     if (block == 72u) return layer + h % 2u;
     if (block >= 73u && block <= 75u) return layer + h % 3u;
+    if (block == 148u) return layer + (h % 3u == 0u ? 1u : 0u); // bamboo: now and then a leafy joint
     return layer;
 }

@@ -1097,14 +1097,17 @@ int main(int, char** argv) {
                 ambience.desert = desert / 5.0f;
                 using B = vx::Biome;
                 if (gen.version() >= 3) {
-                    ambience.desert = std::max(ambience.desert, w[int(B::Desert)] + w[int(B::RedDesert)] + w[int(B::Badlands)]);
-                    ambience.open = w[int(B::Plains)] + w[int(B::Meadow)] + w[int(B::Savanna)] + 0.5f * w[int(B::Beach)];
-                    ambience.conifer = w[int(B::Taiga)] + 0.6f * w[int(B::SnowyTaiga)];
-                    ambience.jungle = w[int(B::Jungle)];
-                    ambience.swamp = w[int(B::Swamp)];
+                    ambience.desert = std::max(ambience.desert, w[int(B::Desert)] + w[int(B::RedDesert)] + w[int(B::Badlands)] +
+                                                                    0.5f * w[int(B::Oasis)]);
+                    ambience.open = w[int(B::Plains)] + w[int(B::Meadow)] + w[int(B::Savanna)] + 0.5f * w[int(B::Beach)] +
+                                    w[int(B::FlowerField)] + 0.5f * w[int(B::CherryGrove)] + 0.5f * w[int(B::Oasis)];
+                    ambience.conifer = w[int(B::Taiga)] + 0.6f * w[int(B::SnowyTaiga)] + w[int(B::Redwood)] + 0.4f * w[int(B::AspenGrove)];
+                    ambience.jungle = w[int(B::Jungle)] + w[int(B::Bamboo)];
+                    ambience.swamp = w[int(B::Swamp)] + w[int(B::Mangrove)];
                     ambience.snow = w[int(B::Tundra)] + w[int(B::SnowyTaiga)] + w[int(B::Snowcap)];
                     ambience.alpine = w[int(B::Alpine)] + w[int(B::Snowcap)];
-                    ambience.forest = w[int(B::Forest)] + w[int(B::BirchForest)];
+                    ambience.forest = w[int(B::Forest)] + w[int(B::BirchForest)] + w[int(B::AutumnForest)] + w[int(B::SpringForest)] +
+                                      w[int(B::DarkForest)] + 0.6f * w[int(B::AspenGrove)] + 0.5f * w[int(B::CherryGrove)];
                 } else {
                     ambience.open = 1.0f - ambience.desert - ambience.coast;
                 }

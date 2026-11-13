@@ -142,6 +142,8 @@ void FarTerrain::build(const TerrainGenerator& gen, int r, std::int64_t originX,
     const glm::vec3 kSwamp(0.33f, 0.38f, 0.24f), kRedSand(0.74f, 0.45f, 0.27f), kClay(0.66f, 0.40f, 0.28f);
     const glm::vec3 kSpruce(0.15f, 0.26f, 0.17f), kAcacia(0.30f, 0.38f, 0.16f), kJungleLeaf(0.18f, 0.37f, 0.10f);
     const glm::vec3 kBirchLeaf(0.30f, 0.44f, 0.18f);
+    const glm::vec3 kCherry(0.86f, 0.55f, 0.68f), kBlossom(0.88f, 0.88f, 0.83f), kAutumnRed(0.66f, 0.20f, 0.10f);
+    const glm::vec3 kAutumnGold(0.86f, 0.62f, 0.16f), kBamboo(0.36f, 0.54f, 0.18f), kMud(0.30f, 0.26f, 0.22f);
     for (int j = 0; j < n; ++j)
         for (int i = 0; i < n; ++i) {
             const auto& s = sample[std::size_t(j) * n + i];
@@ -178,6 +180,15 @@ void FarTerrain::build(const TerrainGenerator& gen, int r, std::int64_t originX,
                     case Biome::BirchForest: canopy = kBirchLeaf * tint; break;
                     case Biome::RedDesert: sand = kRedSand; break;
                     case Biome::Badlands: sand = kClay; break;
+                    case Biome::CherryGrove: canopy = kCherry; break;
+                    case Biome::AutumnForest: canopy = glm::mix(kAutumnRed, kAutumnGold, jit + 0.5f); break;
+                    case Biome::SpringForest: canopy = glm::mix(kCanopy * tint, kBlossom, 0.55f); break;
+                    case Biome::FlowerField: ground = glm::mix(ground, glm::vec3(0.66f, 0.50f, 0.66f), 0.3f); break;
+                    case Biome::AspenGrove: canopy = kAutumnGold; break;
+                    case Biome::Redwood: ground = glm::mix(ground, kNeedles, 0.6f), canopy = kSpruce * 0.95f; break;
+                    case Biome::DarkForest: canopy = kCanopy * tint * 0.7f; break;
+                    case Biome::Bamboo: canopy = kBamboo; break;
+                    case Biome::Mangrove: ground = kMud, canopy = kCanopy * 0.9f; break;
                     default: break;
                 }
                 col = glm::mix(ground, canopy, s.forest * 0.9f);
